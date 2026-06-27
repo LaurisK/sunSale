@@ -1,0 +1,15 @@
+force_recalculate:
+  name: Force Recalculate
+  description: >
+    Trigger an immediate re-run of the price optimizer without waiting for the
+    next scheduled update interval.
+  fields: {}
+
+force_verify_inverter_mode:
+  name: Force Verify Inverter Mode
+  description: >
+    Run an inverter-mode verify cycle immediately instead of waiting for the
+    +30 s scheduled callback. Reads register 43110 fresh and compares to the
+    last commanded mode; on mismatch, re-issues the write once and verifies
+    again. Useful for confirming engagement after a manual mode change.
+  fields: {}

@@ -1,0 +1,7 @@
+{
+  "name": "sunSale",
+  "homeassistant": "2024.1.0",
+  "render_readme": true,
+  "country": ["LT", "LV", "EE", "FI", "SE", "NO", "DK"],
+  "zip_release": false
+}

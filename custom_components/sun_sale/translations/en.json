@@ -1,0 +1,398 @@
+{
+  "config": {
+    "step": {
+      "user": {
+        "title": "Tariff Configuration",
+        "description": "Configure the electricity tariff formula for your provider. The distribution fees here are the fallback used outside any time-of-use band you define next.",
+        "data": {
+          "currency": "Display currency code (e.g. EUR, SEK, NOK, DKK, GBP)",
+          "distribution_fee": "Distribution fee (per kWh, buy)",
+          "tax_rate": "Tax/VAT rate on buy (%)",
+          "markup": "Retailer markup (per kWh, buy)",
+          "sell_distribution_fee": "Distribution fee (per kWh, sell)",
+          "sell_tax_rate": "Tax rate on sell revenue (%)",
+          "sell_markup": "Retailer deduction (per kWh, sell)",
+          "sell_mode": "Sell-price model",
+          "fixed_sell_price": "Fixed/feed-in sell price (per kWh)"
+        }
+      },
+      "tariff_weekday": {
+        "title": "Weekday Tariff Bands (Mon\u2013Fri)",
+        "description": "Optional time-of-use distribution fees for weekdays. Each band's start time (24h HH:MM, local) runs until the next band's start, wrapping past midnight. Leave a band's start blank to skip it; leave all blank to use the flat fees from the previous step.",
+        "data": {
+          "band0_start": "Band 1 start (HH:MM)",
+          "band0_buy_fee": "Band 1 distribution fee (EUR/kWh, buy)",
+          "band0_sell_fee": "Band 1 distribution fee (EUR/kWh, sell)",
+          "band1_start": "Band 2 start (HH:MM)",
+          "band1_buy_fee": "Band 2 distribution fee (EUR/kWh, buy)",
+          "band1_sell_fee": "Band 2 distribution fee (EUR/kWh, sell)",
+          "band2_start": "Band 3 start (HH:MM)",
+          "band2_buy_fee": "Band 3 distribution fee (EUR/kWh, buy)",
+          "band2_sell_fee": "Band 3 distribution fee (EUR/kWh, sell)",
+          "band3_start": "Band 4 start (HH:MM)",
+          "band3_buy_fee": "Band 4 distribution fee (EUR/kWh, buy)",
+          "band3_sell_fee": "Band 4 distribution fee (EUR/kWh, sell)"
+        }
+      },
+      "tariff_weekend": {
+        "title": "Weekend Tariff Bands (Sat/Sun)",
+        "description": "Optional time-of-use distribution fees for weekends. Same rules as the weekday bands. Leave all blank to reuse the flat fees.",
+        "data": {
+          "band0_start": "Band 1 start (HH:MM)",
+          "band0_buy_fee": "Band 1 distribution fee (EUR/kWh, buy)",
+          "band0_sell_fee": "Band 1 distribution fee (EUR/kWh, sell)",
+          "band1_start": "Band 2 start (HH:MM)",
+          "band1_buy_fee": "Band 2 distribution fee (EUR/kWh, buy)",
+          "band1_sell_fee": "Band 2 distribution fee (EUR/kWh, sell)",
+          "band2_start": "Band 3 start (HH:MM)",
+          "band2_buy_fee": "Band 3 distribution fee (EUR/kWh, buy)",
+          "band2_sell_fee": "Band 3 distribution fee (EUR/kWh, sell)",
+          "band3_start": "Band 4 start (HH:MM)",
+          "band3_buy_fee": "Band 4 distribution fee (EUR/kWh, buy)",
+          "band3_sell_fee": "Band 4 distribution fee (EUR/kWh, sell)"
+        }
+      },
+      "battery": {
+        "title": "Battery Configuration",
+        "data": {
+          "nominal_capacity_kwh": "Nominal capacity (kWh)",
+          "purchase_price_eur": "Battery purchase price (EUR)",
+          "rated_cycle_life": "Rated cycle life",
+          "max_charge_power_kw": "Max charge power (kW)",
+          "max_discharge_power_kw": "Max discharge power (kW)",
+          "min_soc": "Minimum SoC (%)",
+          "max_soc": "Maximum SoC (%)",
+          "round_trip_efficiency": "Round-trip efficiency (%)",
+          "nominal_voltage_v": "Nominal DC bus voltage (V)"
+        }
+      },
+      "inverter": {
+        "title": "Inverter Setup",
+        "description": "Select your inverter platform and enter its power ratings. Solis is fully supported. Huawei, SolaX, Sungrow, GoodWe and Deye are wired but untested \u2014 verify control on first connect. Fronius, SMA and Kostal are not selectable yet.",
+        "data": {
+          "inverter_platform": "Inverter platform",
+          "inverter_max_power_kw": "Inverter rated AC power (kW)",
+          "inverter_export_limit_kw": "Max export / backflow power (kW)"
+        }
+      },
+      "inverter_generic": {
+        "title": "Inverter Entity Mapping",
+        "description": "If the vendor integration is installed, its inverter is auto-detected (pick which one when several exist). Otherwise map each control + telemetry entity manually. These platforms are untested against hardware: if control doesn't take effect, check Home Assistant logs for the resolver's 'missing roles' warning and confirm the mapped entities.",
+        "data": {
+          "solax_modbus_config_entry_id": "Inverter",
+          "huawei_solar_config_entry_id": "Inverter",
+          "goodwe_config_entry_id": "Inverter",
+          "deye_config_entry_id": "Inverter"
+        }
+      },
+      "inverter_entities": {
+        "title": "Inverter Entity Mapping",
+        "description": "Map the four entities your inverter integration exposes.",
+        "data": {
+          "inverter_entity_battery_soc": "Battery SoC entity",
+          "inverter_entity_battery_power": "Battery power entity (kW)",
+          "inverter_entity_grid_power": "Grid power entity (kW)",
+          "inverter_entity_charge_control": "Charge control entity"
+        }
+      },
+      "inverter_solis": {
+        "title": "Solis Inverter Setup",
+        "description": "If solis_modbus is installed with multiple inverters, select which one sunSale should control. If only one inverter is detected this step is skipped automatically. If solis_modbus is not installed, map the entities manually.",
+        "data": {
+          "solis_config_entry_id": "Solis inverter",
+          "inverter_entity_battery_soc": "Battery SoC entity",
+          "inverter_entity_battery_power": "Battery power entity (kW)",
+          "inverter_entity_grid_power": "Grid net power entity (kW, +import / \u2212export)",
+          "inverter_solis_storage_control_readback": "Storage control readback sensor (register 43110)",
+          "inverter_solis_battery_max_charge_current": "Battery max charge current (number, A)",
+          "inverter_solis_battery_max_discharge_current": "Battery max discharge current (number, A)",
+          "inverter_solis_rc_setpoint": "Remote-control power setpoint (number, W)",
+          "inverter_solis_backflow_power": "Backflow / export power limit (number, W)",
+          "inverter_solis_peak_max_usable_grid_power": "Peak-shaving max usable grid power (number, W)",
+          "inverter_solis_self_use_switch": "Self-Use mode switch",
+          "inverter_solis_tou_mode_switch": "Time-of-Use mode switch",
+          "inverter_solis_allow_grid_charge_switch": "Allow-grid-charge switch",
+          "inverter_solis_feed_in_priority_switch": "Feed-In priority mode switch",
+          "inverter_solis_allow_export_under_self_use_switch": "Allow export under Self-Use switch",
+          "inverter_solis_grid_feed_in_power_limit_switch": "Grid feed-in power limit switch"
+        }
+      },
+      "forecast": {
+        "title": "Solar Forecast",
+        "description": "Select your solar forecast device(s). Each device's forecast sensors are detected automatically; pick more than one if you have several arrays (e.g. one per roof).",
+        "data": {
+          "solar_forecast_device_ids": "Forecast devices"
+        }
+      },
+      "forecast_manual": {
+        "title": "Solar Forecast (manual)",
+        "description": "No forecast integration was detected. Map up to two forecast sensor entities manually (Open Meteo, Forecast.Solar, or Solcast).",
+        "data": {
+          "solar_forecast_entity": "Solar forecast entity (optional)",
+          "solar_forecast_entity_2": "Solar forecast entity 2 (optional, second array)"
+        }
+      },
+      "sources": {
+        "title": "Data Sources",
+        "description": "Select the electricity price source and entities. Only Nord Pool is validated against a live install; ENTSO-e / Octopus / Amber / TOU are untested \u2014 verify the sensor's attributes after setup. Household baseload is derived from inverter telemetry \u2014 no dedicated load sensor is required.",
+        "data": {
+          "price_source": "Electricity price source / market",
+          "nordpool_entity": "Electricity price sensor (import; leave blank for TOU schedule)",
+          "price_export_entity": "Separate export-price sensor (optional; Octopus Outgoing / Amber feed-in)",
+          "nordpool_resolution": "Nordpool price resolution",
+          "inverter_entity_solar_energy": "Solar energy counter entity (optional, kWh, for chart)",
+          "inverter_entity_pv_power": "PV power sensor (optional, kW)",
+          "inverter_entity_household_consumption_energy": "Household consumption today-total energy counter (optional, kWh, daily-resetting)",
+          "inverter_entity_grid_import_energy": "Grid import energy counter (optional, kWh)",
+          "inverter_entity_grid_export_energy": "Grid export energy counter (optional, kWh)",
+          "bms_battery_soc": "Dedicated BMS battery SoC (optional, e.g. JK-BMS)",
+          "bms_battery_power": "Dedicated BMS battery power (optional, signed kW)",
+          "panel_title": "Sidebar panel name (optional; blank = \"sunSale\")"
+        }
+      },
+      "price_tou": {
+        "title": "Time-of-use Import Prices",
+        "description": "Define the absolute import price for each time-of-use band (local 24h time). Leave a row's start blank to drop it.",
+        "data": {
+          "tou0_start": "Band 1 start (HH:MM, local 24h)",
+          "tou0_price": "Band 1 import price (per kWh)",
+          "tou1_start": "Band 2 start (HH:MM, local 24h)",
+          "tou1_price": "Band 2 import price (per kWh)",
+          "tou2_start": "Band 3 start (HH:MM, local 24h)",
+          "tou2_price": "Band 3 import price (per kWh)",
+          "tou3_start": "Band 4 start (HH:MM, local 24h)",
+          "tou3_price": "Band 4 import price (per kWh)"
+        }
+      }
+    },
+    "error": {
+      "negative_fee": "Distribution fee cannot be negative.",
+      "invalid_band_time": "Band start must be a 24h time like 06:30.",
+      "invalid_tax_rate": "Tax rate must be between 0 and 100.",
+      "invalid_capacity": "Capacity must be greater than 0.",
+      "invalid_price": "Purchase price must be greater than 0.",
+      "invalid_efficiency": "Efficiency must be between 0 and 100.",
+      "platform_not_implemented": "That inverter platform isn't supported yet. Selectable: Solis, Huawei, SolaX, Sungrow, GoodWe, Deye. (Fronius, SMA, Kostal and SolarEdge are not wired.)",
+      "invalid_inverter_power": "Inverter rated AC power must be greater than 0.",
+      "invalid_export_limit": "Export limit cannot be negative."
+    }
+  },
+  "options": {
+    "step": {
+      "init": {
+        "title": "Tariff Configuration",
+        "description": "Configure the electricity tariff formula for your provider. The distribution fees here are the fallback used outside any time-of-use band you define next.",
+        "data": {
+          "currency": "Display currency code (e.g. EUR, SEK, NOK, DKK, GBP)",
+          "distribution_fee": "Distribution fee (per kWh, buy)",
+          "tax_rate": "Tax/VAT rate on buy (%)",
+          "markup": "Retailer markup (per kWh, buy)",
+          "sell_distribution_fee": "Distribution fee (per kWh, sell)",
+          "sell_tax_rate": "Tax rate on sell revenue (%)",
+          "sell_markup": "Retailer deduction (per kWh, sell)",
+          "sell_mode": "Sell-price model",
+          "fixed_sell_price": "Fixed/feed-in sell price (per kWh)"
+        }
+      },
+      "tariff_weekday": {
+        "title": "Weekday Tariff Bands (Mon\u2013Fri)",
+        "description": "Optional time-of-use distribution fees for weekdays. Each band's start time (24h HH:MM, local) runs until the next band's start, wrapping past midnight. Leave a band's start blank to skip it; leave all blank to use the flat fees from the previous step.",
+        "data": {
+          "band0_start": "Band 1 start (HH:MM)",
+          "band0_buy_fee": "Band 1 distribution fee (EUR/kWh, buy)",
+          "band0_sell_fee": "Band 1 distribution fee (EUR/kWh, sell)",
+          "band1_start": "Band 2 start (HH:MM)",
+          "band1_buy_fee": "Band 2 distribution fee (EUR/kWh, buy)",
+          "band1_sell_fee": "Band 2 distribution fee (EUR/kWh, sell)",
+          "band2_start": "Band 3 start (HH:MM)",
+          "band2_buy_fee": "Band 3 distribution fee (EUR/kWh, buy)",
+          "band2_sell_fee": "Band 3 distribution fee (EUR/kWh, sell)",
+          "band3_start": "Band 4 start (HH:MM)",
+          "band3_buy_fee": "Band 4 distribution fee (EUR/kWh, buy)",
+          "band3_sell_fee": "Band 4 distribution fee (EUR/kWh, sell)"
+        }
+      },
+      "tariff_weekend": {
+        "title": "Weekend Tariff Bands (Sat/Sun)",
+        "description": "Optional time-of-use distribution fees for weekends. Same rules as the weekday bands. Leave all blank to reuse the flat fees.",
+        "data": {
+          "band0_start": "Band 1 start (HH:MM)",
+          "band0_buy_fee": "Band 1 distribution fee (EUR/kWh, buy)",
+          "band0_sell_fee": "Band 1 distribution fee (EUR/kWh, sell)",
+          "band1_start": "Band 2 start (HH:MM)",
+          "band1_buy_fee": "Band 2 distribution fee (EUR/kWh, buy)",
+          "band1_sell_fee": "Band 2 distribution fee (EUR/kWh, sell)",
+          "band2_start": "Band 3 start (HH:MM)",
+          "band2_buy_fee": "Band 3 distribution fee (EUR/kWh, buy)",
+          "band2_sell_fee": "Band 3 distribution fee (EUR/kWh, sell)",
+          "band3_start": "Band 4 start (HH:MM)",
+          "band3_buy_fee": "Band 4 distribution fee (EUR/kWh, buy)",
+          "band3_sell_fee": "Band 4 distribution fee (EUR/kWh, sell)"
+        }
+      },
+      "battery": {
+        "title": "Battery Configuration",
+        "data": {
+          "nominal_capacity_kwh": "Nominal capacity (kWh)",
+          "purchase_price_eur": "Battery purchase price (EUR)",
+          "rated_cycle_life": "Rated cycle life",
+          "max_charge_power_kw": "Max charge power (kW)",
+          "max_discharge_power_kw": "Max discharge power (kW)",
+          "min_soc": "Minimum SoC (%)",
+          "max_soc": "Maximum SoC (%)",
+          "round_trip_efficiency": "Round-trip efficiency (%)",
+          "nominal_voltage_v": "Nominal DC bus voltage (V)"
+        }
+      },
+      "inverter": {
+        "title": "Inverter Setup",
+        "description": "Select your inverter platform and enter its power ratings. Solis is fully supported. Huawei, SolaX, Sungrow, GoodWe and Deye are wired but untested \u2014 verify control on first connect. Fronius, SMA and Kostal are not selectable yet.",
+        "data": {
+          "inverter_platform": "Inverter platform",
+          "inverter_max_power_kw": "Inverter rated AC power (kW)",
+          "inverter_export_limit_kw": "Max export / backflow power (kW)"
+        }
+      },
+      "inverter_generic": {
+        "title": "Inverter Entity Mapping",
+        "description": "If the vendor integration is installed, its inverter is auto-detected (pick which one when several exist). Otherwise map each control + telemetry entity manually. These platforms are untested against hardware: if control doesn't take effect, check Home Assistant logs for the resolver's 'missing roles' warning and confirm the mapped entities.",
+        "data": {
+          "solax_modbus_config_entry_id": "Inverter",
+          "huawei_solar_config_entry_id": "Inverter",
+          "goodwe_config_entry_id": "Inverter",
+          "deye_config_entry_id": "Inverter"
+        }
+      },
+      "inverter_entities": {
+        "title": "Inverter Entity Mapping",
+        "description": "Map the four entities your inverter integration exposes.",
+        "data": {
+          "inverter_entity_battery_soc": "Battery SoC entity",
+          "inverter_entity_battery_power": "Battery power entity (kW)",
+          "inverter_entity_grid_power": "Grid power entity (kW)",
+          "inverter_entity_charge_control": "Charge control entity"
+        }
+      },
+      "inverter_solis": {
+        "title": "Solis Inverter Setup",
+        "description": "If solis_modbus is installed with multiple inverters, select which one sunSale should control. If only one inverter is detected this step is skipped automatically. If solis_modbus is not installed, map the entities manually.",
+        "data": {
+          "solis_config_entry_id": "Solis inverter",
+          "inverter_entity_battery_soc": "Battery SoC entity",
+          "inverter_entity_battery_power": "Battery power entity (kW)",
+          "inverter_entity_grid_power": "Grid net power entity (kW, +import / \u2212export)",
+          "inverter_solis_storage_control_readback": "Storage control readback sensor (register 43110)",
+          "inverter_solis_battery_max_charge_current": "Battery max charge current (number, A)",
+          "inverter_solis_battery_max_discharge_current": "Battery max discharge current (number, A)",
+          "inverter_solis_rc_setpoint": "Remote-control power setpoint (number, W)",
+          "inverter_solis_backflow_power": "Backflow / export power limit (number, W)",
+          "inverter_solis_peak_max_usable_grid_power": "Peak-shaving max usable grid power (number, W)",
+          "inverter_solis_self_use_switch": "Self-Use mode switch",
+          "inverter_solis_tou_mode_switch": "Time-of-Use mode switch",
+          "inverter_solis_allow_grid_charge_switch": "Allow-grid-charge switch",
+          "inverter_solis_feed_in_priority_switch": "Feed-In priority mode switch",
+          "inverter_solis_allow_export_under_self_use_switch": "Allow export under Self-Use switch",
+          "inverter_solis_grid_feed_in_power_limit_switch": "Grid feed-in power limit switch"
+        }
+      },
+      "forecast": {
+        "title": "Solar Forecast",
+        "description": "Select your solar forecast device(s). Each device's forecast sensors are detected automatically; pick more than one if you have several arrays (e.g. one per roof).",
+        "data": {
+          "solar_forecast_device_ids": "Forecast devices"
+        }
+      },
+      "forecast_manual": {
+        "title": "Solar Forecast (manual)",
+        "description": "No forecast integration was detected. Map up to two forecast sensor entities manually (Open Meteo, Forecast.Solar, or Solcast).",
+        "data": {
+          "solar_forecast_entity": "Solar forecast entity (optional)",
+          "solar_forecast_entity_2": "Solar forecast entity 2 (optional, second array)"
+        }
+      },
+      "sources": {
+        "title": "Data Sources",
+        "description": "Select the electricity price source and entities. Only Nord Pool is validated against a live install; ENTSO-e / Octopus / Amber / TOU are untested \u2014 verify the sensor's attributes after setup. Household baseload is derived from inverter telemetry \u2014 no dedicated load sensor is required.",
+        "data": {
+          "price_source": "Electricity price source / market",
+          "nordpool_entity": "Electricity price sensor (import; leave blank for TOU schedule)",
+          "price_export_entity": "Separate export-price sensor (optional; Octopus Outgoing / Amber feed-in)",
+          "nordpool_resolution": "Nordpool price resolution",
+          "inverter_entity_solar_energy": "Solar energy counter entity (optional, kWh, for chart)",
+          "inverter_entity_pv_power": "PV power sensor (optional, kW)",
+          "inverter_entity_household_consumption_energy": "Household consumption today-total energy counter (optional, kWh, daily-resetting)",
+          "inverter_entity_grid_import_energy": "Grid import energy counter (optional, kWh)",
+          "inverter_entity_grid_export_energy": "Grid export energy counter (optional, kWh)",
+          "bms_battery_soc": "Dedicated BMS battery SoC (optional, e.g. JK-BMS)",
+          "bms_battery_power": "Dedicated BMS battery power (optional, signed kW)",
+          "panel_title": "Sidebar panel name (optional; blank = \"sunSale\")"
+        }
+      },
+      "price_tou": {
+        "title": "Time-of-use Import Prices",
+        "description": "Define the absolute import price for each time-of-use band (local 24h time). Leave a row's start blank to drop it.",
+        "data": {
+          "tou0_start": "Band 1 start (HH:MM, local 24h)",
+          "tou0_price": "Band 1 import price (per kWh)",
+          "tou1_start": "Band 2 start (HH:MM, local 24h)",
+          "tou1_price": "Band 2 import price (per kWh)",
+          "tou2_start": "Band 3 start (HH:MM, local 24h)",
+          "tou2_price": "Band 3 import price (per kWh)",
+          "tou3_start": "Band 4 start (HH:MM, local 24h)",
+          "tou3_price": "Band 4 import price (per kWh)"
+        }
+      }
+    },
+    "error": {
+      "negative_fee": "Distribution fee cannot be negative.",
+      "invalid_band_time": "Band start must be a 24h time like 06:30.",
+      "platform_not_implemented": "That inverter platform isn't supported yet. Selectable: Solis, Huawei, SolaX, Sungrow, GoodWe, Deye. (Fronius, SMA, Kostal and SolarEdge are not wired.)",
+      "invalid_inverter_power": "Inverter rated AC power must be greater than 0.",
+      "invalid_export_limit": "Export limit cannot be negative."
+    }
+  },
+  "entity": {
+    "switch": {
+      "automation_enabled": {
+        "name": "Automation"
+      },
+      "use_standby": {
+        "name": "Use Standby"
+      },
+      "allow_grid_charging": {
+        "name": "Allow Grid Charging"
+      },
+      "allow_feed_in": {
+        "name": "Allow Feed-In"
+      },
+      "allow_discharge_to_grid": {
+        "name": "Allow Discharge to Grid"
+      }
+    },
+    "number": {
+      "mode_change_penalty": {
+        "name": "Mode-Change Penalty"
+      },
+      "profitability_tilt_alpha": {
+        "name": "Profitability Tilt \u03b1"
+      },
+      "terminal_value_discount": {
+        "name": "Terminal-Value Discount"
+      }
+    },
+    "select": {
+      "mode_override": {
+        "name": "Mode Override",
+        "state": {
+          "sunsale": "sunSale (scheduler)",
+          "self_use": "Self-Use",
+          "no_export": "No Export",
+          "stand_by": "Standby",
+          "grid_charge": "Grid Charge",
+          "discharge": "Discharge",
+          "feed_in": "Feed-In"
+        }
+      }
+    }
+  }
+}

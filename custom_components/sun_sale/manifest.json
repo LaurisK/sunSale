@@ -1,0 +1,12 @@
+{
+  "domain": "sun_sale",
+  "name": "sunSale",
+  "version": "0.0.1",
+  "documentation": "https://github.com/LaurisK/sun-sale",
+  "issue_tracker": "https://github.com/LaurisK/sun-sale/issues",
+  "config_flow": true,
+  "iot_class": "local_polling",
+  "codeowners": ["@LaurisK"],
+  "requirements": [],
+  "dependencies": ["panel_custom", "http"]
+}

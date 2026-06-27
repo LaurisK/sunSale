@@ -1,0 +1,43 @@
+<svg xmlns="http://www.w3.org/2000/svg" viewBox="0 0 256 256">
+  <defs>
+    <radialGradient id="bg" cx="50%" cy="45%" r="55%">
+      <stop offset="0%" stop-color="#FFE57F"/>
+      <stop offset="100%" stop-color="#FF8F00"/>
+    </radialGradient>
+    <radialGradient id="glow" cx="50%" cy="50%" r="50%">
+      <stop offset="0%" stop-color="#FFFFFF" stop-opacity="0.4"/>
+      <stop offset="100%" stop-color="#FFFFFF" stop-opacity="0"/>
+    </radialGradient>
+  </defs>
+
+  <!-- Sun rays (8, rotated around centre) -->
+  <g transform="translate(128,128)" fill="#FFC107">
+    <rect x="-7" y="-122" width="14" height="38" rx="7"/>
+    <rect x="-7" y="-122" width="14" height="38" rx="7" transform="rotate(45)"/>
+    <rect x="-7" y="-122" width="14" height="38" rx="7" transform="rotate(90)"/>
+    <rect x="-7" y="-122" width="14" height="38" rx="7" transform="rotate(135)"/>
+    <rect x="-7" y="-122" width="14" height="38" rx="7" transform="rotate(180)"/>
+    <rect x="-7" y="-122" width="14" height="38" rx="7" transform="rotate(225)"/>
+    <rect x="-7" y="-122" width="14" height="38" rx="7" transform="rotate(270)"/>
+    <rect x="-7" y="-122" width="14" height="38" rx="7" transform="rotate(315)"/>
+  </g>
+
+  <!-- Main disc -->
+  <circle cx="128" cy="128" r="92" fill="url(#bg)"/>
+  <circle cx="128" cy="128" r="92" fill="url(#glow)"/>
+
+  <!-- White card / inner panel -->
+  <rect x="68" y="72" width="120" height="112" rx="14" fill="white" fill-opacity="0.93"/>
+
+  <!-- Lightning bolt (energy) -->
+  <path d="M 148 82 L 106 136 H 130 L 112 174 L 154 118 H 130 Z" fill="#FF8F00"/>
+
+  <!-- Green euro badge -->
+  <circle cx="168" cy="168" r="26" fill="#43A047"/>
+  <text x="168" y="177"
+        text-anchor="middle"
+        font-family="Arial Black, Arial, sans-serif"
+        font-size="26"
+        font-weight="900"
+        fill="white">€</text>
+</svg>
