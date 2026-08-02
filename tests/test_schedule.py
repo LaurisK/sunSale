@@ -11,6 +11,7 @@ import pytest
 from custom_components.sun_sale.contract.models import (
     BaseLoadProfile,
     BaseLoadSlot,
+    BatteryConfig,
     DayClass,
     GenerationSeries,
     GenerationSlot,
@@ -23,6 +24,7 @@ from custom_components.sun_sale.inbound.pricing import build_price_series
 from custom_components.sun_sale.pipeline.battery import degradation_cost_per_kwh
 from custom_components.sun_sale.pipeline.calculation import calculate
 from custom_components.sun_sale.pipeline.schedule import optimize_schedule
+from custom_components.sun_sale.pipeline.slot_physics import simulate_slot
 from tests.conftest import (
     BASE_DT,
     default_battery_config,
@@ -725,3 +727,152 @@ def test_profitability_tilt_alpha_zero_collapses_tilt():
         prices, profitability_tilt_alpha=0.0,
     )
     assert [s.mode for s in low.slots] == [s.mode for s in high.slots]
+
+
+# ---------------------------------------------------------------------------
+# Export-cap awareness — the DP reserves headroom for over-cap solar
+# ---------------------------------------------------------------------------
+
+_CAP_KW = 3.0
+
+
+def _export_cap_battery_config() -> BatteryConfig:
+    """20 kWh battery so the night-charge quantum + over-cap solar both fit."""
+    return BatteryConfig(
+        nominal_capacity_kwh=20.0,
+        purchase_price_eur=5000.0,
+        rated_cycle_life=6000,
+        max_charge_power_kw=5.0,
+        max_discharge_power_kw=5.0,
+        min_soc=0.10,
+        max_soc=0.95,
+        round_trip_efficiency=0.90,
+        nominal_voltage_v=48.0,
+    )
+
+
+def _export_cap_prices() -> list:
+    """Cheap night, expensive day, price peak in the evening.
+
+    Calibrated so the store-for-evening value (~0.39 €/kWh net of degradation)
+    sits between the night buy price (~0.11) and the midday sell price (0.425):
+    a cap-blind planner grid-charges the battery full at night and exports all
+    midday solar, while a cap-aware planner must keep headroom for the over-cap
+    part of the midday peak (worth 0.39 vs the 0 it gets from curtailment).
+    """
+    return (
+        [make_price(h, 0.05) for h in range(4)]
+        + [make_price(h, 0.45) for h in range(4, 18)]
+        + [make_price(h, 0.50) for h in range(18, 22)]
+        + [make_price(h, 0.45) for h in (22, 23)]
+    )
+
+
+# Midday PV peak: 6 kW against the 3 kW cap → 3 kWh/h over-cap for two hours.
+_EXPORT_CAP_SOLAR_HOURS = (11, 12)
+
+
+def _run_export_cap_scenario(
+    export_limit_kw: float | None, *, allow_feed_in: bool = True,
+):
+    """Run the shared over-cap-peak scenario; return (schedule, replay inputs)."""
+    bc = _export_cap_battery_config()
+    tc = default_tariff_config()
+    state = default_battery_state(soc=0.10)
+    state.estimated_capacity_kwh = bc.nominal_capacity_kwh
+    deg = degradation_cost_per_kwh(bc, state)
+    prices = _export_cap_prices()
+    solar = [make_solar(h, 6.0) for h in _EXPORT_CAP_SOLAR_HOURS]
+    ps = build_price_series(prices, tc, now=NOW)
+    gen = _make_gen_series(solar)
+    calc = calculate(ps, gen, state, NOW)
+    schedule = optimize_schedule(
+        ps, calc, bc, state, deg, NOW,
+        export_limit_kw=export_limit_kw,
+        allow_feed_in=allow_feed_in,
+    )
+    solar_by_start = {s.start: s.generation_kwh for s in solar}
+    return schedule, ps, solar_by_start, bc, state, deg
+
+
+def _replay_under_cap(schedule, ps, solar_by_start, bc, state, deg, cap_kw):
+    """Re-simulate the schedule's chosen modes under capped slot physics.
+
+    Returns:
+        Tuple of (total curtailed kWh, max non-Discharge export kW).
+    """
+    price_by_start = {p.start: p for p in ps.slots}
+    slot_hours = ps.resolution.total_seconds() / 3600.0
+    soc = state.soc
+    total_curtailed = 0.0
+    max_export_kw = 0.0
+    for s in schedule.slots:
+        p = price_by_start[s.start]
+        out = simulate_slot(
+            soc_in=soc,
+            mode=s.mode,
+            solar_kwh=solar_by_start.get(s.start, 0.0),
+            baseload_kwh=0.0,
+            buy_eur_kwh=p.buy_eur_kwh,
+            sell_eur_kwh=p.sell_eur_kwh,
+            slot_hours=slot_hours,
+            battery_cfg=bc,
+            est_capacity_kwh=state.estimated_capacity_kwh,
+            deg_cost_eur_kwh=deg,
+            export_limit_kw=cap_kw,
+        )
+        total_curtailed += out.curtailed_kwh
+        max_export_kw = max(max_export_kw, out.grid_out_kwh / slot_hours)
+        soc = out.soc_out
+    return total_curtailed, max_export_kw
+
+
+def test_export_cap_reserves_headroom_for_overcap_peak():
+    """A cap-aware plan wastes nothing; a cap-blind plan curtails the peak."""
+    capped, *replay_args = _run_export_cap_scenario(_CAP_KW)
+    curtailed, _ = _replay_under_cap(capped, *replay_args, _CAP_KW)
+    assert curtailed < 1e-6
+
+    # SoC rises across the over-cap window — the battery captures the peak.
+    soc_by_hour = {s.start.hour: s.expected_soc_after for s in capped.slots}
+    first, last = _EXPORT_CAP_SOLAR_HOURS[0], _EXPORT_CAP_SOLAR_HOURS[-1]
+    assert soc_by_hour[last] > soc_by_hour[first - 1]
+
+    # Contrast: the uncapped plan fills the battery early (cheap night grid
+    # charge) and, replayed under the real cap, curtails the over-cap solar.
+    blind, *blind_args = _run_export_cap_scenario(None)
+    blind_curtailed, _ = _replay_under_cap(blind, *blind_args, _CAP_KW)
+    assert blind_curtailed > 1.0
+
+
+def test_export_cap_none_matches_legacy():
+    """export_limit_kw=None reproduces the default (uncapped) schedule exactly."""
+    explicit_none, *_ = _run_export_cap_scenario(None)
+
+    bc = _export_cap_battery_config()
+    tc = default_tariff_config()
+    state = default_battery_state(soc=0.10)
+    state.estimated_capacity_kwh = bc.nominal_capacity_kwh
+    deg = degradation_cost_per_kwh(bc, state)
+    ps = build_price_series(_export_cap_prices(), tc, now=NOW)
+    gen = _make_gen_series([make_solar(h, 6.0) for h in _EXPORT_CAP_SOLAR_HOURS])
+    calc = calculate(ps, gen, state, NOW)
+    default_call = optimize_schedule(ps, calc, bc, state, deg, NOW)
+
+    assert [
+        (s.start, s.mode, s.expected_soc_after) for s in explicit_none.slots
+    ] == [
+        (s.start, s.mode, s.expected_soc_after) for s in default_call.slots
+    ]
+
+
+def test_export_cap_with_feed_in_disabled():
+    """Cap + allow_feed_in=False: no FeedIn, SelfUse exports stay capped."""
+    schedule, *replay_args = _run_export_cap_scenario(
+        _CAP_KW, allow_feed_in=False,
+    )
+    assert len(schedule.slots) == 24
+    assert all(s.mode != StorageMode.FeedIn for s in schedule.slots)
+
+    _, max_export_kw = _replay_under_cap(schedule, *replay_args, _CAP_KW)
+    assert max_export_kw <= _CAP_KW + 1e-9

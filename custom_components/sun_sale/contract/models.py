@@ -170,6 +170,11 @@ class SchedulePolicy:
         ``terminal_value_discount`` — multiplier applied to the in-horizon
             median sell price when valuing end-of-horizon SoC; 0 disables
             terminal valuation entirely.
+        ``export_limit_kw`` — deployment-wide export cap threaded to the DP's
+            slot physics so the planner reserves battery headroom for over-cap
+            solar instead of planning exports the inverter cannot deliver.
+            ``None`` = uncapped (legacy behaviour, and the fallback for a bare
+            ``SchedulePolicy()`` in ``ScheduleNode``).
     """
     use_standby: bool = True
     allow_grid_charging: bool = True
@@ -179,6 +184,7 @@ class SchedulePolicy:
     profitability_tilt_alpha: float = 0.5
     terminal_value_discount: float = 0.5
     max_discharge_to_grid_kw: float | None = None  # None → hardware max
+    export_limit_kw: float | None = None  # None → uncapped
 
 
 @dataclass(frozen=True)

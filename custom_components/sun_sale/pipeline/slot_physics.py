@@ -86,10 +86,10 @@ def simulate_slot(
         battery_cfg: Battery limits (capacity, power, SoC bounds, efficiency).
         est_capacity_kwh: Learned usable capacity in kWh.
         deg_cost_eur_kwh: Per-kWh cycle wear cost from DegradationNode.
-        export_limit_kw: Optional export cap applied to SelfUse/FeedIn exports;
-            ``None`` means uncapped. NoExport never exports; Discharge is
-            uncapped; GridCharge curtails any solar surplus because grid-charge
-            takes the charge bus.
+        export_limit_kw: Optional export cap applied to SelfUse/FeedIn/Discharge
+            exports (the deployment backflow limit the mode specs write);
+            ``None`` means uncapped. NoExport never exports; GridCharge curtails
+            any solar surplus because grid-charge takes the charge bus.
         max_discharge_to_grid_kw: Optional AC-power cap (kW) applied only to the
             Discharge-to-grid mode; ``None`` means uncapped (hardware limit
             from ``battery_cfg.max_discharge_power_kw`` applies). Does not
@@ -111,10 +111,10 @@ def simulate_slot(
     )
 
     # Per-mode export caps mirror storage_mode_specs.build_specs():
-    #   SelfUse / FeedIn                 → caller-supplied cap (inf when not set)
+    #   SelfUse / FeedIn / Discharge     → caller-supplied cap (inf when not set);
+    #                                      Discharge additionally rate-caps the
+    #                                      battery leg via max_discharge_to_grid_kw
     #   NoExport / StandBy / GridCharge  → 0 (export disabled by the spec)
-    #   Discharge                        → sim caps only via max_discharge_to_grid_kw;
-    #                                      the spec writes the deployment export cap
     if mode == StorageMode.StandBy:
         # Hold: charge from surplus allowed, discharge barred, export disabled.
         flows = _simulate_self_use(
@@ -147,7 +147,7 @@ def simulate_slot(
             effective_discharge_storage_kwh = max_discharge_storage_kwh
         flows = _simulate_discharge(
             solar_kwh, baseload_kwh, drawdown_storage_kwh,
-            effective_discharge_storage_kwh, eff,
+            effective_discharge_storage_kwh, eff, export_cap_kwh,
         )
     elif mode == StorageMode.FeedIn:
         flows = _simulate_feed_in(
@@ -334,14 +334,18 @@ def _simulate_discharge(
     drawdown_storage_kwh: float,
     max_discharge_storage_kwh: float,
     eff: float,
+    export_cap_kwh: float,
 ) -> _Flows:
-    """Discharge: force battery discharge (uncapped export); solar exports too.
+    """Discharge: force battery discharge; total export capped like the hardware.
 
-    Battery discharges at the maximum rate (clamped by storage drawdown
-    available). All AC produced (battery + solar) serves baseload first;
-    the remainder exports unconditionally — Discharge has no export cap
-    and runs even when the sell price is negative. The scheduler must not
-    pick Discharge under negative prices.
+    Solar covers baseload first, then exports up to the cap (solar beyond the
+    cap curtails — the inverter throttles PV to hold the backflow limit). The
+    battery covers any remaining baseload deficit and discharges into whatever
+    export budget the solar left, at most at the maximum rate (clamped by
+    storage drawdown available) — mirroring the hardware, where the RC
+    discharge setpoint runs under the same deployment backflow limit the mode
+    spec writes. Export still occurs even when the sell price is negative; the
+    scheduler must not pick Discharge under negative prices.
 
     Args:
         solar_kwh: Expected solar generation for the slot.
@@ -350,25 +354,34 @@ def _simulate_discharge(
         max_discharge_storage_kwh: Max storage drain this slot
             (=max_discharge_kwh / eff).
         eff: Round-trip efficiency applied on the discharge leg.
+        export_cap_kwh: Export cap in kWh (``inf`` when uncapped).
 
     Returns:
         _Flows for the slot.
     """
-    storage_drained = min(drawdown_storage_kwh, max_discharge_storage_kwh)
-    batt_discharge_ac = storage_drained * eff
+    baseload_from_solar = min(solar_kwh, baseload_kwh)
+    baseload_deficit = baseload_kwh - baseload_from_solar
+    solar_surplus = solar_kwh - baseload_from_solar
 
-    ac_available = batt_discharge_ac + solar_kwh
-    baseload_covered = min(baseload_kwh, ac_available)
-    ac_after_load = ac_available - baseload_covered
-    grid_in = max(0.0, baseload_kwh - baseload_covered)
-    grid_out = ac_after_load
+    solar_export, curtailed = _export_or_curtail(solar_surplus, export_cap_kwh)
+
+    # Battery serves the load deficit first, then exports into the budget the
+    # solar left. Drain only what load + export can absorb — the backflow
+    # limit throttles the discharge itself, not just the export.
+    batt_ac_max = min(drawdown_storage_kwh, max_discharge_storage_kwh) * eff
+    batt_for_load = min(baseload_deficit, batt_ac_max)
+    grid_in = baseload_deficit - batt_for_load
+    batt_for_export = min(
+        batt_ac_max - batt_for_load, export_cap_kwh - solar_export,
+    )
+    batt_discharge_ac = batt_for_load + batt_for_export
 
     return _Flows(
         grid_in=grid_in,
-        grid_out=grid_out,
+        grid_out=solar_export + batt_for_export,
         batt_charge=0.0,
         batt_discharge=batt_discharge_ac,
-        curtailed=0.0,
+        curtailed=curtailed,
     )
 
 

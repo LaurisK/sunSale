@@ -355,6 +355,12 @@ class InverterController:
         readback already matches the target. This makes consecutive calls
         with the same mode free of side effects.
 
+        Every step goes through :class:`..outbound.entity_control.EntityActuator`,
+        which clamps a number target into the entity's advertised range and
+        logs (rather than raises) a failed service call — so a single rejected
+        register can no longer skip the writes that follow it, the RC
+        engage/release block in particular.
+
         On non-Solis platforms this is currently a no-op pending a
         platform-specific implementation; the call is logged so observability
         is not lost.
@@ -538,11 +544,10 @@ class InverterController:
                 "target_bit=%s service=switch.%s entity=%s force=%s",
                 bit, role, current_bit, target_bit, service, entity_id, force,
             )
-            await self._hass.services.async_call(
-                "switch", service,
-                {"entity_id": entity_id},
-                blocking=True,
-            )
+            # Routed through the actuator (force=True — the bit comparison
+            # above already decided) so a rejected toggle is logged instead of
+            # aborting the remaining bits and the RC block that follows.
+            await self._actuator.set_switch(role, bool(target_bit), force=True)
 
     async def _set_number(
         self,

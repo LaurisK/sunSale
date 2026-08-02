@@ -36,6 +36,21 @@ Three rules govern dispatch in `InverterControlModule.tick`:
   dispatcher only writes the current schedule slot's mode while the switch is on; with it off,
   the module is observer-only.
 
+**A mode is a sequence of writes, and no single one may abort it.** Every write in `apply_mode`
+goes through `EntityActuator` (`outbound/entity_control.py`), which owns two guarantees the
+sequence depends on. First, a `number` target is **clamped into the entity's advertised
+`min`/`max`** before the readback comparison — the integration on the other side owns those
+bounds and changes them under us (solis_modbus 4.2.0 began enforcing the declared 0–200 A on
+registers 43117/43118), and HA rejects an out-of-range `number.set_value` before the integration
+ever sees it. Clamping *before* the comparison also keeps the write idempotent: an unclamped
+target could never match the clamped readback, so every cycle would re-issue a doomed write. A
+clamp logs a warning — it means the hardware will not deliver what the planner priced in, so the
+configured battery/inverter limits need reconciling with the entity bounds. Second, a service
+call that raises is **logged, not propagated**: the writes that matter most come last (the RC
+engage/release block), and letting one rejected register skip them leaves the inverter
+half-configured — or, on a non-RC mode, leaves a stale forced discharge running. The verify loop
+below is the designed detector for a write that did not take.
+
 **Direct dispatch on button press.** Selecting an option in `select.sunsale_mode_override` does
 *not* trigger a full coordinator refresh — that would re-run 14 translators, 16 DAG nodes, and a
 dozen store saves just to reach the dispatcher. Instead `async_select_option` calls

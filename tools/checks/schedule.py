@@ -20,6 +20,7 @@ class ScheduleCheckResult:
     slot_count: int = 0
     total_expected_profit_eur: float = 0.0
     computed_profit_sum: float = 0.0
+    export_limit_kw: float | None = None
     slot_rows: list[dict] = field(default_factory=list)
     mismatches: list[str] = field(default_factory=list)
     overall_ok: bool = True
@@ -45,6 +46,12 @@ def check_schedule(snap: Snapshot) -> ScheduleCheckResult:
     slots = schedule.get("slots") or []
     result.slot_count = len(slots)
     result.total_expected_profit_eur = schedule.get("total_expected_profit_eur") or 0.0
+
+    policy = snap.pipeline.get("schedule_policy") or {}
+    result.export_limit_kw = policy.get("export_limit_kw")
+    if result.export_limit_kw is not None and result.export_limit_kw < 0:
+        result.mismatches.append("export_limit_kw")
+        result.overall_ok = False
 
     now = datetime.now(UTC)
     last_dt: datetime | None = None
@@ -225,9 +232,13 @@ class ScheduleCheckWidget(Static):
         mark = "✓" if sc.overall_ok else "✗"
         status = "PASS" if sc.overall_ok else "FAIL"
         profit_str = f"{sc.total_expected_profit_eur:+.4f}"
+        cap_str = (
+            f"  cap={sc.export_limit_kw:g}kW"
+            if sc.export_limit_kw is not None else ""
+        )
         title = (
             f"[{color}]{mark}[/{color}]  schedule_check   [{color}]{status}[/{color}]"
-            f"   {sc.slot_count} slots  profit={profit_str}€"
+            f"   {sc.slot_count} slots  profit={profit_str}€{cap_str}"
         )
 
         with Collapsible(title=title, collapsed=True):

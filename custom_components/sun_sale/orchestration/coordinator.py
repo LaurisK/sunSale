@@ -972,6 +972,7 @@ class SunSaleCoordinator(DataUpdateCoordinator):
             profitability_tilt_alpha=self.profitability_tilt_alpha,
             terminal_value_discount=self.terminal_value_discount,
             max_discharge_to_grid_kw=self.max_discharge_to_grid_kw,
+            export_limit_kw=self._export_limit_w / 1000.0,
         )
 
     @contextmanager

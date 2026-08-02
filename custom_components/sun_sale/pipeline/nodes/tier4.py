@@ -85,6 +85,7 @@ class ScheduleNode(DagNode):
             profitability_tilt_alpha=policy.profitability_tilt_alpha,
             terminal_value_discount=policy.terminal_value_discount,
             max_discharge_to_grid_kw=policy.max_discharge_to_grid_kw,
+            export_limit_kw=policy.export_limit_kw,
         )
 
         return schedule

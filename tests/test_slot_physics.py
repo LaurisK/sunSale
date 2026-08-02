@@ -316,11 +316,41 @@ def test_dump_at_min_soc_exports_solar_only():
 
 
 def test_dump_exports_even_at_negative_sell_price():
-    """Discharge is uncapped — runs even at negative prices. Reward is negative."""
+    """Discharge is price-blind — runs even at negative prices. Reward is negative."""
     out = _sim(mode=StorageMode.Discharge, solar_kwh=0.0, baseload_kwh=0.0, sell_eur_kwh=-0.10)
     assert out.grid_out_kwh == pytest.approx(3.6)
     assert out.curtailed_kwh == 0.0
     assert out.reward_eur < 0    # paying to export
+
+
+def test_dump_export_cap_throttles_battery_discharge():
+    """Discharge under the cap drains only what load + export can absorb."""
+    out = _sim(
+        mode=StorageMode.Discharge,
+        solar_kwh=0.0,
+        baseload_kwh=0.5,
+        soc_in=0.50,
+        export_limit_kw=2.0,    # 2 kWh cap
+    )
+    # Battery covers baseload 0.5 plus the 2.0 export budget — not the full
+    # 3.6 AC it could deliver uncapped.
+    assert out.grid_out_kwh == pytest.approx(2.0)
+    assert out.batt_discharge_kwh == pytest.approx(2.5)
+    assert out.curtailed_kwh == 0.0
+
+
+def test_dump_solar_over_cap_curtails_and_blocks_battery_export():
+    """Over-cap solar fills the export budget; excess curtails, battery holds."""
+    out = _sim(
+        mode=StorageMode.Discharge,
+        solar_kwh=6.0,
+        baseload_kwh=0.0,
+        soc_in=0.50,
+        export_limit_kw=3.0,    # 3 kWh cap
+    )
+    assert out.grid_out_kwh == pytest.approx(3.0)
+    assert out.curtailed_kwh == pytest.approx(3.0)
+    assert out.batt_discharge_kwh == 0.0
 
 
 # ---------------------------------------------------------------------------

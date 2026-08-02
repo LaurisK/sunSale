@@ -13,6 +13,7 @@ from ..contract.const import (
     CONF_SOLAR_FORECAST_DEVICE_IDS,
     CONF_SOLAR_FORECAST_ENTITY,
     CONF_SOLAR_FORECAST_ENTITY_2,
+    DEFAULT_EXPORT_LIMIT_W,
     DOMAIN,
 )
 
@@ -478,6 +479,10 @@ def _coordinator_to_dict(entry_id: str, coordinator: Any) -> dict:
                     float(coordinator.terminal_value_discount), 4,
                 ),
                 "max_discharge_to_grid_kw": coordinator.max_discharge_to_grid_kw,
+                "export_limit_kw": (
+                    getattr(coordinator, "_export_limit_w", DEFAULT_EXPORT_LIMIT_W)
+                    / 1000.0
+                ),
             },
         },
         "outputs": {

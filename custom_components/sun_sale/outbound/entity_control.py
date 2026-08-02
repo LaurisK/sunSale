@@ -215,6 +215,9 @@ class EntityActuator:
         self._hass = hass
         self._entity_ids = dict(entity_ids)
         self._log_prefix = log_prefix
+        # role → last raw target that was warned about, so a clamp that recurs
+        # every force-write cycle logs once rather than on every dispatch.
+        self._clamp_warned: dict[str, float] = {}
 
     # --- Reads ---------------------------------------------------------- #
 
@@ -292,6 +295,10 @@ class EntityActuator:
                 self._log_prefix, role, target_value, force,
             )
             return
+        # Clamp *before* the readback comparison: an out-of-range target would
+        # otherwise never match the (clamped) readback, so every cycle would
+        # re-issue a write HA is going to reject anyway.
+        target_value = self._clamp_to_entity_range(role, entity_id, target_value)
         current = self.read_float(role)
         if (
             not force
@@ -307,11 +314,95 @@ class EntityActuator:
             "%s: number(%s) write — cached=%s target=%g entity=%s force=%s",
             self._log_prefix, role, current, target_value, entity_id, force,
         )
-        await self._hass.services.async_call(
+        await self._call_service(
             "number", "set_value",
             {"entity_id": entity_id, "value": float(target_value)},
-            blocking=True,
+            what=f"number({role})",
         )
+
+    def _clamp_to_entity_range(
+        self, role: str, entity_id: str, target_value: float
+    ) -> float:
+        """Clamp a number target into the entity's advertised ``min``/``max``.
+
+        Home Assistant's ``number.set_value`` handler rejects an out-of-range
+        value with ``ServiceValidationError`` *before* the integration ever sees
+        it, and that exception would abort the rest of the calling write
+        sequence (on Solis: the export limit and the whole RC engage/release
+        block). Integrations also change these bounds under us — solis_modbus
+        v4.2.0 started honouring the declared 0–200 A ceiling on registers
+        43117/43118 that its inverter-rating derivation had been discarding —
+        so the ceiling is treated as authoritative rather than trusted to match
+        the configured battery limits.
+
+        Args:
+            role: Role key, for logging.
+            entity_id: Resolved target entity id.
+            target_value: Desired value in the entity's own unit.
+
+        Returns:
+            ``target_value`` clamped to ``[min, max]``, or unchanged when the
+            entity is missing from the state machine or advertises no usable
+            bounds.
+        """
+        state = self._hass.states.get(entity_id)
+        if state is None:
+            return target_value
+        clamped = target_value
+        try:
+            low = state.attributes.get("min")
+            if low is not None:
+                clamped = max(clamped, float(low))
+            high = state.attributes.get("max")
+            if high is not None:
+                clamped = min(clamped, float(high))
+        except (TypeError, ValueError):
+            return target_value
+        if clamped == target_value:
+            self._clamp_warned.pop(role, None)
+            return target_value
+        if self._clamp_warned.get(role) != target_value:
+            self._clamp_warned[role] = target_value
+            _LOGGER.warning(
+                "%s: number(%s) target %g is outside %s's advertised range "
+                "[%s, %s] — clamping to %g. The hardware will not deliver what "
+                "the planner assumed; check the configured battery/inverter "
+                "limits against the integration's entity bounds.",
+                self._log_prefix, role, target_value, entity_id,
+                state.attributes.get("min"), state.attributes.get("max"), clamped,
+            )
+        return clamped
+
+    async def _call_service(
+        self, domain: str, service: str, data: dict[str, Any], what: str
+    ) -> None:
+        """Issue one blocking service call, logging (not raising) on failure.
+
+        A mode is realised as a *sequence* of writes, and the ones that matter
+        most tend to come last (the Solis RC engage/release block). Letting a
+        single rejected write raise would skip every later write — leaving the
+        inverter half-configured, and in the RC case leaving a stale forced
+        discharge running. The verify loop in ``inverter_control_module`` is the
+        designed detector for a write that did not take: it compares the
+        control surface and raises a ``mismatch`` badge.
+
+        Args:
+            domain: Service domain (``number`` / ``select`` / ``switch`` / …).
+            service: Service name.
+            data: Service payload, including the resolved target entity id.
+            what: Short description of the write, for the error log.
+        """
+        try:
+            await self._hass.services.async_call(
+                domain, service, data, blocking=True,
+            )
+        except Exception:  # noqa: BLE001 — one bad write must not abort the sequence
+            _LOGGER.error(
+                "%s: %s — %s.%s(%s) failed; continuing with the remaining "
+                "writes (the verify loop will flag the mismatch)",
+                self._log_prefix, what, domain, service, data,
+                exc_info=True,
+            )
 
     async def set_select(self, role: str, option: str, force: bool = False) -> None:
         """Select an option on a ``select`` entity only when its state differs.
@@ -340,10 +431,10 @@ class EntityActuator:
             "%s: select(%s) write — current=%s target=%s entity=%s force=%s",
             self._log_prefix, role, current, option, entity_id, force,
         )
-        await self._hass.services.async_call(
+        await self._call_service(
             "select", "select_option",
             {"entity_id": entity_id, "option": option},
-            blocking=True,
+            what=f"select({role})",
         )
 
     async def set_switch(self, role: str, want_on: bool, force: bool = False) -> None:
@@ -369,10 +460,10 @@ class EntityActuator:
                 self._log_prefix, role, want, entity_id,
             )
             return
-        await self._hass.services.async_call(
+        await self._call_service(
             "switch", "turn_on" if want_on else "turn_off",
             {"entity_id": entity_id},
-            blocking=True,
+            what=f"switch({role})",
         )
 
     async def call_service(self, action: ServiceWrite) -> None:
@@ -392,8 +483,9 @@ class EntityActuator:
                 )
                 return
             data[action.target_key] = entity_id
-        await self._hass.services.async_call(
-            action.domain, action.service, data, blocking=True,
+        await self._call_service(
+            action.domain, action.service, data,
+            what=f"service({action.domain}.{action.service})",
         )
 
 

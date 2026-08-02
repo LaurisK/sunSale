@@ -63,9 +63,13 @@ def make_battery_config(
 class _State:
     """Minimal HA state stub with .state and .attributes."""
 
-    def __init__(self, value: str, unit: str | None = None) -> None:
+    def __init__(
+        self, value: str, unit: str | None = None, **attributes: object
+    ) -> None:
         self.state = value
-        self.attributes = {"unit_of_measurement": unit} if unit is not None else {}
+        self.attributes: dict = dict(attributes)
+        if unit is not None:
+            self.attributes["unit_of_measurement"] = unit
 
 
 class _Hass:
@@ -612,3 +616,108 @@ def test_get_grid_power_assumes_kw_when_unit_missing():
     state_map = {SOLIS_ENTITY_IDS["grid_power"]: _State("3.92", None)}
     controller, _ = make_controller(state_map=state_map)
     assert controller.get_grid_power() == pytest.approx(3.92)
+
+
+# ---------------------------------------------------------------------------
+# Entity-range clamping and per-write failure isolation
+#
+# solis_modbus v4.2.0 (commit f764e33) made a declared "max" win over its
+# inverter-rating derivation, so registers 43117/43118 now really do advertise
+# 0-200 A. A 15 kW / 51.2 V battery config asks for 292.97 A; before these
+# tests' behaviour existed HA rejected the call and the exception skipped every
+# later write in apply_mode — the RC engage/release block included.
+# ---------------------------------------------------------------------------
+
+
+def _bounded_battery_specs():
+    """Spec table for a 15 kW / 51.2 V battery — currents land at 292.97 A."""
+    return build_specs(
+        make_battery_config(
+            nominal_voltage_v=51.2, max_charge_kw=15.0, max_discharge_kw=15.0
+        ),
+        export_max_w=10_000,
+        inverter_max_power_w=9_500,
+    )
+
+
+def _current_bounded_state_map(reg_43110: str) -> dict[str, _State]:
+    """State map whose current entities advertise solis_modbus's 0-200 A range."""
+    return {
+        SOLIS_ENTITY_IDS["storage_control_readback"]: _State(reg_43110),
+        SOLIS_ENTITY_IDS["battery_max_charge_current"]: _State("0.0", min=0, max=200),
+        SOLIS_ENTITY_IDS["battery_max_discharge_current"]: _State(
+            "290.0", min=0, max=200
+        ),
+        SOLIS_ENTITY_IDS["rc_grid_adjustment_select"]: _State("OFF"),
+    }
+
+
+@pytest.mark.asyncio
+async def test_apply_mode_clamps_currents_to_the_entity_range():
+    spec = _bounded_battery_specs()[StorageMode.SelfUse]
+    assert spec.charge_a == pytest.approx(292.96875)  # what the config asks for
+    controller, hass = make_controller(state_map=_current_bounded_state_map("1"))
+    await controller.apply_mode(StorageMode.SelfUse, spec, force=True)
+
+    writes = _numbers_written(hass)
+    assert writes[SOLIS_ENTITY_IDS["battery_max_charge_current"]] == 200.0
+    assert writes[SOLIS_ENTITY_IDS["battery_max_discharge_current"]] == 200.0
+
+
+@pytest.mark.asyncio
+async def test_apply_mode_reaches_the_rc_block_with_out_of_range_currents():
+    # The regression itself: Discharge is realised by the RC setpoint, which
+    # sits *after* the currents in apply_mode's write order.
+    spec = _bounded_battery_specs()[StorageMode.Discharge]
+    controller, hass = make_controller(state_map=_current_bounded_state_map("64"))
+    await controller.apply_mode(StorageMode.Discharge, spec, force=True)
+
+    assert (
+        _selects_written(hass)[SOLIS_ENTITY_IDS["rc_grid_adjustment_select"]]
+        == "Inverter AC Grid Port"
+    )
+    writes = _numbers_written(hass)
+    assert writes[SOLIS_ENTITY_IDS["rc_setpoint"]] == 9500.0
+    assert writes[SOLIS_ENTITY_IDS["backflow_power"]] == 10_000.0
+
+
+@pytest.mark.asyncio
+async def test_apply_mode_releases_rc_when_a_current_write_is_rejected():
+    # Any later-rejected write (a bound sunSale cannot see, a Modbus timeout)
+    # must not strand an engaged RC function on a non-RC mode.
+    spec = _bounded_battery_specs()[StorageMode.SelfUse]
+    state_map = _current_bounded_state_map("1")
+    state_map[SOLIS_ENTITY_IDS["rc_grid_adjustment_select"]] = _State(
+        "Inverter AC Grid Port"
+    )
+    controller, hass = make_controller(state_map=state_map)
+
+    def _reject_charge_current(domain, service, data, **kwargs):
+        if data.get("entity_id") == SOLIS_ENTITY_IDS["battery_max_charge_current"]:
+            raise RuntimeError("Value 292.96875 is outside valid range 0 - 200")
+
+    hass.services.async_call.side_effect = _reject_charge_current
+    await controller.apply_mode(StorageMode.SelfUse, spec, force=True)
+
+    assert _numbers_written(hass)[SOLIS_ENTITY_IDS["rc_setpoint"]] == 0.0
+    assert _selects_written(hass)[SOLIS_ENTITY_IDS["rc_grid_adjustment_select"]] == "OFF"
+
+
+@pytest.mark.asyncio
+async def test_apply_mode_continues_past_a_rejected_bit_switch():
+    # 43110 bits are written first — a rejected toggle must not skip the
+    # remaining bits or the writes that follow them.
+    spec = _bounded_battery_specs()[StorageMode.Discharge]
+    controller, hass = make_controller(state_map=_current_bounded_state_map("1"))
+
+    def _reject_self_use_switch(domain, service, data, **kwargs):
+        if data.get("entity_id") == SOLIS_ENTITY_IDS["self_use_switch"]:
+            raise RuntimeError("modbus write failed")
+
+    hass.services.async_call.side_effect = _reject_self_use_switch
+    await controller.apply_mode(StorageMode.Discharge, spec, force=True)
+
+    toggled = _switches_toggled(hass)
+    assert toggled[SOLIS_ENTITY_IDS["self_use_switch"]] == "turn_off"    # attempted
+    assert toggled[SOLIS_ENTITY_IDS["feed_in_priority_switch"]] == "turn_on"
+    assert _numbers_written(hass)[SOLIS_ENTITY_IDS["rc_setpoint"]] == 9500.0

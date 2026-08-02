@@ -159,6 +159,7 @@ class ScheduleKnobs:
     profitability_tilt_alpha: float
     terminal_value_discount: float
     max_discharge_to_grid_kw: float | None
+    export_limit_kw: float | None = None
 
 
 class CycleStep:
@@ -632,4 +633,7 @@ class SchedulePolicyStep(CycleStep):
                 if k.max_discharge_to_grid_kw is not None
                 else None
             ),
+            # Deployment config from the config flow, not a user-set entity
+            # knob — passed through unclamped.
+            export_limit_kw=k.export_limit_kw,
         )

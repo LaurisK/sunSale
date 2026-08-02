@@ -377,9 +377,27 @@ def test_schedule_policy_clamps_out_of_range_knobs():
     pol = primary[SchedulePolicy]
     assert pol.use_standby is True
     assert pol.max_discharge_to_grid_kw is None
+    # Knobs default export_limit_kw to None → policy stays uncapped.
+    assert pol.export_limit_kw is None
     # Clamped values differ from the wild inputs (exact bounds live in const).
     assert pol.mode_change_penalty_eur_per_kwh != 999.0
     assert pol.profitability_tilt_alpha != -999.0
+
+
+def test_schedule_policy_passes_export_limit_unclamped():
+    """seed forwards export_limit_kw as-is — deployment config, not a knob."""
+    knobs = ScheduleKnobs(
+        use_standby=True, allow_grid_charging=True, allow_feed_in=True,
+        allow_discharge_to_grid=True,
+        mode_change_penalty_eur_per_kwh=0.005,
+        profitability_tilt_alpha=0.5,
+        terminal_value_discount=0.5,
+        max_discharge_to_grid_kw=None,
+        export_limit_kw=8.0,
+    )
+    primary = {}
+    SchedulePolicyStep(lambda: knobs).seed(primary, _NOW, CycleScratch())
+    assert primary[SchedulePolicy].export_limit_kw == 8.0
 
 
 def _battery_reading() -> BatteryReading:
