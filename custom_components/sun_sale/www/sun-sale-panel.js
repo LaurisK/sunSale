@@ -199,6 +199,10 @@
           #battery .state.discharging { color: #ff7043; }
           #battery .state.idle        { color: #9e9e9e; }
           #battery .soc { font-weight: 600; }
+          #battery .soc-max {
+            font-size: 0.75rem;
+            color: var(--secondary-text-color, #888);
+          }
           #battery .capacity {
             font-size: 0.75rem;
             color: var(--secondary-text-color, #888);
@@ -712,14 +716,29 @@
       if (!el) return;
       if (!dashAttrs) { el.innerHTML = ''; return; }
 
-      const state    = dashAttrs.battery_state || 'idle';
-      const soc      = dashAttrs.battery_soc_pct;
-      const charged  = dashAttrs.battery_remaining_kwh;
+      // SoC and state are read live from the raw inverter sensors (every HA state
+      // push) rather than the ~5-min coordinator snapshot in dashAttrs, so the row
+      // tracks the actual battery in real time. Both fall back to the last
+      // coordinator cycle when the live sensors are missing/unavailable.
+      const liveSoc  = this._liveSocPct(dashAttrs);
+      const soc      = (liveSoc != null) ? liveSoc : dashAttrs.battery_soc_pct;
+      const battKw   = this._liveBatteryKw(dashAttrs);
+      const state    = (battKw != null)
+        ? (Math.abs(battKw) < 0.05 ? 'idle' : (battKw > 0 ? 'charging' : 'discharging'))
+        : (dashAttrs.battery_state || 'idle');
+
+      // Remaining kWh tracks the live SoC against the learned usable capacity.
       const capacity = dashAttrs.battery_capacity_kwh;      // learned (estimated) usable capacity
       const setCap   = dashAttrs.battery_set_capacity_kwh;  // configured nameplate ("set")
+      const charged  = (typeof soc === 'number' && typeof capacity === 'number')
+        ? (soc / 100) * capacity
+        : dashAttrs.battery_remaining_kwh;
+
+      const maxSoc   = this._maxSocToday(dashAttrs, soc);
 
       const stateLabel = state.charAt(0).toUpperCase() + state.slice(1);
       const socTxt = (typeof soc === 'number') ? soc.toFixed(1) + '%' : '—';
+      const maxTxt = (typeof maxSoc === 'number') ? `max today ~${maxSoc.toFixed(0)}%` : '';
       const capTxt = (typeof charged === 'number' && typeof capacity === 'number')
         ? `${charged.toFixed(2)} / ${capacity.toFixed(2)} kWh`
         : '';
@@ -729,9 +748,70 @@
         <span class="label">Battery:</span>
         <span class="state ${state}">${stateLabel}</span>
         <span class="soc">${socTxt}</span>
+        ${maxTxt ? `<span class="soc-max" title="Estimated peak state-of-charge for today, from the scheduler plan">${maxTxt}</span>` : ''}
         ${capTxt ? `<span class="capacity" title="Remaining / learned (estimated) usable capacity">${capTxt}</span>` : ''}
         ${setTxt ? `<span class="capacity-set" title="Configured nameplate (set) capacity">${setTxt}</span>` : ''}
       `;
+    }
+
+    // Read a single live inverter leg (kW) from dashAttrs.live_flow_sources: the
+    // server pre-folds the unit→kW scale and sunSale sign convention into each
+    // {entity_id, scale, sign, clamp_min?} spec, so evaluating value*scale*sign
+    // yields the same figure the coordinator would. Returns null when the spec is
+    // unmapped or the sensor is missing/unavailable/non-numeric.
+    _readLiveLeg(spec) {
+      const states = this._hass?.states;
+      if (!spec || !spec.entity_id || !states) return null;
+      const st = states[spec.entity_id];
+      if (!st) return null;
+      const raw = st.state;
+      if (raw == null || raw === 'unavailable' || raw === 'unknown' || raw === '') return null;
+      const v = parseFloat(raw);
+      if (!Number.isFinite(v)) return null;
+      let kw = v * (Number(spec.scale) || 0) * (Number(spec.sign) || 0);
+      if (typeof spec.clamp_min === 'number') kw = Math.max(spec.clamp_min, kw);
+      return kw;
+    }
+
+    // Live battery power (kW, + charging / − discharging) from the raw sensor, or
+    // null when unavailable.
+    _liveBatteryKw(dashAttrs) {
+      const src = dashAttrs?.live_flow_sources;
+      return src ? this._readLiveLeg(src.battery) : null;
+    }
+
+    // Live battery SoC (%) read straight from the mapped SoC sensor, falling back
+    // to the coordinator snapshot's battery_soc_pct when it can't be read.
+    _liveSocPct(dashAttrs) {
+      const eid    = dashAttrs?.battery_soc_entity_id;
+      const states = this._hass?.states;
+      if (eid && states) {
+        const raw = states[eid]?.state;
+        if (raw != null && raw !== 'unavailable' && raw !== 'unknown' && raw !== '') {
+          const v = parseFloat(raw);
+          if (Number.isFinite(v)) return v;
+        }
+      }
+      return (typeof dashAttrs?.battery_soc_pct === 'number') ? dashAttrs.battery_soc_pct : null;
+    }
+
+    // Estimated peak SoC (%) for the rest of today from the scheduler plan: the
+    // max of the current SoC and every plan slot's expected_soc_after (a 0–1
+    // fraction) whose slot starts before local midnight. Returns null when the
+    // plan carries no usable point.
+    _maxSocToday(dashAttrs, currentSocPct) {
+      const plan = Array.isArray(dashAttrs?.inverter_mode_plan)
+        ? dashAttrs.inverter_mode_plan : [];
+      const endOfToday = new Date();
+      endOfToday.setHours(23, 59, 59, 999);
+      const endMs = endOfToday.getTime();
+      let max = (typeof currentSocPct === 'number') ? currentSocPct : null;
+      for (const slot of plan) {
+        if (slot.expected_soc_after == null || slot.t > endMs) continue;
+        const pct = slot.expected_soc_after * 100;
+        if (max == null || pct > max) max = pct;
+      }
+      return max;
     }
 
     _renderGenerationRow(dashAttrs) {

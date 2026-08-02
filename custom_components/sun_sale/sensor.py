@@ -781,7 +781,12 @@ class DashboardSensor(_BaseSensor):
             "battery_power_kw": round(power_kw, 3) if power_kw is not None else None,
             "battery_state": battery_state,
             "solar_energy_entity_id": config.get(CONF_INVERTER_ENTITY_SOLAR_ENERGY, ""),
-            "battery_soc_entity_id": config.get(CONF_INVERTER_ENTITY_BATTERY_SOC, ""),
+            # Resolved role ID, not raw config: platform auto-detect (e.g. Solis)
+            # never writes CONF_INVERTER_ENTITY_BATTERY_SOC back into the config
+            # entry, so config.get() here would always be empty for those installs.
+            "battery_soc_entity_id": self.coordinator._inverter_entity_ids.get(  # noqa: SLF001
+                "battery_soc", "",
+            ) or config.get(CONF_INVERTER_ENTITY_BATTERY_SOC, ""),
             "forecast_quality": forecast_quality_data,
             "forecast_daily_kwh": forecast_daily_kwh,
             "actual_yesterday_kwh": round(observed.total_yesterday_kwh, 3) if observed else None,
