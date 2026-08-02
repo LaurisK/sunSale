@@ -22,7 +22,7 @@ jobs:
       - name: Build integration zip
         run: |
           cd custom_components/sun_sale
-          zip -r "$GITHUB_WORKSPACE/sun_sale.zip" . -x '*.pyc' -x '*/__pycache__/*'
+          zip -r "$GITHUB_WORKSPACE/sun_sale.zip" . -x '*.pyc' -x '*__pycache__*'
 
       - name: Create GitHub release
         uses: softprops/action-gh-release@v2
