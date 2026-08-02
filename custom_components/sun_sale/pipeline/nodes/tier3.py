@@ -13,6 +13,7 @@ from ...contract.models import (
     ForecastAccuracyResult,
     ForecastQualityStore,
     GenerationSeries,
+    InverterModeHistory,
     MonthlyBillResult,
     MonthlyBillState,
     ObservedGenerationSeries,
@@ -29,8 +30,9 @@ class ForecastAccuracyNode(DagNode):
 
     Combines per-cycle slot alignment (MAE/bias/MAPE) with persistent EMA
     quality tracking across three bucket groups (intensity, solar-day position,
-    forecast horizon). ForecastQualityStore and SunTimes come from primary and
-    are NOT listed in consumes to avoid self-referential DAG wiring.
+    forecast horizon). ForecastQualityStore, SunTimes and InverterModeHistory
+    come from primary and are NOT listed in consumes to avoid self-referential
+    DAG wiring (InverterModeHistory is updated downstream in the same cycle).
     """
 
     output_type = ForecastAccuracyResult
@@ -45,6 +47,7 @@ class ForecastAccuracyNode(DagNode):
             sun_times=ctx.get(SunTimes),
             local_tz=ctx.config.local_tz,
             now=ctx.now,
+            mode_history=ctx.get(InverterModeHistory),
         )
         return result
 

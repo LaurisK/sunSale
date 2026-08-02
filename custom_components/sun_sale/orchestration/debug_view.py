@@ -345,6 +345,7 @@ def _coordinator_to_dict(entry_id: str, coordinator: Any) -> dict:
                 "slot_count": len(forecast_err.slots),
                 "total_forecast_kwh": round(forecast_err.total_forecast_kwh, 4),
                 "total_observed_kwh": round(forecast_err.total_observed_kwh, 4),
+                "censored_slot_count": sum(1 for s in forecast_err.slots if s.censored),
                 "total_error_kwh": round(forecast_err.total_error_kwh, 4),
                 "mean_absolute_error_kwh": round(forecast_err.mean_absolute_error_kwh, 4),
                 "bias_kwh": round(forecast_err.bias_kwh, 4),
@@ -362,6 +363,7 @@ def _coordinator_to_dict(entry_id: str, coordinator: Any) -> dict:
                         "relative_error": (
                             round(s.relative_error, 4) if s.relative_error is not None else None
                         ),
+                        "censored": s.censored,
                     }
                     for s in forecast_err.slots
                 ],

@@ -361,6 +361,13 @@ class ForecastErrorSlot:
     it over-predicted. `relative_error` is `error_kwh / forecast_kwh` when
     the forecast is non-zero; None when the forecast was zero (relative error
     is undefined and would otherwise blow up the series-level MAPE).
+
+    `censored` flags a slot whose observation is untrustworthy as a measure of
+    *potential* generation because a no-export inverter regime was active and
+    the slot under-generated — i.e. the panels were almost certainly curtailed
+    (clipped) rather than the forecast being wrong. Censored slots keep their
+    observed/error values for the chart but are excluded from the series-level
+    statistics and from every EMA quality bucket. See `forecast_accuracy.py`.
     """
     start: datetime
     end: datetime
@@ -368,6 +375,7 @@ class ForecastErrorSlot:
     observed_kwh: float
     error_kwh: float
     relative_error: float | None
+    censored: bool = False
 
 
 @dataclass(frozen=True)

@@ -531,6 +531,7 @@ class ForecastAccuracyCheckResult:
     slot_count: int = 0
     total_forecast_kwh: float = 0.0
     total_observed_kwh: float = 0.0
+    censored_slot_count: int = 0
     total_error_kwh: float = 0.0
     mean_absolute_error_kwh: float = 0.0
     bias_kwh: float = 0.0
@@ -561,33 +562,51 @@ def check_forecast_accuracy(snap: Snapshot) -> ForecastAccuracyCheckResult:
     result.slot_count = fe.get("slot_count", 0)
     result.total_forecast_kwh = fe.get("total_forecast_kwh", 0.0)
     result.total_observed_kwh = fe.get("total_observed_kwh", 0.0)
+    result.censored_slot_count = fe.get("censored_slot_count", 0)
     result.total_error_kwh = fe.get("total_error_kwh", 0.0)
     result.mean_absolute_error_kwh = fe.get("mean_absolute_error_kwh", 0.0)
     result.bias_kwh = fe.get("bias_kwh", 0.0)
     result.mape = fe.get("mean_absolute_percentage_error")
     result.computed_at = fe.get("computed_at", "")
 
+    # Aggregate totals exclude censored (curtailment-suspect) slots, so the
+    # recomputed sum must skip them too; censored slots must under-generate
+    # (a positive error can never be curtailment).
     comp_error = 0.0
+    censored_count = 0
+    matched = result.total_observed_kwh >= 0  # -1 sentinel = no matched slots
     for s in fe.get("slots") or []:
         start_str = s.get("start", "")
         f_kwh = s.get("forecast_kwh", 0.0)
         o_kwh = s.get("observed_kwh", 0.0)
         e_kwh = s.get("error_kwh", 0.0)
+        censored = bool(s.get("censored", False))
         ok = abs(e_kwh - (o_kwh - f_kwh)) < 1e-4
         if not ok:
             result.mismatches.append(start_str)
             result.overall_ok = False
-        comp_error += e_kwh
+        if censored:
+            censored_count += 1
+            if o_kwh >= 0 and e_kwh >= 0:
+                result.mismatches.append(f"{start_str}:censored_not_negative")
+                result.overall_ok = False
+        elif o_kwh >= 0:
+            comp_error += e_kwh
         result.slot_rows.append({
             "start": start_str,
             "forecast_kwh": f_kwh,
             "observed_kwh": o_kwh,
             "error_kwh": e_kwh,
             "relative_error": s.get("relative_error"),
+            "censored": censored,
             "ok": ok,
         })
 
-    if result.slot_count > 0 and abs(comp_error - result.total_error_kwh) > 0.01:
+    if censored_count != result.censored_slot_count:
+        result.mismatches.append("censored_slot_count_mismatch")
+        result.overall_ok = False
+
+    if matched and abs(comp_error - result.total_error_kwh) > 0.01:
         result.mismatches.append("total_error_sum_mismatch")
         result.overall_ok = False
 
@@ -622,6 +641,9 @@ class ForecastAccuracySlotsTable(Static):
         dim = "dim"
         prev_date = None
 
+        # Trailing-column markers: ✗ = arithmetic mismatch, ⊘ = censored
+        # (curtailment-suspect no-export slot, excluded from stats/buckets).
+
         for row in self._fa.slot_rows:
             try:
                 dt = datetime.fromisoformat(row["start"]).astimezone(timezone.utc)
@@ -639,17 +661,24 @@ class ForecastAccuracySlotsTable(Static):
 
             err = row["error_kwh"]
             ok = row["ok"]
+            censored = row.get("censored", False)
             err_style = "green" if err > 0.01 else ("red" if err < -0.01 else dim)
             rel = row["relative_error"]
             rel_str = f"{rel:.1%}" if rel is not None else "—"
+            if not ok:
+                mark = Text("✗", style="red")
+            elif censored:
+                mark = Text("⊘", style="yellow")
+            else:
+                mark = Text("")
 
             table.add_row(
                 Text(time_str, style="cyan"),
                 Text(f"{row['forecast_kwh']:.4f}", style=dim),
-                Text(f"{row['observed_kwh']:.4f}"),
+                Text(f"{row['observed_kwh']:.4f}", style=dim if censored else ""),
                 Text(f"{err:+.4f}", style=err_style),
                 Text(rel_str, style=dim),
-                Text("✗" if not ok else "", style="red"),
+                mark,
             )
 
 
@@ -686,10 +715,13 @@ class ForecastAccuracyCheckWidget(Static):
         )
 
         with Collapsible(title=title, collapsed=True):
+            censored_str = (
+                f"  censored={fa.censored_slot_count}" if fa.censored_slot_count else ""
+            )
             lines = (
                 f"  forecast={fa.total_forecast_kwh:.3f}kWh  "
                 f"observed={fa.total_observed_kwh:.3f}kWh  "
-                f"error={fa.total_error_kwh:+.3f}kWh"
+                f"error={fa.total_error_kwh:+.3f}kWh{censored_str}"
             )
             yield Static(lines)
             with Collapsible(title="Slots", collapsed=False):

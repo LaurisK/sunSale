@@ -1581,6 +1581,16 @@ class SunSaleCoordinator(DataUpdateCoordinator):
             ) or ForecastQualityStore()
             primary[SunTimes] = self._read_sun_times(now)
 
+            # Prior-cycle mode history seeds the DAG so the forecast-accuracy
+            # node can censor curtailment-suspect no-export slots. It is
+            # re-written this cycle downstream in ``_dispatch_inverter_mode``
+            # (after the DAG runs), so the few-minute-stale tip is harmless —
+            # only the in-progress slot is affected, and that slot is still
+            # accumulating anyway.
+            primary[InverterModeHistory] = (
+                self._mode_history_store.value if self._mode_history_store else None
+            ) or InverterModeHistory(samples=())
+
             current_reading: BatteryReading | None = primary.get(BatteryReading)
             with self._guarded("capacity observation"):
                 if current_reading is not None:
