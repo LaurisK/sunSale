@@ -36,7 +36,10 @@ which zips `custom_components/sun_sale/` (files at archive root) and attaches
 
 ## Notes
 
-- `hacs.json` currently sets `zip_release: false`, so HACS installs from the
-  source tree, not the release zip. Flip it to `true` if/when you want HACS to
-  consume the attached zip.
+- `hacs.json` sets `zip_release: true` + `filename: "sun_sale.zip"`, so HACS
+  installs the packaged release asset (not the raw source tree). The `filename`
+  must match the asset `release.yml` attaches.
+- HACS notifies users of an update only when a **new GitHub release is
+  published** (a new `v*` tag) — never on plain commits to `master`. The tag
+  name is the "available version"; keep it equal to `manifest.json`'s `version`.
 - The user commits and tags manually — this is the convention, not automation.
