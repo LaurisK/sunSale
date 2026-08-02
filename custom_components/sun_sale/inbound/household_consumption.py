@@ -9,7 +9,7 @@ load samples.
 """
 from __future__ import annotations
 
-from datetime import datetime, timezone
+from datetime import UTC, datetime
 from typing import Any
 
 from ..contract.models import HouseholdConsumptionReading, SunSaleConfig
@@ -42,7 +42,7 @@ class HouseholdConsumptionTranslator:
             HouseholdConsumptionReading with today_total_kwh, or None when unavailable.
         """
         if now is None:
-            now = datetime.now(timezone.utc)
+            now = datetime.now(UTC)
         value = read_float_state(hass, self._entity_id)
         if value is None:
             return None

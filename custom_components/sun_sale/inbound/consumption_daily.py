@@ -23,9 +23,9 @@ Aggregation matches ``inbound/observer/derived._consumption_extract``:
 """
 from __future__ import annotations
 
+from collections.abc import Iterable, Sequence
 from datetime import date, datetime, timedelta
 from datetime import tzinfo as TzInfo
-from typing import Iterable, Sequence
 
 from ..contract.const import (
     CONSUMPTION_DAILY_WINDOW_DAYS,
@@ -37,7 +37,6 @@ from ..contract.models import (
     DerivedPowerHistory,
     DerivedPowerSample,
 )
-
 
 # Expected number of derived samples per hour at the standard coordinator
 # cadence. Used to scale completeness — a fully-covered hour reaches 1.0.

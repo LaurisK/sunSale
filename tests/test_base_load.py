@@ -8,7 +8,7 @@ battery-runtime estimator. The profile inputs are
 """
 from __future__ import annotations
 
-from datetime import date, datetime, timedelta, timezone
+from datetime import UTC, date, datetime, timedelta
 from zoneinfo import ZoneInfo
 
 import pytest
@@ -32,8 +32,7 @@ from custom_components.sun_sale.pipeline.base_load import (
     estimate_battery_runtime,
 )
 
-
-UTC = timezone.utc
+UTC = UTC
 RIGA = ZoneInfo("Europe/Riga")    # UTC+2 in winter, UTC+3 in summer
 FULL_COVERAGE = tuple([1.0] * 24)
 

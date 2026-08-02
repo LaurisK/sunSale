@@ -1,12 +1,12 @@
 {
   "domain": "sun_sale",
   "name": "sunSale",
-  "version": "0.0.1",
-  "documentation": "https://github.com/LaurisK/sun-sale",
-  "issue_tracker": "https://github.com/LaurisK/sun-sale/issues",
-  "config_flow": true,
-  "iot_class": "local_polling",
   "codeowners": ["@LaurisK"],
+  "config_flow": true,
+  "dependencies": ["panel_custom", "http"],
+  "documentation": "https://github.com/LaurisK/sun-sale",
+  "iot_class": "local_polling",
+  "issue_tracker": "https://github.com/LaurisK/sun-sale/issues",
   "requirements": [],
-  "dependencies": ["panel_custom", "http"]
+  "version": "0.0.1"
 }

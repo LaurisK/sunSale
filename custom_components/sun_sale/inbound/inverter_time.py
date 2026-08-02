@@ -21,7 +21,7 @@ threshold is met, the snapshot module falls back to HA-local timing.
 from __future__ import annotations
 
 from dataclasses import dataclass
-from datetime import datetime, timezone
+from datetime import UTC, datetime
 from datetime import tzinfo as TzInfo
 from statistics import median
 from typing import Any
@@ -141,7 +141,7 @@ class InverterTimeTranslator:
             unavailable, or unparseable.
         """
         if now is None:
-            now = datetime.now(timezone.utc)
+            now = datetime.now(UTC)
         if not self._entity_id:
             return None
         state = hass.states.get(self._entity_id)
@@ -166,7 +166,7 @@ class InverterTimeTranslator:
 
         return InverterTimeReading(
             ha_now=now,
-            inverter_now=inverter_dt.astimezone(timezone.utc),
+            inverter_now=inverter_dt.astimezone(UTC),
         )
 
     async def translate(

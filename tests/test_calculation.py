@@ -1,11 +1,13 @@
 """Tests for calculation.py — pure Python, no HA required."""
-from datetime import datetime, timedelta, timezone
+from datetime import timedelta
 
-from custom_components.sun_sale.pipeline.calculation import calculate
 from custom_components.sun_sale.contract.models import (
-    BatteryState, GenerationSeries, GenerationSlot,
+    BatteryState,
+    GenerationSeries,
+    GenerationSlot,
 )
 from custom_components.sun_sale.inbound.pricing import build_price_series
+from custom_components.sun_sale.pipeline.calculation import calculate
 from tests.conftest import BASE_DT, default_battery_state, default_tariff_config, make_price
 
 NOW = BASE_DT
@@ -68,7 +70,6 @@ def _make_negative_sell_config():
 
 def test_negative_sell_window_flagged():
     # spot=0.05 → sell = 0.05 - 0.20 = -0.15 → locked out
-    from custom_components.sun_sale.contract.models import TariffConfig
     tc = _make_negative_sell_config()
     prices = [make_price(h, 0.05 if 10 <= h < 14 else 0.30) for h in range(24)]
     ps = build_price_series(prices, tc, now=NOW)
@@ -86,7 +87,6 @@ def test_negative_sell_window_flagged():
 
 
 def test_negative_sell_window_production_reported():
-    from custom_components.sun_sale.contract.models import TariffConfig
     tc = _make_negative_sell_config()
     prices = [make_price(h, 0.05 if 10 <= h < 12 else 0.30) for h in range(24)]
     ps = build_price_series(prices, tc, now=NOW)
@@ -99,7 +99,6 @@ def test_negative_sell_window_production_reported():
 
 
 def test_lockout_windows_coalesced():
-    from custom_components.sun_sale.contract.models import TariffConfig
     tc = _make_negative_sell_config()
     prices = [make_price(h, 0.05 if 10 <= h < 13 else 0.30) for h in range(24)]
     ps = build_price_series(prices, tc, now=NOW)
@@ -111,7 +110,6 @@ def test_lockout_windows_coalesced():
 
 
 def test_non_contiguous_lockouts_separate_windows():
-    from custom_components.sun_sale.contract.models import TariffConfig
     tc = _make_negative_sell_config()
     # Hours 10–11 and 20–21 locked out, 12–19 positive
     prices = [
@@ -128,7 +126,6 @@ def test_non_contiguous_lockouts_separate_windows():
 # ---------------------------------------------------------------------------
 
 def test_battery_full_during_lockout_note():
-    from custom_components.sun_sale.contract.models import TariffConfig
     tc = _make_negative_sell_config()
     prices = [make_price(10, 0.05), make_price(11, 0.30)]
     ps = build_price_series(prices, tc, now=NOW)
@@ -142,7 +139,6 @@ def test_battery_full_during_lockout_note():
 
 
 def test_no_battery_full_note_when_headroom_sufficient():
-    from custom_components.sun_sale.contract.models import TariffConfig
     tc = _make_negative_sell_config()
     prices = [make_price(10, 0.05), make_price(11, 0.30)]
     ps = build_price_series(prices, tc, now=NOW)
@@ -183,7 +179,6 @@ def test_no_paid_to_charge_on_positive_buy():
 # ---------------------------------------------------------------------------
 
 def test_expected_solar_kwh_always_reported():
-    from custom_components.sun_sale.contract.models import TariffConfig
     tc = _make_negative_sell_config()
     prices = [make_price(10, 0.05)]  # locked out
     ps = build_price_series(prices, tc, now=NOW)

@@ -1,7 +1,7 @@
 """Tests for inbound/consumption_daily.py — pure Python, no HA required."""
 from __future__ import annotations
 
-from datetime import date, datetime, timedelta, timezone
+from datetime import UTC, date, datetime, timedelta
 from zoneinfo import ZoneInfo
 
 import pytest
@@ -19,8 +19,7 @@ from custom_components.sun_sale.inbound.consumption_daily import (
     try_finalise_yesterday_consumption,
 )
 
-
-UTC = timezone.utc
+UTC = UTC
 RIGA = ZoneInfo("Europe/Riga")
 
 
@@ -150,7 +149,6 @@ def test_finalise_skips_when_no_samples_for_yesterday():
 
 def test_finalise_consumption_formula_matches_derived_extract():
     """Per-sample consumption = max(0, backup + ac_port_signed + grid_net_signed)."""
-    yesterday_local = date(2026, 5, 15)
     now = datetime(2026, 5, 16, 10, tzinfo=UTC)
     # One sample at local 12:00 splits the load across the three sign axes.
     local_noon = datetime(2026, 5, 15, 12, tzinfo=RIGA).astimezone(UTC)
@@ -183,7 +181,6 @@ def test_finalise_consumption_formula_matches_derived_extract():
 
 def test_finalise_clamps_negative_consumption_to_zero():
     """A sample with net negative inputs (cross-cycle sensor mismatch) yields 0 kW."""
-    yesterday_local = date(2026, 5, 15)
     now = datetime(2026, 5, 16, 10, tzinfo=UTC)
     local_noon = datetime(2026, 5, 15, 12, tzinfo=RIGA).astimezone(UTC)
     samples = [

@@ -3,8 +3,11 @@ asyncio_mode = "auto"
 testpaths = ["tests"]
 
 [tool.ruff]
-line-length = 100
-target-version = "py312"
+line-length = 120
+# Match the runtime support floor (hacs.json: HA 2024.1 → Python 3.11), not the
+# dev interpreter. Keeps ruff from suggesting 3.12-only syntax (e.g. PEP 695
+# `class Foo[T]`, UP046) that would SyntaxError on supported installs.
+target-version = "py311"
 
 [tool.ruff.lint]
 select = ["E", "F", "I", "UP"]
@@ -12,3 +15,16 @@ select = ["E", "F", "I", "UP"]
 [tool.mypy]
 python_version = "3.12"
 ignore_missing_imports = true
+
+# Stricter checking on the pure layers — the contract data model and the
+# pipeline stages have no HA runtime coupling, so they can carry full type
+# rigor. Kept scoped: the HA-facing layers (inbound/orchestration/outbound)
+# still fight ``homeassistant`` stubs and stay at the base config.
+[[tool.mypy.overrides]]
+module = [
+    "custom_components.sun_sale.contract.*",
+    "custom_components.sun_sale.pipeline.*",
+]
+disallow_untyped_defs = true
+check_untyped_defs = true
+warn_return_any = true

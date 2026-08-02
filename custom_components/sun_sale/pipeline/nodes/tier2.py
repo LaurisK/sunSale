@@ -3,14 +3,6 @@ from __future__ import annotations
 
 import logging
 
-from .. import base_load as base_load_module
-from .. import battery as battery_module
-from .. import profitability as profitability_module
-from ...inbound import forecast as forecast_module
-from ...inbound.observer import generation as generation_module
-from ...inbound.observer import grid as grid_module
-from ...inbound.observer import derived as derived_module
-from ..dag_engine import DagNode, NodeContext
 from ...contract.models import (
     BakedObservedHistory,
     BaseLoadProfile,
@@ -32,6 +24,14 @@ from ...contract.models import (
     PvPowerHistory,
     SolarData,
 )
+from ...inbound import forecast as forecast_module
+from ...inbound.observer import derived as derived_module
+from ...inbound.observer import generation as generation_module
+from ...inbound.observer import grid as grid_module
+from .. import base_load as base_load_module
+from .. import battery as battery_module
+from .. import profitability as profitability_module
+from ..dag_engine import DagNode, NodeContext
 
 _LOGGER = logging.getLogger(__name__)
 

@@ -100,7 +100,7 @@ async def test_async_setup_entry_skips_duplicate_debug_view():
 # ---------------------------------------------------------------------------
 
 async def test_single_entry_panel_default_name_and_clean_url():
-    from custom_components.sun_sale import _async_sync_panels, _PANELS_KEY
+    from custom_components.sun_sale import _PANELS_KEY, _async_sync_panels
     hass = make_hass()
     hass.data[_PANELS_KEY] = {"e1": {"title_override": ""}}
     with patch("custom_components.sun_sale.async_register_panel", new=AsyncMock()) as reg, \
@@ -114,7 +114,7 @@ async def test_single_entry_panel_default_name_and_clean_url():
 
 
 async def test_multiple_entries_share_default_name_with_unique_urls():
-    from custom_components.sun_sale import _async_sync_panels, _PANELS_KEY
+    from custom_components.sun_sale import _PANELS_KEY, _async_sync_panels
     hass = make_hass()
     hass.data[_PANELS_KEY] = {
         "e1": {"title_override": ""},
@@ -132,7 +132,7 @@ async def test_multiple_entries_share_default_name_with_unique_urls():
 
 
 async def test_user_title_override_wins():
-    from custom_components.sun_sale import _async_sync_panels, _PANELS_KEY
+    from custom_components.sun_sale import _PANELS_KEY, _async_sync_panels
     hass = make_hass()
     hass.data[_PANELS_KEY] = {"e1": {"title_override": "My Solar"}}
     with patch("custom_components.sun_sale.async_register_panel", new=AsyncMock()) as reg, \
@@ -142,7 +142,7 @@ async def test_user_title_override_wins():
 
 
 async def test_sync_removes_previously_registered_panels():
-    from custom_components.sun_sale import _async_sync_panels, _PANELS_KEY, _PANEL_URLS_KEY
+    from custom_components.sun_sale import _PANEL_URLS_KEY, _PANELS_KEY, _async_sync_panels
     hass = make_hass()
     hass.data[_PANEL_URLS_KEY] = {"sun-sale-stale"}
     hass.data[_PANELS_KEY] = {}        # no entries left

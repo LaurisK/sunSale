@@ -57,6 +57,8 @@ flowchart TB
         R_sw["switch.py<br/>Automation + policy switches"]:::root
         R_sel["select.py<br/>ModeOverrideSelect"]:::root
         R_num["number.py<br/>policy number knobs"]:::root
+        R_hastate["ha_state.py<br/>HA-edge reads + unit norm"]:::root
+        R_curr["currency.py<br/>display-currency labels"]:::root
     end
 
     subgraph ORCH["orchestration/"]
@@ -464,9 +466,9 @@ HTTP view at `/api/sun_sale/debug` exposing the most recent `primary`, `secondar
 - **Tests:** `tests/test_init.py`.
 
 ### `config_flow.py`
-Multi-step `ConfigFlow` + `OptionsFlow` (tariff → battery → inverter platform → solis auto-detect/picker/manual entity mapping → sources). Calls `hass.config_entries.async_entries("solis_modbus")` to decide the branch.
+Multi-step `ConfigFlow` + `OptionsFlow`: `user`/`init` (currency + flat tariff/tax) → `tariff_weekday` → `tariff_weekend` (time-of-use distribution bands) → `battery` → `inverter` (platform) → `inverter_solis` (auto-detect/picker) **or** `inverter_generic` (declarative role picker) **or** `inverter_entities` (manual mapping) → `forecast` (→ `forecast_manual`) → `sources` (price source) → `price_tou` (only when the source is the synthetic TOU schedule). Calls `hass.config_entries.async_entries("solis_modbus")` to decide the Solis branch.
 - **Exposes:** `SunSaleConfigFlow`, `SunSaleOptionsFlow`.
-- **Depends on:** `outbound.inverter` (`InverterPlatform`), `inbound.{solis_entity_resolver, inverter_entity_resolver}`, `contract.const`.
+- **Depends on:** `outbound.inverter` (`InverterPlatform`), `inbound.{solis_entity_resolver, inverter_entity_resolver, platform_profiles}`, `contract.const`.
 - **Tests:** `tests/test_config_flow.py`.
 
 ### `sensor.py`
@@ -484,6 +486,16 @@ All HA sensor entities; reads from the string-keyed `coordinator.data` dict.
 ### `number.py`
 Scheduler-policy number knobs: `ModeChangePenalty`, `ProfitabilityTiltAlpha`, `TerminalValueDiscount`, `MaxDischargeToGridKw` — each mirrors a coordinator attribute folded into `SchedulePolicy`.
 - **Tests:** `tests/test_number.py`.
+
+### `ha_state.py`
+Shared HA-edge state-reading and unit-normalisation helpers used by every translator and the inverter controller. Centralises the "not-a-reading" guard (unmapped / missing / `unavailable` / `unknown` / blank) and the raw→canonical rescale (W/mW/MW→kW, Wh/MWh→kWh). Deliberately imports nothing from the sunSale package (types `hass` as `Any`) so it is usable from `inbound`, `outbound`, and `orchestration` without an import cycle.
+- **Exposes:** `available_state`, `read_float_state`, `read_power_kw` (freshness-aware), `read_soc_fraction`, `normalize_power_to_kw`, `power_unit_scale`, `normalize_energy_to_kwh`.
+- **Tests:** `tests/test_ha_state.py`.
+
+### `currency.py`
+Display-currency resolution and label/icon helpers. The optimisation math is currency-neutral (every monetary figure is a per-kWh quantity in the price source's own unit); this module only affects presentation — the unit labels/icons on sensors and number entities and the panel axis/tooltip text. Kept separate from `ha_state.py`, which by contract imports nothing from the sunSale package.
+- **Exposes:** `resolve_currency`, `currency_unit`, `per_kwh_unit`, `currency_icon`.
+- **Tests:** `tests/test_currency.py`.
 
 ---
 

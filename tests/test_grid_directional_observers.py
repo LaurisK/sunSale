@@ -2,7 +2,7 @@
 from __future__ import annotations
 
 from dataclasses import dataclass
-from datetime import datetime, timedelta, timezone
+from datetime import UTC, datetime, timedelta
 
 from custom_components.sun_sale.contract.models import (
     GridExportPowerReading,
@@ -33,7 +33,7 @@ class _Hass:
         return self._states.get(entity_id)
 
 
-NOW = datetime(2024, 1, 15, 12, 0, tzinfo=timezone.utc)
+NOW = datetime(2024, 1, 15, 12, 0, tzinfo=UTC)
 
 
 # ---------------------------------------------------------------------------

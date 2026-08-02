@@ -15,13 +15,13 @@ source counter total is available, or when the slot sum is zero.
 """
 from __future__ import annotations
 
+from collections.abc import Callable, Mapping, Sequence
 from dataclasses import dataclass
 from datetime import datetime
 from datetime import tzinfo as TzInfo
-from typing import Any, Callable, Sequence
+from typing import Any
 
 from ...contract.models import SlotKwh
-
 
 # Bake-in factor guard. A correction factor outside this range indicates a
 # sensor fault (counter ≫ slot_sum or counter ≪ slot_sum); bake-in is skipped
@@ -89,7 +89,7 @@ class ObservedSeriesEngine:
 
     def build_slots_for_window(
         self,
-        samples_by_side: dict[str, Sequence[Any]],
+        samples_by_side: Mapping[str, Sequence[Any]],
         price_slots: Sequence[Any],
         window_start: datetime,
         window_end: datetime,

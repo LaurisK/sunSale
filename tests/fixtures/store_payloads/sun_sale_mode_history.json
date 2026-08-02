@@ -1,0 +1,19 @@
+{
+  "samples": [
+    {
+      "mode": "self_use",
+      "raw_state": 1,
+      "ts": "2026-07-10T08:00:00+00:00"
+    },
+    {
+      "mode": "grid_charge",
+      "raw_state": 33,
+      "ts": "2026-07-10T08:05:00+00:00"
+    },
+    {
+      "mode": "unknown",
+      "raw_state": 999,
+      "ts": "2026-07-11T12:30:00+00:00"
+    }
+  ]
+}

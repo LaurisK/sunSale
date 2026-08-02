@@ -32,8 +32,8 @@ Design decisions:
 """
 from __future__ import annotations
 
-from datetime import datetime, timedelta, timezone, tzinfo
-from typing import Iterable
+from collections.abc import Iterable
+from datetime import UTC, datetime, timedelta, tzinfo
 
 from ..contract.const import CONSUMPTION_DAILY_MIN_HOUR_COMPLETENESS
 from ..contract.models import (
@@ -45,7 +45,6 @@ from ..contract.models import (
     ConsumptionDailyBuckets,
     ConsumptionDayRecord,
 )
-
 
 # Below this many qualified days in the window, the profile is considered
 # too sparse to bucket: confidence=None, every slot uses fallback_kw.
@@ -120,7 +119,7 @@ def build_base_load_profile(
         ``MIN_HISTORY_DAYS``.
     """
     if now is None:
-        now = datetime.now(timezone.utc)
+        now = datetime.now(UTC)
 
     window_records = _records_in_window(buckets.records, now, local_tz, window_days)
 

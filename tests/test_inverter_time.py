@@ -2,19 +2,17 @@
 from __future__ import annotations
 
 from dataclasses import dataclass
-from datetime import datetime, timedelta, timezone
+from datetime import UTC, datetime, timedelta
 
 from custom_components.sun_sale.contract.models import InverterTimeReading
 from custom_components.sun_sale.inbound.inverter_time import (
-    InverterTimeHistory,
     InverterTimeTranslator,
     current_skew_seconds,
     empty_history,
     update_history,
 )
 
-
-LOCAL_TZ = timezone.utc
+LOCAL_TZ = UTC
 
 
 @dataclass(frozen=True)
@@ -36,7 +34,7 @@ class _Hass:
 
 def _reading(ha_offset_s: float, inv_offset_s: float) -> InverterTimeReading:
     """Build a reading with HA = base+ha_offset and inverter = base+inv_offset."""
-    base = datetime(2024, 1, 15, 12, 0, tzinfo=timezone.utc)
+    base = datetime(2024, 1, 15, 12, 0, tzinfo=UTC)
     return InverterTimeReading(
         ha_now=base + timedelta(seconds=ha_offset_s),
         inverter_now=base + timedelta(seconds=inv_offset_s),
@@ -111,7 +109,7 @@ def test_update_none_reading_no_op() -> None:
 
 def test_translator_parses_iso_local_time() -> None:
     """A naive ISO timestamp is interpreted in the configured local timezone."""
-    ha_now = datetime(2024, 1, 15, 12, 0, tzinfo=timezone.utc)
+    ha_now = datetime(2024, 1, 15, 12, 0, tzinfo=UTC)
     # Inverter reports 12:01 local (= 12:01 UTC because LOCAL_TZ is UTC).
     state = _State(state="2024-01-15T12:01:00")
     hass = _Hass({"sensor.inv_clock": state})
@@ -126,7 +124,7 @@ def test_translator_parses_iso_local_time() -> None:
 
 def test_translator_handles_tz_aware_state() -> None:
     """An ISO timestamp carrying tz info is preserved verbatim."""
-    ha_now = datetime(2024, 1, 15, 12, 0, tzinfo=timezone.utc)
+    ha_now = datetime(2024, 1, 15, 12, 0, tzinfo=UTC)
     state = _State(state="2024-01-15T12:00:30+00:00")
     hass = _Hass({"sensor.inv_clock": state})
     t = InverterTimeTranslator("sensor.inv_clock", local_tz=LOCAL_TZ)
@@ -140,25 +138,25 @@ def test_translator_returns_none_when_unavailable() -> None:
     """Common HA unavailable states map to ``None``."""
     hass = _Hass({"sensor.inv_clock": _State(state="unavailable")})
     t = InverterTimeTranslator("sensor.inv_clock", local_tz=LOCAL_TZ)
-    assert t.parse(hass, now=datetime.now(timezone.utc)) is None
+    assert t.parse(hass, now=datetime.now(UTC)) is None
 
 
 def test_translator_returns_none_when_unparseable() -> None:
     """A garbage state string yields ``None`` rather than crashing."""
     hass = _Hass({"sensor.inv_clock": _State(state="not a datetime")})
     t = InverterTimeTranslator("sensor.inv_clock", local_tz=LOCAL_TZ)
-    assert t.parse(hass, now=datetime.now(timezone.utc)) is None
+    assert t.parse(hass, now=datetime.now(UTC)) is None
 
 
 def test_translator_empty_entity_id_returns_none() -> None:
     """An unconfigured entity ID disables the translator."""
     t = InverterTimeTranslator("", local_tz=LOCAL_TZ)
-    assert t.parse(_Hass(), now=datetime.now(timezone.utc)) is None
+    assert t.parse(_Hass(), now=datetime.now(UTC)) is None
 
 
 def test_translator_accepts_datetime_state() -> None:
     """A ``datetime`` state (as HA's datetime platform may surface) is used directly."""
-    ha_now = datetime(2024, 1, 15, 12, 0, tzinfo=timezone.utc)
+    ha_now = datetime(2024, 1, 15, 12, 0, tzinfo=UTC)
     inv_local = datetime(2024, 1, 15, 11, 59, 30)   # naive local
     state = _State(state=inv_local)
     hass = _Hass({"sensor.inv_clock": state})

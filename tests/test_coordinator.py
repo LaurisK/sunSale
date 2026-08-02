@@ -1,17 +1,20 @@
 """Tests for coordinator helpers and NordpoolTranslator parsing."""
 from __future__ import annotations
 
-from datetime import datetime, timedelta, timezone
+from datetime import UTC, datetime, timedelta
 from unittest.mock import MagicMock
 
+from custom_components.sun_sale.contract.const import (
+    CONF_NORDPOOL_ENTITY,
+    CONF_SOLAR_FORECAST_ENTITY,
+)
+from custom_components.sun_sale.contract.models import BatteryReading
+from custom_components.sun_sale.inbound.pricing import NordpoolTranslator
+from custom_components.sun_sale.inbound.telemetry import GenericCodec, SolisCodec
 from custom_components.sun_sale.orchestration.coordinator import SunSaleCoordinator
 from custom_components.sun_sale.outbound.inverter import InverterPlatform
-from custom_components.sun_sale.inbound.telemetry import GenericCodec, SolisCodec
-from custom_components.sun_sale.inbound.pricing import NordpoolTranslator
-from custom_components.sun_sale.contract.models import BatteryReading
-from custom_components.sun_sale.contract.const import CONF_NORDPOOL_ENTITY, CONF_SOLAR_FORECAST_ENTITY
 
-BASE = datetime(2024, 1, 15, 10, 0, 0, tzinfo=timezone.utc)
+BASE = datetime(2024, 1, 15, 10, 0, 0, tzinfo=UTC)
 
 
 def _make_coordinator():
@@ -243,10 +246,15 @@ def test_capacity_obs_stale_window_reanchors():
 def _make_pipeline_data() -> dict:
     from custom_components.sun_sale.contract.models import GenerationSeries
     from custom_components.sun_sale.inbound.pricing import build_price_series
-    from custom_components.sun_sale.pipeline.calculation import calculate
     from custom_components.sun_sale.pipeline.battery import degradation_cost_per_kwh
+    from custom_components.sun_sale.pipeline.calculation import calculate
     from custom_components.sun_sale.pipeline.schedule import optimize_schedule
-    from tests.conftest import default_battery_config, default_battery_state, default_tariff_config, make_price
+    from tests.conftest import (
+        default_battery_config,
+        default_battery_state,
+        default_tariff_config,
+        make_price,
+    )
 
     now = BASE
     prices = [make_price(h, 0.10) for h in range(4)]
@@ -300,6 +308,7 @@ async def test_dispatch_mode_override_noop_before_control_module():
 async def test_dispatch_mode_override_forwards_to_control_module():
     """Forwards override + schedule to dispatch_override without a full refresh."""
     from unittest.mock import AsyncMock
+
     from custom_components.sun_sale.contract.models import StorageMode
 
     coord, _ = _make_coordinator()
@@ -351,6 +360,7 @@ def test_guarded_passes_through_success():
 async def test_persist_secondary_outputs_isolates_block_failure():
     """A failing persistence block is contained; later blocks still run."""
     from unittest.mock import AsyncMock
+
     from custom_components.sun_sale.contract.models import (
         ForecastAccuracyResult,
         MonthlyBillResult,

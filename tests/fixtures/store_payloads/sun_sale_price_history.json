@@ -1,0 +1,19 @@
+{
+  "peaks": [
+    {
+      "class": "weekday",
+      "day": "2026-07-09",
+      "peak": 0.2531
+    },
+    {
+      "class": "weekend",
+      "day": "2026-07-11",
+      "peak": -0.014
+    },
+    {
+      "class": "holiday",
+      "day": "2026-07-13",
+      "peak": 0.0
+    }
+  ]
+}

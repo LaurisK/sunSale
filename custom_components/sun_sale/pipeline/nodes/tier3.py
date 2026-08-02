@@ -3,10 +3,6 @@ from __future__ import annotations
 
 import logging
 
-from .. import calculation
-from .. import forecast_accuracy
-from .. import monthly_bill as monthly_bill_module
-from ..dag_engine import DagNode, NodeContext
 from ...contract.models import (
     BatteryState,
     CalculationResult,
@@ -21,6 +17,9 @@ from ...contract.models import (
     PriceSeries,
     SunTimes,
 )
+from .. import calculation, forecast_accuracy
+from .. import monthly_bill as monthly_bill_module
+from ..dag_engine import DagNode, NodeContext
 
 _LOGGER = logging.getLogger(__name__)
 

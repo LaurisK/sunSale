@@ -2,7 +2,7 @@
 from __future__ import annotations
 
 from dataclasses import dataclass, field
-from datetime import date, datetime, timedelta, timezone
+from datetime import UTC, datetime, timedelta
 
 from textual.app import ComposeResult
 from textual.widgets import Collapsible, Static
@@ -113,7 +113,7 @@ def _check_derived_series(
             first_ts = ts
         last_ts = ts
 
-    now = datetime.now(timezone.utc)
+    now = datetime.now(UTC)
     today = now.date()
     yesterday = today - timedelta(days=1)
     cy = ct = 0.0

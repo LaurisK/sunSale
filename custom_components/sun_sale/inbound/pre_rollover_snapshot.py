@@ -15,9 +15,10 @@ are snapshotted.
 """
 from __future__ import annotations
 
-from datetime import datetime, timedelta, timezone
+from collections.abc import Sequence
+from datetime import datetime, timedelta
 from datetime import tzinfo as TzInfo
-from typing import Any, Sequence
+from typing import Any
 
 from ..contract.models import CounterSnapshotHistory, CounterSnapshotRecord
 

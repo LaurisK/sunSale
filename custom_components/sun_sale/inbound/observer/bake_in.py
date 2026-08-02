@@ -32,9 +32,10 @@ Old records are pruned from the returned history according to
 """
 from __future__ import annotations
 
-from datetime import date, datetime, time, timedelta, timezone
+from collections.abc import Sequence
+from datetime import UTC, date, datetime, time, timedelta
 from datetime import tzinfo as TzInfo
-from typing import Any, Sequence
+from typing import Any
 
 from ...contract.const import (
     BAKE_IN_HARD_CUTOFF_LOCAL,
@@ -104,10 +105,10 @@ def try_bake_yesterday(
 
     target_start = datetime.combine(
         target_date, time(0, 0), tzinfo=local_tz,
-    ).astimezone(timezone.utc)
+    ).astimezone(UTC)
     target_end = datetime.combine(
         target_date + timedelta(days=1), time(0, 0), tzinfo=local_tz,
-    ).astimezone(timezone.utc)
+    ).astimezone(UTC)
 
     raw_per_side: dict[str, list[SlotKwh]] | None = None
     new_records: list[BakedDayRecord] = []

@@ -1,12 +1,12 @@
 """Tests for pipeline/monthly_bill.py — pure Python."""
 from __future__ import annotations
 
-from datetime import date, datetime, timedelta, timezone
+from datetime import UTC, date, datetime, timedelta
 
 try:
     from zoneinfo import ZoneInfo
 except ImportError:    # pragma: no cover
-    from backports.zoneinfo import ZoneInfo    # type: ignore[no-redef]
+    from backports.zoneinfo import ZoneInfo  # type: ignore[no-redef]
 
 from custom_components.sun_sale.contract.models import (
     GridExportPowerHistory,
@@ -23,7 +23,6 @@ from custom_components.sun_sale.pipeline.monthly_bill import (
     build_monthly_bill_result,
     compute_bill_slots,
 )
-
 
 LOCAL_TZ = ZoneInfo("Europe/Vilnius")
 
@@ -43,7 +42,7 @@ def _price_series(slots: list[PriceSlot]) -> PriceSeries:
     return PriceSeries(
         slots=tuple(slots),
         resolution=timedelta(minutes=15),
-        computed_at=slots[0].start if slots else datetime(2026, 5, 30, tzinfo=timezone.utc),
+        computed_at=slots[0].start if slots else datetime(2026, 5, 30, tzinfo=UTC),
     )
 
 
@@ -90,7 +89,7 @@ def _empty_grid_series(now: datetime) -> ObservedGridSeries:
 
 def test_compute_bill_slots_emits_dense_zero_slots_when_no_samples():
     """Every overlapping price slot must appear, even with no samples."""
-    t0 = datetime(2026, 5, 29, 0, 0, tzinfo=timezone.utc)
+    t0 = datetime(2026, 5, 29, 0, 0, tzinfo=UTC)
     slots = [_slot(t0 + timedelta(minutes=15 * i), t0 + timedelta(minutes=15 * (i + 1))) for i in range(4)]
     ps = _price_series(slots)
     grid = _empty_grid_series(t0)
@@ -103,7 +102,7 @@ def test_compute_bill_slots_emits_dense_zero_slots_when_no_samples():
 
 
 def test_compute_bill_slots_imports_priced_with_buy():
-    t0 = datetime(2026, 5, 29, 0, 0, tzinfo=timezone.utc)
+    t0 = datetime(2026, 5, 29, 0, 0, tzinfo=UTC)
     slot = _slot(t0, t0 + timedelta(minutes=15), buy=0.25, sell=0.10)
     ps = _price_series([slot])
     grid = ObservedGridSeries(
@@ -123,7 +122,7 @@ def test_compute_bill_slots_imports_priced_with_buy():
 
 
 def test_compute_bill_slots_exports_priced_with_sell_even_when_negative():
-    t0 = datetime(2026, 5, 29, 0, 0, tzinfo=timezone.utc)
+    t0 = datetime(2026, 5, 29, 0, 0, tzinfo=UTC)
     slot = _slot(t0, t0 + timedelta(minutes=15), buy=0.25, sell=-0.05)
     ps = _price_series([slot])
     grid = ObservedGridSeries(
@@ -146,7 +145,9 @@ def test_compute_bill_slots_exports_priced_with_sell_even_when_negative():
 # ---------------------------------------------------------------------------
 
 
-def _build_pricing_for_window(start_utc: datetime, end_utc: datetime, buy: float = 0.20, sell: float = 0.15) -> PriceSeries:
+def _build_pricing_for_window(
+    start_utc: datetime, end_utc: datetime, buy: float = 0.20, sell: float = 0.15,
+) -> PriceSeries:
     slots = []
     cursor = start_utc
     while cursor < end_utc:
@@ -164,18 +165,18 @@ def _realistic_pricing(now: datetime, buy: float = 0.20, sell: float = 0.15) -> 
     """
     local_now = now.astimezone(LOCAL_TZ)
     yday_local = local_now.date() - timedelta(days=1)
-    start = datetime(yday_local.year, yday_local.month, yday_local.day, tzinfo=LOCAL_TZ).astimezone(timezone.utc)
+    start = datetime(yday_local.year, yday_local.month, yday_local.day, tzinfo=LOCAL_TZ).astimezone(UTC)
     end = now + timedelta(days=1)
     return _build_pricing_for_window(start, end, buy=buy, sell=sell)
 
 
 def _local_midnight_utc(d, tz=LOCAL_TZ) -> datetime:
     """Return the UTC instant of local midnight on date ``d``."""
-    return datetime(d.year, d.month, d.day, tzinfo=tz).astimezone(timezone.utc)
+    return datetime(d.year, d.month, d.day, tzinfo=tz).astimezone(UTC)
 
 
 def test_first_run_with_empty_state_zeroes_carry_and_previous_month():
-    now = datetime(2026, 5, 30, 12, 0, tzinfo=timezone.utc)
+    now = datetime(2026, 5, 30, 12, 0, tzinfo=UTC)
     ps = _realistic_pricing(now)
 
     result = build_monthly_bill_result(
@@ -203,7 +204,7 @@ def test_carry_accumulates_from_priceable_ledger_days():
     grid samples — but it belongs to the *live* window, so it lands in
     yday_to_now, not carry.
     """
-    now = datetime(2026, 5, 30, 12, 0, tzinfo=timezone.utc)  # local 15:00, today=05-30
+    now = datetime(2026, 5, 30, 12, 0, tzinfo=UTC)  # local 15:00, today=05-30
     stored = MonthlyBillState(finalized_days=(("2026-05-28", 3.0),))
     ps = _realistic_pricing(now, buy=0.10, sell=0.05)
     # Constant 1 kW import across yesterday (05-29) + today-so-far.
@@ -234,7 +235,7 @@ def test_unpriceable_older_ledger_days_are_frozen_not_zeroed():
     yesterday against a price series that no longer covered it, getting 0.
     Now that day is never recomputed — its ledger value is preserved.
     """
-    now = datetime(2026, 5, 30, 12, 0, tzinfo=timezone.utc)
+    now = datetime(2026, 5, 30, 12, 0, tzinfo=UTC)
     # 05-28 is the day-before-yesterday — outside the realistic price window.
     stored = MonthlyBillState(finalized_days=(("2026-05-28", -1.25),))
     ps = _realistic_pricing(now)
@@ -251,7 +252,7 @@ def test_unpriceable_older_ledger_days_are_frozen_not_zeroed():
 
 def test_previous_month_total_summed_from_ledger():
     """On the 1st, previous_month_eur sums the prior month's ledger entries."""
-    now = datetime(2026, 6, 1, 12, 0, tzinfo=timezone.utc)  # local 15:00 on the 1st
+    now = datetime(2026, 6, 1, 12, 0, tzinfo=UTC)  # local 15:00 on the 1st
     stored = MonthlyBillState(finalized_days=(
         ("2026-05-29", 2.0),
         ("2026-05-30", 3.0),
@@ -277,7 +278,7 @@ def test_previous_month_total_summed_from_ledger():
 
 def test_ledger_prunes_entries_older_than_previous_month():
     """Entries older than the previous calendar month are dropped from state."""
-    now = datetime(2026, 6, 15, 12, 0, tzinfo=timezone.utc)
+    now = datetime(2026, 6, 15, 12, 0, tzinfo=UTC)
     stored = MonthlyBillState(finalized_days=(
         ("2026-04-30", 9.0),    # two months back — should be pruned
         ("2026-05-31", 4.0),    # previous month — kept
@@ -297,7 +298,7 @@ def test_ledger_prunes_entries_older_than_previous_month():
 
 def test_live_slots_never_cross_into_previous_month():
     """On day 1 of a new month, live slots cover only the new month."""
-    now = datetime(2026, 6, 1, 6, 0, tzinfo=timezone.utc)
+    now = datetime(2026, 6, 1, 6, 0, tzinfo=UTC)
     ps = _realistic_pricing(now)
     stored = MonthlyBillState(finalized_days=())
 
@@ -309,7 +310,7 @@ def test_live_slots_never_cross_into_previous_month():
         now=now,
     )
 
-    month_start_utc = datetime(2026, 5, 31, 21, 0, tzinfo=timezone.utc)
+    month_start_utc = datetime(2026, 5, 31, 21, 0, tzinfo=UTC)
     assert all(s.start >= month_start_utc for s in result.slots)
 
 
@@ -320,9 +321,9 @@ def test_live_slots_never_cross_into_previous_month():
 
 def test_daily_costs_split_today_and_yesterday():
     """today_cost_eur / yesterday_cost_eur partition the live window on a normal day."""
-    now = datetime(2026, 5, 30, 12, 0, tzinfo=timezone.utc)  # local 15:00 (UTC+3)
+    now = datetime(2026, 5, 30, 12, 0, tzinfo=UTC)  # local 15:00 (UTC+3)
     # Local midnights: yesterday(05-29)=05-28 21:00Z, today(05-30)=05-29 21:00Z.
-    yday_start = datetime(2026, 5, 28, 21, 0, tzinfo=timezone.utc)
+    yday_start = datetime(2026, 5, 28, 21, 0, tzinfo=UTC)
     ps = _build_pricing_for_window(yday_start, now, buy=0.10, sell=0.05)
     # Constant 1 kW import across yesterday + today-so-far (39 h to `now`).
     samples = _samples_every_minute(yday_start, count=39 * 60, power_kw=1.0)
@@ -350,10 +351,10 @@ def test_yesterday_cost_survives_month_boundary():
     outside it — yet the independent [yday_start, today_start) computation must
     still surface it.
     """
-    now = datetime(2026, 6, 1, 6, 0, tzinfo=timezone.utc)  # local 09:00 on the 1st
+    now = datetime(2026, 6, 1, 6, 0, tzinfo=UTC)  # local 09:00 on the 1st
     # yesterday(05-31) = 05-30 21:00Z → 05-31 21:00Z; today(06-01) starts 05-31 21:00Z.
-    yday_start = datetime(2026, 5, 30, 21, 0, tzinfo=timezone.utc)
-    today_start = datetime(2026, 5, 31, 21, 0, tzinfo=timezone.utc)
+    yday_start = datetime(2026, 5, 30, 21, 0, tzinfo=UTC)
+    today_start = datetime(2026, 5, 31, 21, 0, tzinfo=UTC)
     ps = _build_pricing_for_window(yday_start, now, buy=0.10, sell=0.05)
     # Import only during yesterday (the previous month's last day).
     samples = _samples_every_minute(yday_start, count=24 * 60, power_kw=1.0)

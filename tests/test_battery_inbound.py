@@ -1,4 +1,6 @@
 """Tests for inbound/battery.py — pure Python, no HA required."""
+from datetime import UTC
+
 from custom_components.sun_sale.contract.models import BatteryReading
 from custom_components.sun_sale.inbound.battery import build_battery_status
 from tests.conftest import default_battery_config
@@ -64,7 +66,7 @@ def test_status_is_immutable():
 
 def test_battery_status_node_produces_status_from_primary():
     import asyncio
-    from datetime import datetime, timezone
+    from datetime import datetime
 
     from custom_components.sun_sale.contract.models import (
         BatteryStatus,
@@ -73,7 +75,7 @@ def test_battery_status_node_produces_status_from_primary():
     from custom_components.sun_sale.pipeline.dag_engine import NodeContext
     from custom_components.sun_sale.pipeline.nodes import BatteryStatusNode
 
-    now = datetime(2024, 1, 15, 12, 0, 0, tzinfo=timezone.utc)
+    now = datetime(2024, 1, 15, 12, 0, 0, tzinfo=UTC)
     config = SunSaleConfig(
         tariff=None,  # not consumed by this node
         battery=default_battery_config(),
@@ -138,24 +140,24 @@ class _StubHass:
 
 def test_translator_returns_none_when_soc_unavailable():
     import asyncio
-    from datetime import datetime, timezone
+    from datetime import datetime
 
     from custom_components.sun_sale.inbound.battery import BatteryTranslator
 
     translator = BatteryTranslator(_StubInverter(soc=None), household_load_entity="")
-    now = datetime(2024, 1, 15, 12, 0, 0, tzinfo=timezone.utc)
+    now = datetime(2024, 1, 15, 12, 0, 0, tzinfo=UTC)
     result = asyncio.run(translator.translate(_StubHass(), None, {}, now))
     assert result is None
 
 
 def test_translator_produces_reading_when_soc_present():
     import asyncio
-    from datetime import datetime, timezone
+    from datetime import datetime
 
     from custom_components.sun_sale.inbound.battery import BatteryTranslator
 
     translator = BatteryTranslator(_StubInverter(soc=0.42), household_load_entity="")
-    now = datetime(2024, 1, 15, 12, 0, 0, tzinfo=timezone.utc)
+    now = datetime(2024, 1, 15, 12, 0, 0, tzinfo=UTC)
     result = asyncio.run(translator.translate(_StubHass(), None, {}, now))
     assert isinstance(result, BatteryReading)
     assert result.soc == 0.42
@@ -188,7 +190,7 @@ class _StubBatterySource:
 
 def test_injected_battery_source_overrides_inverter_battery_reads():
     import asyncio
-    from datetime import datetime, timezone
+    from datetime import datetime
 
     from custom_components.sun_sale.inbound.battery import BatteryTranslator
 
@@ -197,7 +199,7 @@ def test_injected_battery_source_overrides_inverter_battery_reads():
         household_load_entity="",
         battery_source=_StubBatterySource(),
     )
-    now = datetime(2024, 1, 15, 12, 0, 0, tzinfo=timezone.utc)
+    now = datetime(2024, 1, 15, 12, 0, 0, tzinfo=UTC)
     result = asyncio.run(translator.translate(_StubHass(), None, {}, now))
     assert isinstance(result, BatteryReading)
     # Battery fields come from the injected source, not the inverter stub.

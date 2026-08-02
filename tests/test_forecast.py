@@ -1,11 +1,9 @@
 """Tests for forecast.py — pure Python, no HA mocking needed."""
-from datetime import datetime, timedelta, timezone
-from zoneinfo import ZoneInfo
+from datetime import UTC, datetime, timedelta, timezone
 
-from custom_components.sun_sale.inbound.forecast import build_generation_series
 from custom_components.sun_sale.contract.models import PriceSeries, SolarData, SolarEntry
+from custom_components.sun_sale.inbound.forecast import _tomorrow_entity, build_generation_series
 from custom_components.sun_sale.inbound.pricing import build_price_series
-from custom_components.sun_sale.inbound.forecast import _tomorrow_entity
 from tests.conftest import BASE_DT, default_tariff_config, make_price
 
 NOW = BASE_DT
@@ -18,13 +16,16 @@ def _empty_price_series() -> PriceSeries:
 
 def _make_solar_data_from_watts(watts_by_iso: dict[str, float], now=NOW) -> SolarData:
     """Build SolarData from {iso_str: watts} dict."""
-    from custom_components.sun_sale.inbound.forecast import _watts_to_solar_entries, _make_solar_data
+    from custom_components.sun_sale.inbound.forecast import (
+        _make_solar_data,
+        _watts_to_solar_entries,
+    )
     parsed: dict[datetime, float] = {}
     for ts_str, w in watts_by_iso.items():
         dt = datetime.fromisoformat(ts_str)
         if dt.tzinfo is None:
-            dt = dt.replace(tzinfo=timezone.utc)
-        parsed[dt.astimezone(timezone.utc).replace(second=0, microsecond=0)] = w
+            dt = dt.replace(tzinfo=UTC)
+        parsed[dt.astimezone(UTC).replace(second=0, microsecond=0)] = w
     entries = _watts_to_solar_entries(parsed)
     return _make_solar_data(entries, "open_meteo", now)
 
@@ -36,7 +37,7 @@ def _make_solar_data_from_forecast(forecast_slots: list[dict], now=NOW) -> Solar
         try:
             dt = datetime.fromisoformat(slot["time"])
             if dt.tzinfo is None:
-                dt = dt.replace(tzinfo=timezone.utc)
+                dt = dt.replace(tzinfo=UTC)
             kwh = float(slot.get("pv_estimate", slot.get("energy", 0.0)))
             entries.append(SolarEntry(start=dt, end=dt + timedelta(hours=1), expected_kwh=kwh, source="forecast_solar"))
         except (KeyError, ValueError):
@@ -378,15 +379,15 @@ def test_local_tz_post_midnight_buckets_by_local_date():
     tz_plus3 = timezone(timedelta(hours=3))
 
     # Scenario: UTC 21:43 Jan 15 = local 00:43 Jan 16 (new local day just started)
-    now_utc = datetime(2024, 1, 15, 21, 43, 0, tzinfo=timezone.utc)
+    now_utc = datetime(2024, 1, 15, 21, 43, 0, tzinfo=UTC)
 
     slot_dur = timedelta(hours=1)
 
     # 13 daytime slots for UTC Jan 16 (= local Jan 16, daytime), 1 kWh each
     daytime_slots = tuple(
         SolarEntry(
-            start=datetime(2024, 1, 16, h, 0, 0, tzinfo=timezone.utc),
-            end=datetime(2024, 1, 16, h, 0, 0, tzinfo=timezone.utc) + slot_dur,
+            start=datetime(2024, 1, 16, h, 0, 0, tzinfo=UTC),
+            end=datetime(2024, 1, 16, h, 0, 0, tzinfo=UTC) + slot_dur,
             expected_kwh=1.0,
             source="open_meteo",
         )
@@ -395,8 +396,8 @@ def test_local_tz_post_midnight_buckets_by_local_date():
     # 3 nighttime slots for UTC Jan 15 21-23 (= local Jan 16 00-02), 0 kWh each
     night_slots = tuple(
         SolarEntry(
-            start=datetime(2024, 1, 15, h, 0, 0, tzinfo=timezone.utc),
-            end=datetime(2024, 1, 15, h, 0, 0, tzinfo=timezone.utc) + slot_dur,
+            start=datetime(2024, 1, 15, h, 0, 0, tzinfo=UTC),
+            end=datetime(2024, 1, 15, h, 0, 0, tzinfo=UTC) + slot_dur,
             expected_kwh=0.0,
             source="open_meteo",
         )

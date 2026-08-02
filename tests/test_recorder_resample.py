@@ -7,7 +7,7 @@ These tests pin that math against the live behaviour so the two paths can't
 drift, and cover the forward-fill union-timeline composition + the merge.
 """
 import asyncio
-from datetime import datetime, timedelta, timezone
+from datetime import UTC, datetime, timedelta
 
 import custom_components.sun_sale.inbound.observer.recorder_resample as rr
 from custom_components.sun_sale.contract.models import (
@@ -31,7 +31,7 @@ from custom_components.sun_sale.inbound.observer.recorder_resample import (
 )
 from custom_components.sun_sale.inbound.telemetry import GenericCodec, SolisCodec
 
-T0 = datetime(2026, 6, 19, 10, 0, 0, tzinfo=timezone.utc)
+T0 = datetime(2026, 6, 19, 10, 0, 0, tzinfo=UTC)
 
 
 def _t(seconds: int) -> datetime:

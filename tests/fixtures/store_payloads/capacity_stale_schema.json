@@ -1,0 +1,13 @@
+{
+  "nominal_capacity_kwh": 28.0,
+  "observations": [
+    {
+      "direction": "charge",
+      "energy_kwh": 6.65,
+      "soc_end": 0.9,
+      "soc_start": 0.5,
+      "timestamp": "2026-06-01T10:00:00+00:00"
+    }
+  ],
+  "schema_version": 1
+}

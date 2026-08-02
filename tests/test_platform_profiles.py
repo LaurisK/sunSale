@@ -32,7 +32,6 @@ from custom_components.sun_sale.outbound.solax_driver import make_solax_driver
 from custom_components.sun_sale.outbound.sungrow_driver import make_sungrow_driver
 from tests.conftest import default_battery_config
 
-
 # --- Fakes ------------------------------------------------------------------ #
 
 

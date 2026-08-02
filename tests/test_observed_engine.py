@@ -2,7 +2,7 @@
 from __future__ import annotations
 
 from dataclasses import dataclass
-from datetime import datetime, timedelta, timezone
+from datetime import UTC, datetime, timedelta
 
 from custom_components.sun_sale.contract.models import SlotKwh
 from custom_components.sun_sale.inbound.observer.engine import (
@@ -16,7 +16,6 @@ from custom_components.sun_sale.inbound.observer.engine import (
     Side,
 )
 from tests.conftest import BASE_DT
-
 
 NOW = BASE_DT  # 2024-01-15 00:00 UTC
 
@@ -74,7 +73,7 @@ def _grid_sides() -> list[Side]:
 
 def test_build_window_empty_samples_zero_slots() -> None:
     """No samples → every slot in window emits 0.0 kWh for every side."""
-    engine = ObservedSeriesEngine([_gen_side()], local_tz=timezone.utc)
+    engine = ObservedSeriesEngine([_gen_side()], local_tz=UTC)
     slots = _hourly_slots(NOW, 3)
     out = engine.build_slots_for_window(
         samples_by_side={"generation": []},
@@ -88,7 +87,7 @@ def test_build_window_empty_samples_zero_slots() -> None:
 
 def test_build_window_single_sample_in_slot() -> None:
     """One sample at 2 kW for 1h → 2.0 kWh for that slot."""
-    engine = ObservedSeriesEngine([_gen_side()], local_tz=timezone.utc)
+    engine = ObservedSeriesEngine([_gen_side()], local_tz=UTC)
     slots = _hourly_slots(NOW, 2)
     sample = _PowerSample(timestamp=NOW + timedelta(minutes=30), kw=2.0)
     out = engine.build_slots_for_window(
@@ -103,7 +102,7 @@ def test_build_window_single_sample_in_slot() -> None:
 
 def test_build_window_multiple_samples_average_to_mean_kw() -> None:
     """Three samples 1, 2, 3 kW in same slot → mean 2 kW × 1 h = 2.0 kWh."""
-    engine = ObservedSeriesEngine([_gen_side()], local_tz=timezone.utc)
+    engine = ObservedSeriesEngine([_gen_side()], local_tz=UTC)
     slots = _hourly_slots(NOW, 1)
     samples = [
         _PowerSample(NOW + timedelta(minutes=10), kw=1.0),
@@ -121,7 +120,7 @@ def test_build_window_multiple_samples_average_to_mean_kw() -> None:
 
 def test_build_window_clamps_slot_end_to_window_end() -> None:
     """A slot whose end exceeds window_end uses the clamped duration for kWh."""
-    engine = ObservedSeriesEngine([_gen_side()], local_tz=timezone.utc)
+    engine = ObservedSeriesEngine([_gen_side()], local_tz=UTC)
     slots = [_Slot(NOW, NOW + timedelta(hours=1))]
     # Two samples in the first 30 min, window ends at 30 min — duration 0.5h.
     samples = [
@@ -140,7 +139,7 @@ def test_build_window_clamps_slot_end_to_window_end() -> None:
 
 def test_build_window_drops_slots_outside_window() -> None:
     """Slots whose start lies outside the window are not emitted."""
-    engine = ObservedSeriesEngine([_gen_side()], local_tz=timezone.utc)
+    engine = ObservedSeriesEngine([_gen_side()], local_tz=UTC)
     slots = _hourly_slots(NOW - timedelta(hours=2), 6)  # spans -2h … +4h
     out = engine.build_slots_for_window(
         samples_by_side={"generation": []},
@@ -154,7 +153,7 @@ def test_build_window_drops_slots_outside_window() -> None:
 
 def test_build_window_grid_two_sides_independent_streams() -> None:
     """Each side averages its OWN sample stream — no sign-split needed."""
-    engine = ObservedSeriesEngine(_grid_sides(), local_tz=timezone.utc)
+    engine = ObservedSeriesEngine(_grid_sides(), local_tz=UTC)
     slots = _hourly_slots(NOW, 1)
     # Import side has two readings of 2 kW; export side has two readings of
     # 3 kW. Each side averages over ITS samples (no cross-contamination).
@@ -183,7 +182,7 @@ def test_build_window_grid_two_sides_independent_streams() -> None:
 
 def test_build_window_side_with_empty_stream_emits_zero() -> None:
     """A side whose stream is empty (or missing) gets all-zero slots."""
-    engine = ObservedSeriesEngine(_grid_sides(), local_tz=timezone.utc)
+    engine = ObservedSeriesEngine(_grid_sides(), local_tz=UTC)
     slots = _hourly_slots(NOW, 1)
     out = engine.build_slots_for_window(
         samples_by_side={
@@ -204,7 +203,7 @@ def test_build_window_negative_extract_clamped_to_zero() -> None:
     A side's extractor is contracted to return ≥ 0; using ``max(0, ...)`` is the
     standard idiom. Negative inputs round-trip via the extractor as 0.
     """
-    engine = ObservedSeriesEngine([_gen_side()], local_tz=timezone.utc)
+    engine = ObservedSeriesEngine([_gen_side()], local_tz=UTC)
     slots = _hourly_slots(NOW, 1)
     samples = [
         _PowerSample(NOW + timedelta(minutes=15), kw=-5.0),  # negative → 0
@@ -236,7 +235,7 @@ def _slot(idx: int, kwh: float) -> SlotKwh:
 
 def test_bake_in_ok_proportional_scales_all_slots() -> None:
     """Counter = 10, slot_sum = 8 → factor = 1.25 applied to every slot."""
-    engine = ObservedSeriesEngine([_gen_side()], local_tz=timezone.utc)
+    engine = ObservedSeriesEngine([_gen_side()], local_tz=UTC)
     raw = {"generation": [_slot(0, 2.0), _slot(1, 4.0), _slot(2, 2.0)]}
     out = engine.apply_proportional_bake_in(
         raw_slots_per_side=raw,
@@ -250,7 +249,7 @@ def test_bake_in_ok_proportional_scales_all_slots() -> None:
 
 def test_bake_in_ok_preserves_zero_slots() -> None:
     """Zero stays zero — proportional, not additive."""
-    engine = ObservedSeriesEngine([_gen_side()], local_tz=timezone.utc)
+    engine = ObservedSeriesEngine([_gen_side()], local_tz=UTC)
     raw = {"generation": [_slot(0, 0.0), _slot(1, 5.0), _slot(2, 0.0)]}
     out = engine.apply_proportional_bake_in(
         raw_slots_per_side=raw,
@@ -265,7 +264,7 @@ def test_bake_in_ok_preserves_zero_slots() -> None:
 
 def test_bake_in_skipped_no_source() -> None:
     """None counter total → status is no_source, slots unchanged."""
-    engine = ObservedSeriesEngine([_gen_side()], local_tz=timezone.utc)
+    engine = ObservedSeriesEngine([_gen_side()], local_tz=UTC)
     raw = {"generation": [_slot(0, 2.0), _slot(1, 3.0)]}
     out = engine.apply_proportional_bake_in(
         raw_slots_per_side=raw,
@@ -279,7 +278,7 @@ def test_bake_in_skipped_no_source() -> None:
 
 def test_bake_in_skipped_zero_sum() -> None:
     """slot_sum == 0 cannot be scaled up; status reports zero_sum."""
-    engine = ObservedSeriesEngine([_gen_side()], local_tz=timezone.utc)
+    engine = ObservedSeriesEngine([_gen_side()], local_tz=UTC)
     raw = {"generation": [_slot(0, 0.0), _slot(1, 0.0)]}
     out = engine.apply_proportional_bake_in(
         raw_slots_per_side=raw,
@@ -293,7 +292,7 @@ def test_bake_in_skipped_zero_sum() -> None:
 
 def test_bake_in_skipped_factor_too_high() -> None:
     """Factor > BAKE_IN_FACTOR_MAX → skipped with factor surfaced for logging."""
-    engine = ObservedSeriesEngine([_gen_side()], local_tz=timezone.utc)
+    engine = ObservedSeriesEngine([_gen_side()], local_tz=UTC)
     raw = {"generation": [_slot(0, 1.0)]}
     # counter = 10, slot_sum = 1 → factor = 10 (way above MAX)
     out = engine.apply_proportional_bake_in(
@@ -308,7 +307,7 @@ def test_bake_in_skipped_factor_too_high() -> None:
 
 def test_bake_in_skipped_factor_too_low() -> None:
     """Factor < BAKE_IN_FACTOR_MIN → skipped with factor surfaced."""
-    engine = ObservedSeriesEngine([_gen_side()], local_tz=timezone.utc)
+    engine = ObservedSeriesEngine([_gen_side()], local_tz=UTC)
     raw = {"generation": [_slot(0, 10.0)]}
     # counter = 1, slot_sum = 10 → factor = 0.1 (below MIN)
     out = engine.apply_proportional_bake_in(
@@ -323,7 +322,7 @@ def test_bake_in_skipped_factor_too_low() -> None:
 
 def test_bake_in_factor_exactly_at_boundaries_accepted() -> None:
     """factor == MIN and factor == MAX are inside the inclusive guard."""
-    engine = ObservedSeriesEngine([_gen_side()], local_tz=timezone.utc)
+    engine = ObservedSeriesEngine([_gen_side()], local_tz=UTC)
     # factor = MAX
     raw_max = {"generation": [_slot(0, 1.0)]}
     out_max = engine.apply_proportional_bake_in(
@@ -343,7 +342,7 @@ def test_bake_in_factor_exactly_at_boundaries_accepted() -> None:
 
 def test_bake_in_multi_side_independent_statuses() -> None:
     """Each side's bake-in is independent: one can ok while the other skips."""
-    engine = ObservedSeriesEngine(_grid_sides(), local_tz=timezone.utc)
+    engine = ObservedSeriesEngine(_grid_sides(), local_tz=UTC)
     raw = {
         "grid_import": [_slot(0, 2.0), _slot(1, 2.0)],
         "grid_export": [_slot(0, 0.0), _slot(1, 0.0)],   # zero_sum
@@ -366,7 +365,7 @@ def test_bake_in_multi_side_independent_statuses() -> None:
 
 def test_bake_in_missing_side_in_counter_dict_treated_as_no_source() -> None:
     """A registered side with no entry in counter_totals_per_side → no_source."""
-    engine = ObservedSeriesEngine(_grid_sides(), local_tz=timezone.utc)
+    engine = ObservedSeriesEngine(_grid_sides(), local_tz=UTC)
     raw = {
         "grid_import": [_slot(0, 2.0)],
         "grid_export": [_slot(0, 1.0)],

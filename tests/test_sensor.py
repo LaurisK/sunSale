@@ -1,7 +1,7 @@
 """Tests for sensor.py — native_value properties for all sensor entities."""
 from __future__ import annotations
 
-from datetime import datetime, timedelta, timezone
+from datetime import UTC, datetime, timedelta
 from unittest.mock import MagicMock
 
 from custom_components.sun_sale.contract.models import (
@@ -13,7 +13,6 @@ from custom_components.sun_sale.contract.models import (
     StorageMode,
     TariffResult,
 )
-from custom_components.sun_sale.inbound.pricing import build_price_series
 from custom_components.sun_sale.sensor import (
     CurrentActionSensor,
     CurrentBuyPriceSensor,
@@ -25,9 +24,8 @@ from custom_components.sun_sale.sensor import (
     NextActionSensor,
     YesterdayCostSensor,
 )
-from tests.conftest import default_tariff_config, make_price
 
-BASE = datetime(2024, 1, 15, 0, 0, tzinfo=timezone.utc)
+BASE = datetime(2024, 1, 15, 0, 0, tzinfo=UTC)
 
 
 def make_slot(hour: int, mode: StorageMode = StorageMode.SelfUse, profit: float = 0.0) -> ScheduleSlot:
@@ -58,8 +56,9 @@ def make_tariff(hour: int, buy: float = 0.12, sell: float = 0.06) -> TariffResul
 
 def _make_price_series_for_hour(hour: int, buy_eur_kwh: float = 0.12, sell_eur_kwh: float = 0.06):
     """Create a minimal PriceSeries with one slot matching the given buy/sell prices."""
-    from custom_components.sun_sale.contract.models import PriceSlot, PriceSeries
     from datetime import timedelta
+
+    from custom_components.sun_sale.contract.models import PriceSeries, PriceSlot
     start = BASE.replace(hour=hour)
     slot = PriceSlot(
         start=start, end=start + timedelta(hours=1),
@@ -127,9 +126,9 @@ def test_expected_profit_zero_when_no_data():
 
 
 def test_expected_profit_sums_today_slots():
-    today = datetime.now(timezone.utc).date()
-    start1 = datetime(today.year, today.month, today.day, 10, tzinfo=timezone.utc)
-    start2 = datetime(today.year, today.month, today.day, 11, tzinfo=timezone.utc)
+    today = datetime.now(UTC).date()
+    start1 = datetime(today.year, today.month, today.day, 10, tzinfo=UTC)
+    start2 = datetime(today.year, today.month, today.day, 11, tzinfo=UTC)
     slot1 = ScheduleSlot(start=start1, end=start1 + timedelta(hours=1),
                          mode=StorageMode.SelfUse, power_kw=0, expected_soc_after=0.5,
                          expected_profit_eur=0.10, reason="")
@@ -171,8 +170,8 @@ def test_estimated_capacity_returned():
 
 def test_dashboard_battery_uses_estimated_capacity_and_provides_set():
     """Dashboard total/remaining use the learned estimate; nameplate exposed as 'set'."""
-    from custom_components.sun_sale.sensor import DashboardSensor
     from custom_components.sun_sale.contract.models import BatteryStatus
+    from custom_components.sun_sale.sensor import DashboardSensor
     from tests.conftest import default_battery_config
 
     bc = default_battery_config()
@@ -203,8 +202,8 @@ def test_dashboard_battery_uses_estimated_capacity_and_provides_set():
 
 def test_dashboard_battery_falls_back_to_nominal_without_estimate():
     """With no learned estimate yet, total/remaining fall back to the nameplate."""
-    from custom_components.sun_sale.sensor import DashboardSensor
     from custom_components.sun_sale.contract.models import BatteryStatus
+    from custom_components.sun_sale.sensor import DashboardSensor
     from tests.conftest import default_battery_config
 
     bc = default_battery_config()
@@ -236,10 +235,12 @@ def _dashboard_entry() -> MagicMock:
 
 def test_dashboard_live_flows_from_latest_derived_sample():
     """live_flows mirrors the newest derived sample and applies the home/loss formulas."""
-    from custom_components.sun_sale.sensor import DashboardSensor
     from custom_components.sun_sale.contract.models import (
-        BatteryStatus, DerivedPowerHistory, DerivedPowerSample,
+        BatteryStatus,
+        DerivedPowerHistory,
+        DerivedPowerSample,
     )
+    from custom_components.sun_sale.sensor import DashboardSensor
     from tests.conftest import default_battery_config
 
     old = DerivedPowerSample(
@@ -278,8 +279,8 @@ def test_dashboard_live_flows_from_latest_derived_sample():
 
 def test_dashboard_live_flows_none_without_samples():
     """No derived history (or an empty one) → live_flows is None, so the panel hides it."""
-    from custom_components.sun_sale.sensor import DashboardSensor
     from custom_components.sun_sale.contract.models import DerivedPowerHistory
+    from custom_components.sun_sale.sensor import DashboardSensor
     from tests.conftest import default_battery_config
 
     for hist in (None, DerivedPowerHistory(samples=())):
@@ -320,20 +321,18 @@ def test_sell_price_none_when_no_data():
 # Observed-series sensors (live / slot-sum / baked-yesterday)
 # ---------------------------------------------------------------------------
 
-from custom_components.sun_sale.contract.const import (
+from custom_components.sun_sale.contract.const import (  # noqa: E402  (section-local)
     SOURCE_KIND_DEDICATED_SENSOR,
     SOURCE_KIND_SNAPSHOT,
 )
-from custom_components.sun_sale.contract.models import (
+from custom_components.sun_sale.contract.models import (  # noqa: E402
     BakedDayRecord,
     BakedObservedHistory,
     ObservedGenerationSeries,
-    ObservedGenerationSlot,
     ObservedGridSeries,
-    ObservedGridSlot,
     SlotKwh,
 )
-from custom_components.sun_sale.sensor import (
+from custom_components.sun_sale.sensor import (  # noqa: E402
     TodayExportedLiveSensor,
     TodayExportedSlotSumSensor,
     TodayGenerationLiveSensor,
@@ -350,7 +349,7 @@ def _coord_with_local_tz(data: dict | None = None) -> MagicMock:
     """Build a coordinator stub with both .data and the local_tz config field."""
     coord = MagicMock()
     coord.data = data
-    coord._sun_sale_config.local_tz = timezone.utc
+    coord._sun_sale_config.local_tz = UTC
     return coord
 
 
@@ -445,7 +444,7 @@ def _baked_record(side_id: str, date_str: str, baked_sum: float, source_kind: st
 def test_yesterday_generation_baked_returns_baked_sum():
     """Sensor exposes baked_sum for yesterday's local date."""
     yesterday_str = (
-        datetime.now(timezone.utc).astimezone(timezone.utc).date()
+        datetime.now(UTC).astimezone(UTC).date()
         - timedelta(days=1)
     ).isoformat()
     history = BakedObservedHistory(records=(
@@ -460,7 +459,7 @@ def test_yesterday_generation_baked_returns_baked_sum():
 def test_yesterday_baked_exposes_source_kind_attribute():
     """The ``source_kind`` provenance is surfaced as a sensor attribute."""
     yesterday_str = (
-        datetime.now(timezone.utc).astimezone(timezone.utc).date()
+        datetime.now(UTC).astimezone(UTC).date()
         - timedelta(days=1)
     ).isoformat()
     history = BakedObservedHistory(records=(
@@ -490,7 +489,7 @@ def test_yesterday_baked_none_when_no_record_for_yesterday():
 def test_yesterday_baked_picks_correct_side():
     """A sensor for grid_import never picks up generation's record on the same date."""
     yesterday_str = (
-        datetime.now(timezone.utc).astimezone(timezone.utc).date()
+        datetime.now(UTC).astimezone(UTC).date()
         - timedelta(days=1)
     ).isoformat()
     history = BakedObservedHistory(records=(
@@ -564,7 +563,7 @@ def test_daily_cost_attributes_sum_today_flows():
     """DailyCostSensor breakdown sums import/export of slots at/after today midnight."""
     coord = _coord_with_local_tz({})
     # today_start with local_tz=UTC is today's UTC midnight.
-    today_start = datetime.now(timezone.utc).replace(
+    today_start = datetime.now(UTC).replace(
         hour=0, minute=0, second=0, microsecond=0,
     )
     slot = BillSlot(

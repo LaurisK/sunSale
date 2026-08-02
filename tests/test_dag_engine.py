@@ -9,7 +9,7 @@ from __future__ import annotations
 
 import asyncio
 import logging
-from datetime import datetime, timezone
+from datetime import UTC, datetime
 
 import pytest
 
@@ -21,10 +21,9 @@ from custom_components.sun_sale.pipeline.dag_engine import (
     NodeContext,
     run_translators,
 )
-
 from tests.conftest import default_battery_config, default_tariff_config
 
-NOW = datetime(2024, 1, 15, 12, 0, 0, tzinfo=timezone.utc)
+NOW = datetime(2024, 1, 15, 12, 0, 0, tzinfo=UTC)
 
 
 def _config() -> SunSaleConfig:

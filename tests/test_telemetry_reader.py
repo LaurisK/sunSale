@@ -6,7 +6,7 @@ freshness behaviour against a stubbed ``hass``, pinning that the reader
 reproduces the exact semantics the controller getters and observer translators
 used to inline.
 """
-from datetime import datetime, timedelta, timezone
+from datetime import UTC, datetime, timedelta
 from types import SimpleNamespace
 
 from custom_components.sun_sale.inbound.telemetry import (
@@ -19,7 +19,7 @@ from custom_components.sun_sale.inbound.telemetry import (
 )
 from custom_components.sun_sale.inbound.telemetry.binding import TelemetrySignal as S
 
-_NOW = datetime(2026, 6, 26, 12, 0, 0, tzinfo=timezone.utc)
+_NOW = datetime(2026, 6, 26, 12, 0, 0, tzinfo=UTC)
 
 
 class _Hass:

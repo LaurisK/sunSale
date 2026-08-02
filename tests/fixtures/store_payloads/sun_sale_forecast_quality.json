@@ -1,0 +1,42 @@
+{
+  "group1": {
+    "0": {
+      "ema_abs_error": 0.2,
+      "ema_error": 0.1,
+      "ema_obs": 0.0,
+      "ema_obs_sq": 0.0,
+      "ema_rel_error": 0.0,
+      "ema_sq_error": 0.0,
+      "n": 5
+    }
+  },
+  "group2": {
+    "1": {
+      "ema_abs_error": 0.0,
+      "ema_error": 0.0,
+      "ema_obs": 1.5,
+      "ema_obs_sq": 2.25,
+      "ema_rel_error": 0.0,
+      "ema_sq_error": 0.0,
+      "n": 3
+    }
+  },
+  "group3": {
+    "0": {
+      "ema_abs_error": 0.0,
+      "ema_error": 0.0,
+      "ema_obs": 0.0,
+      "ema_obs_sq": 0.0,
+      "ema_rel_error": 0.0,
+      "ema_sq_error": 0.0,
+      "n": 0
+    }
+  },
+  "group3_pending": [
+    {
+      "forecast_kwh": 2.5,
+      "horizon": 1,
+      "target_date": "2026-07-11"
+    }
+  ]
+}

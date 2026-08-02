@@ -23,7 +23,6 @@ from __future__ import annotations
 
 import logging
 from enum import Enum
-from typing import Iterable
 
 from homeassistant.core import HomeAssistant
 
@@ -31,7 +30,6 @@ from ..contract.models import (
     BatteryConfig,
     StorageMode,
 )
-from .storage_mode_specs import StorageModeSpec
 from ..ha_state import (
     available_state,
     normalize_energy_to_kwh,
@@ -47,6 +45,7 @@ from ..inbound.telemetry import (
     TelemetrySignal,
     resolve_bindings,
 )
+from .storage_mode_specs import StorageModeSpec
 
 _LOGGER = logging.getLogger(__name__)
 

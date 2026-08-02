@@ -2,7 +2,7 @@
 from __future__ import annotations
 
 from dataclasses import dataclass, field
-from datetime import date, datetime, timedelta, timezone
+from datetime import UTC, datetime, timedelta
 
 from rich.text import Text
 from textual.app import ComposeResult
@@ -112,7 +112,7 @@ def check_observed_generation(snap: Snapshot) -> ObservedGenerationCheckResult:
         result.pv_history_first_sample = pv_samples[0][0].isoformat()
         result.pv_history_last_sample = pv_samples[-1][0].isoformat()
 
-    now = datetime.now(timezone.utc)
+    now = datetime.now(UTC)
     today = now.date()
     yesterday = today - timedelta(days=1)
     comp_yesterday = 0.0
@@ -239,7 +239,7 @@ class ObservedGenerationSlotsTable(Static):
 
         for row in self._og.slot_rows:
             try:
-                dt = datetime.fromisoformat(row["start"]).astimezone(timezone.utc)
+                dt = datetime.fromisoformat(row["start"]).astimezone(UTC)
                 time_str = dt.strftime("%H:%M")
                 cur_date = dt.date()
             except (ValueError, AttributeError):
@@ -445,7 +445,7 @@ def check_observed_grid(snap: Snapshot) -> ObservedGridCheckResult:
         result.grid_history_first_sample = parsed_samples[0][0].isoformat()
         result.grid_history_last_sample = parsed_samples[-1][0].isoformat()
 
-    now = datetime.now(timezone.utc)
+    now = datetime.now(UTC)
     today = now.date()
     yesterday = today - timedelta(days=1)
     cy_imp = cy_exp = ct_imp = ct_exp = 0.0
@@ -594,7 +594,7 @@ class ObservedGridSlotsTable(Static):
 
         for row in self._og.slot_rows:
             try:
-                dt = datetime.fromisoformat(row["start"]).astimezone(timezone.utc)
+                dt = datetime.fromisoformat(row["start"]).astimezone(UTC)
                 time_str = dt.strftime("%H:%M")
                 cur_date = dt.date()
             except (ValueError, AttributeError):

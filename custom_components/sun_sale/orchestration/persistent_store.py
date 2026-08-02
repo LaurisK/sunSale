@@ -6,8 +6,9 @@ one shared file.
 """
 from __future__ import annotations
 
+from collections.abc import Callable
 from datetime import datetime
-from typing import Any, Callable, Generic, TypeVar
+from typing import Any, Generic, TypeVar
 
 from homeassistant.core import HomeAssistant
 from homeassistant.helpers.storage import Store
@@ -125,7 +126,7 @@ class PersistentStore(Generic[T]):
             cutoff: Entries with a timestamp strictly before this are removed.
             timestamp_fn: Extracts the datetime key from each list element.
         """
-        items: list = list(self._value or [])
+        items: list = list(self._value or [])  # type: ignore[arg-type]  # T is list[Item] here (see docstring)
         items = [x for x in items if timestamp_fn(x) >= cutoff]
         items.append(new_item)
         await self.save(items)  # type: ignore[arg-type]

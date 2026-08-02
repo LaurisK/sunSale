@@ -22,6 +22,7 @@ entity_id tail matching as a final safety net — so the resolver works
 regardless of which side of the upstream bug an entity falls on.
 """
 import logging
+
 from homeassistant.core import HomeAssistant
 from homeassistant.helpers import entity_registry as er
 
@@ -94,24 +95,42 @@ _SENSOR_SUFFIXES: dict[str, tuple[str, str]] = {
     "grid_power_fallback":         ("solis_modbus_inverter_ac_grid_port_power", "ac_grid_port_power"),
     # Daily-resetting energy counters — authoritative totals for the
     # ObservedGridSeries end-of-day correction (see inbound/grid.py).
-    "grid_import_energy_today":    ("solis_modbus_inverter_today_energy_imported_from_grid", "today_energy_imported_from_grid"),
+    "grid_import_energy_today":    (
+        "solis_modbus_inverter_today_energy_imported_from_grid",
+        "today_energy_imported_from_grid",
+    ),
     "grid_export_energy_today":    ("solis_modbus_inverter_today_energy_fed_into_grid", "today_energy_fed_into_grid"),
     # Yesterday-total energy counters — preferred bake-in source when the
     # inverter exposes them directly (avoids dependence on the pre-rollover
     # snapshot path). Mapped into raw_config under the keys expected by
     # ``yesterday_total_resolver.DEDICATED_ENTITY_CONFIG_KEY``.
-    "grid_import_energy_yesterday": ("solis_modbus_inverter_yesterday_energy_imported_from_grid", "yesterday_energy_imported_from_grid"),
-    "grid_export_energy_yesterday": ("solis_modbus_inverter_yesterday_energy_fed_into_grid", "yesterday_energy_fed_into_grid"),
+    "grid_import_energy_yesterday": (
+        "solis_modbus_inverter_yesterday_energy_imported_from_grid",
+        "yesterday_energy_imported_from_grid",
+    ),
+    "grid_export_energy_yesterday": (
+        "solis_modbus_inverter_yesterday_energy_fed_into_grid",
+        "yesterday_energy_fed_into_grid",
+    ),
     # Daily-resetting battery charge/discharge energy counters — feed the
     # capacity estimator's energy integral (inbound/battery.py + the anchor
     # accumulator in coordinator._build_capacity_observation).
-    "battery_charge_energy_today":    ("solis_modbus_inverter_today_battery_charge_energy", "today_battery_charge_energy"),
-    "battery_discharge_energy_today": ("solis_modbus_inverter_today_battery_discharge_energy", "today_battery_discharge_energy"),
+    "battery_charge_energy_today":    (
+        "solis_modbus_inverter_today_battery_charge_energy",
+        "today_battery_charge_energy",
+    ),
+    "battery_discharge_energy_today": (
+        "solis_modbus_inverter_today_battery_discharge_energy",
+        "today_battery_discharge_energy",
+    ),
     # PV power + daily-resetting solar-energy counter — feed the generation
     # observer (PvPowerTranslator) and bake-in (GenerationTranslator).
     "pv_power":                    ("solis_modbus_inverter_total_pv_power", "total_pv_power"),
     "solar_energy_today":          ("solis_modbus_inverter_pv_today_energy_generation", "pv_today_energy_generation"),
-    "solar_energy_yesterday":      ("solis_modbus_inverter_pv_yesterday_energy_generation", "pv_yesterday_energy_generation"),
+    "solar_energy_yesterday":      (
+        "solis_modbus_inverter_pv_yesterday_energy_generation",
+        "pv_yesterday_energy_generation",
+    ),
     # AC grid-port signed power (positive = inverter→grid) — distinct from
     # ``grid_power_fallback`` (which the controller uses with a sign flip
     # when meter-side reads are stale): the derived observers want the raw
@@ -121,12 +140,21 @@ _SENSOR_SUFFIXES: dict[str, tuple[str, str]] = {
     # bridging backup-protected loads during a grid outage.
     "backup_power":                ("solis_modbus_inverter_backup_load_power", "backup_load_power"),
     # Storage Control word readback (register 43110).
-    "storage_control_readback":    ("solis_modbus_inverter_storage_control_switch_value", "storage_control_switch_value"),
+    "storage_control_readback":    (
+        "solis_modbus_inverter_storage_control_switch_value",
+        "storage_control_switch_value",
+    ),
     # Battery max charge / discharge currents (per-slot; configured via numbers).
     "battery_max_charge_current":    ("solis_modbus_inverter_battery_max_charge_current", "battery_max_charge_current"),
-    "battery_max_discharge_current": ("solis_modbus_inverter_battery_max_discharge_current", "battery_max_discharge_current"),
+    "battery_max_discharge_current": (
+        "solis_modbus_inverter_battery_max_discharge_current",
+        "battery_max_discharge_current",
+    ),
     # Remote-Control AC active-power setpoint (register 43128, S16 signed W).
-    "rc_setpoint":                 ("solis_modbus_inverter_rc_inverter_ac_grid_active_power", "rc_inverter_ac_grid_active_power"),
+    "rc_setpoint":                 (
+        "solis_modbus_inverter_rc_inverter_ac_grid_active_power",
+        "rc_inverter_ac_grid_active_power",
+    ),
     # RC deadman timeout in minutes (register 43282, 1..30). Refreshed every
     # tick while an RC-backed mode is held — see InverterController.refresh_rc.
     "rc_timeout":                  ("solis_modbus_inverter_rc_timeout", "rc_timeout"),
@@ -414,18 +442,51 @@ class SolisEntityDiscovery:
                 data.get(CONF_INVERTER_ENTITY_BATTERY_CHARGE_ENERGY, ""),
             "battery_discharge_energy_today":
                 data.get(CONF_INVERTER_ENTITY_BATTERY_DISCHARGE_ENERGY, ""),
-            "storage_control_readback":      data.get(CONF_INVERTER_SOLIS_STORAGE_CONTROL_READBACK, DEFAULT_SOLIS_STORAGE_CONTROL_READBACK),
-            "battery_max_charge_current":    data.get(CONF_INVERTER_SOLIS_BATTERY_MAX_CHARGE_CURRENT, DEFAULT_SOLIS_BATTERY_MAX_CHARGE_CURRENT),
-            "battery_max_discharge_current": data.get(CONF_INVERTER_SOLIS_BATTERY_MAX_DISCHARGE_CURRENT, DEFAULT_SOLIS_BATTERY_MAX_DISCHARGE_CURRENT),
+            "storage_control_readback":      data.get(
+                CONF_INVERTER_SOLIS_STORAGE_CONTROL_READBACK,
+                DEFAULT_SOLIS_STORAGE_CONTROL_READBACK,
+            ),
+            "battery_max_charge_current":    data.get(
+                CONF_INVERTER_SOLIS_BATTERY_MAX_CHARGE_CURRENT,
+                DEFAULT_SOLIS_BATTERY_MAX_CHARGE_CURRENT,
+            ),
+            "battery_max_discharge_current": data.get(
+                CONF_INVERTER_SOLIS_BATTERY_MAX_DISCHARGE_CURRENT,
+                DEFAULT_SOLIS_BATTERY_MAX_DISCHARGE_CURRENT,
+            ),
             "rc_setpoint":                   data.get(CONF_INVERTER_SOLIS_RC_SETPOINT, DEFAULT_SOLIS_RC_SETPOINT),
-            "rc_grid_adjustment_select":     data.get(CONF_INVERTER_SOLIS_RC_GRID_ADJUSTMENT_SELECT, DEFAULT_SOLIS_RC_GRID_ADJUSTMENT_SELECT),
+            "rc_grid_adjustment_select":     data.get(
+                CONF_INVERTER_SOLIS_RC_GRID_ADJUSTMENT_SELECT,
+                DEFAULT_SOLIS_RC_GRID_ADJUSTMENT_SELECT,
+            ),
             "rc_timeout":                    data.get(CONF_INVERTER_SOLIS_RC_TIMEOUT, DEFAULT_SOLIS_RC_TIMEOUT),
             "backflow_power":                data.get(CONF_INVERTER_SOLIS_BACKFLOW_POWER, DEFAULT_SOLIS_BACKFLOW_POWER),
-            "peak_max_usable_grid_power":    data.get(CONF_INVERTER_SOLIS_PEAK_MAX_USABLE_GRID_POWER, DEFAULT_SOLIS_PEAK_MAX_USABLE_GRID_POWER),
-            "self_use_switch":               data.get(CONF_INVERTER_SOLIS_SELF_USE_SWITCH, DEFAULT_SOLIS_SELF_USE_SWITCH),
-            "tou_mode_switch":               data.get(CONF_INVERTER_SOLIS_TOU_MODE_SWITCH, DEFAULT_SOLIS_TOU_MODE_SWITCH),
-            "allow_grid_charge_switch":      data.get(CONF_INVERTER_SOLIS_ALLOW_GRID_CHARGE_SWITCH, DEFAULT_SOLIS_ALLOW_GRID_CHARGE_SWITCH),
-            "feed_in_priority_switch":       data.get(CONF_INVERTER_SOLIS_FEED_IN_PRIORITY_SWITCH, DEFAULT_SOLIS_FEED_IN_PRIORITY_SWITCH),
-            "allow_export_under_self_use_switch": data.get(CONF_INVERTER_SOLIS_ALLOW_EXPORT_UNDER_SELF_USE_SWITCH, DEFAULT_SOLIS_ALLOW_EXPORT_UNDER_SELF_USE_SWITCH),
-            "grid_feed_in_power_limit_switch": data.get(CONF_INVERTER_SOLIS_GRID_FEED_IN_POWER_LIMIT_SWITCH, DEFAULT_SOLIS_GRID_FEED_IN_POWER_LIMIT_SWITCH),
+            "peak_max_usable_grid_power":    data.get(
+                CONF_INVERTER_SOLIS_PEAK_MAX_USABLE_GRID_POWER,
+                DEFAULT_SOLIS_PEAK_MAX_USABLE_GRID_POWER,
+            ),
+            "self_use_switch":               data.get(
+                CONF_INVERTER_SOLIS_SELF_USE_SWITCH,
+                DEFAULT_SOLIS_SELF_USE_SWITCH,
+            ),
+            "tou_mode_switch":               data.get(
+                CONF_INVERTER_SOLIS_TOU_MODE_SWITCH,
+                DEFAULT_SOLIS_TOU_MODE_SWITCH,
+            ),
+            "allow_grid_charge_switch":      data.get(
+                CONF_INVERTER_SOLIS_ALLOW_GRID_CHARGE_SWITCH,
+                DEFAULT_SOLIS_ALLOW_GRID_CHARGE_SWITCH,
+            ),
+            "feed_in_priority_switch":       data.get(
+                CONF_INVERTER_SOLIS_FEED_IN_PRIORITY_SWITCH,
+                DEFAULT_SOLIS_FEED_IN_PRIORITY_SWITCH,
+            ),
+            "allow_export_under_self_use_switch": data.get(
+                CONF_INVERTER_SOLIS_ALLOW_EXPORT_UNDER_SELF_USE_SWITCH,
+                DEFAULT_SOLIS_ALLOW_EXPORT_UNDER_SELF_USE_SWITCH,
+            ),
+            "grid_feed_in_power_limit_switch": data.get(
+                CONF_INVERTER_SOLIS_GRID_FEED_IN_POWER_LIMIT_SWITCH,
+                DEFAULT_SOLIS_GRID_FEED_IN_POWER_LIMIT_SWITCH,
+            ),
         }

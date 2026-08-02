@@ -3,7 +3,7 @@ from __future__ import annotations
 
 import math
 from dataclasses import dataclass, field
-from datetime import date, datetime, timedelta, timezone, tzinfo
+from datetime import UTC, date, datetime, timedelta, tzinfo
 from enum import Enum
 
 
@@ -129,7 +129,7 @@ class ScheduleSlot:
     """
     start: datetime
     end: datetime
-    mode: "StorageMode"          # forward ref — StorageMode is defined later in this file
+    mode: StorageMode          # forward ref — StorageMode is defined later in this file
     power_kw: float              # Energy exchanged in this slot (kWh at 1h resolution)
     expected_soc_after: float    # Predicted battery SoC at end of slot
     expected_profit_eur: float   # Profit (negative = cost) from this action
@@ -638,7 +638,7 @@ class BaseLoadProfile:
     distinct_days: int                  # distinct local-date days in window
     computed_at: datetime
 
-    def at(self, t: datetime, local_tz) -> float:
+    def at(self, t: datetime, local_tz: tzinfo) -> float:
         """Return the baseload floor kW for the local hour containing t.
 
         Args:
@@ -682,7 +682,7 @@ class SunSaleConfig:
     """
     tariff: TariffConfig
     battery: BatteryConfig
-    local_tz: tzinfo = field(default=timezone.utc)
+    local_tz: tzinfo = field(default=UTC)
     price_source: str = "nordpool"  # provenance tag for PriceSlot.sources
     currency: str = "EUR"           # display-only currency code (UI labels/panel)
 
@@ -1192,7 +1192,7 @@ class StorageMode(Enum):
 # Excluded from the set, by design:
 #   - UNKNOWN : observed-only label, never a target.
 #   - TRACK   : needs per-cycle setpoint plumbing not yet exposed.
-DISPATCHABLE_MODES: tuple["StorageMode", ...] = (
+DISPATCHABLE_MODES: tuple[StorageMode, ...] = (
     StorageMode.SelfUse,
     StorageMode.NoExport,
     StorageMode.StandBy,

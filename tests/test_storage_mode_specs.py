@@ -10,7 +10,6 @@ from custom_components.sun_sale.outbound.storage_mode_specs import (
 )
 from tests.conftest import default_battery_config
 
-
 # ---------------------------------------------------------------------------
 # build_specs — concrete register targets
 # ---------------------------------------------------------------------------

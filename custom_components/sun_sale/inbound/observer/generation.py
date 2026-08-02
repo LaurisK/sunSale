@@ -15,7 +15,7 @@ stays as raw averaged values until the next rollover.
 """
 from __future__ import annotations
 
-from datetime import datetime, timedelta, timezone
+from datetime import UTC, datetime, timedelta
 from datetime import tzinfo as TzInfo
 from typing import Any
 
@@ -37,7 +37,6 @@ from ..telemetry import (
 )
 from .bake_in import baked_slots_by_date
 from .engine import ObservedSeriesEngine, Side
-
 
 # Side identifier for the generation engine instance. Stable across the
 # codebase — referenced by the bake-in store, the integration check, and the
@@ -80,7 +79,7 @@ def build_observed_generation_series(
     pv_power_history: PvPowerHistory,
     price_slots: tuple,
     now: datetime | None = None,
-    local_tz: TzInfo = timezone.utc,
+    local_tz: TzInfo = UTC,
     baked_history: BakedObservedHistory | None = None,
 ) -> ObservedGenerationSeries:
     """Derive per-slot observed generation by averaging PV power samples.
@@ -104,7 +103,7 @@ def build_observed_generation_series(
         grid-aligned. Empty when no price grid or no samples.
     """
     if now is None:
-        now = datetime.now(timezone.utc)
+        now = datetime.now(UTC)
 
     if not price_slots or not pv_power_history.samples:
         return ObservedGenerationSeries(slots=(), computed_at=now)
@@ -172,7 +171,7 @@ def _day_start(t: datetime, local_tz: TzInfo) -> datetime:
     """
     local_t = t.astimezone(local_tz)
     local_midnight = local_t.replace(hour=0, minute=0, second=0, microsecond=0)
-    return local_midnight.astimezone(timezone.utc)
+    return local_midnight.astimezone(UTC)
 
 
 # ---------------------------------------------------------------------------
@@ -215,7 +214,7 @@ class PvPowerTranslator:
             unavailable, or not configured.
         """
         if now is None:
-            now = datetime.now(timezone.utc)
+            now = datetime.now(UTC)
         power_w = self._reader.read(hass, TelemetrySignal.PV_POWER, now=now)
         if power_w is None:
             return None
@@ -268,7 +267,7 @@ class GenerationTranslator:
             entity is absent, unavailable, or not configured.
         """
         if now is None:
-            now = datetime.now(timezone.utc)
+            now = datetime.now(UTC)
         value = read_float_state(hass, self._entity_id)
         if value is None:
             return None

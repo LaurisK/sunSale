@@ -2,7 +2,7 @@
 from __future__ import annotations
 
 from dataclasses import dataclass, field
-from datetime import datetime, timezone, tzinfo
+from datetime import UTC, datetime, tzinfo
 
 try:
     from zoneinfo import ZoneInfo
@@ -26,9 +26,9 @@ def _resolve_tz(name: str) -> tzinfo:
         The resolved tzinfo, or UTC when the name is empty/unknown.
     """
     try:
-        return ZoneInfo(name) if name else timezone.utc
+        return ZoneInfo(name) if name else UTC
     except Exception:  # noqa: BLE001 - unknown tz name → safe UTC fallback
-        return timezone.utc
+        return UTC
 
 
 def _select_band_fees(tariff: dict, local_dt: datetime) -> tuple[float, float]:
@@ -190,7 +190,7 @@ class PricingSlotsTable(Static):
 
         for row in self._pc.slot_rows:
             try:
-                dt = datetime.fromisoformat(row["start"]).astimezone(timezone.utc)
+                dt = datetime.fromisoformat(row["start"]).astimezone(UTC)
                 time_str = dt.strftime("%m-%d %H:%M")
             except (ValueError, AttributeError):
                 time_str = row["start"]

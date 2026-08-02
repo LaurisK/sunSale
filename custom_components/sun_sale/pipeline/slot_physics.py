@@ -35,7 +35,6 @@ from dataclasses import dataclass
 
 from ..contract.models import BatteryConfig, StorageMode
 
-
 # ---------------------------------------------------------------------------
 # Outcome record
 # ---------------------------------------------------------------------------

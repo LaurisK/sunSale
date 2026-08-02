@@ -5,14 +5,14 @@ the rename store the value under the legacy ``reg`` key and must still load.
 """
 from __future__ import annotations
 
-from datetime import datetime, timezone
+from datetime import UTC, datetime
 
 from custom_components.sun_sale.contract.models import (
     InverterModeChange,
     InverterModeHistory,
     StorageMode,
 )
-from custom_components.sun_sale.orchestration import coordinator as c
+from custom_components.sun_sale.orchestration import store_codecs as c
 
 
 def test_legacy_reg_key_deserializes():
@@ -27,7 +27,7 @@ def test_legacy_reg_key_deserializes():
 def test_roundtrip_uses_raw_state_key():
     h = InverterModeHistory(samples=(
         InverterModeChange(
-            timestamp=datetime(2026, 6, 24, 10, tzinfo=timezone.utc),
+            timestamp=datetime(2026, 6, 24, 10, tzinfo=UTC),
             mode=StorageMode.SelfUse,
             raw_state=1,
         ),

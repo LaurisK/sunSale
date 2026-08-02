@@ -4,7 +4,7 @@ Covers the formula correctness for both derived sides (consumption + losses),
 the cycle-composition helper that drops partial samples, and the slot-builder
 end-to-end with a realistic mix of import/export/grid-down samples.
 """
-from datetime import datetime, timedelta, timezone
+from datetime import UTC, datetime, timedelta
 
 import pytest
 
@@ -29,8 +29,7 @@ from custom_components.sun_sale.inbound.observer.derived import (
     build_observed_losses_series,
 )
 from custom_components.sun_sale.inbound.pricing import build_price_series
-from tests.conftest import BASE_DT, default_tariff_config, make_price
-
+from tests.conftest import BASE_DT, default_tariff_config
 
 NOW = BASE_DT
 TODAY = NOW.date()
@@ -238,7 +237,7 @@ def test_build_sample_clamps_negative_pv_to_zero():
 
 def test_engine_returns_both_sides_with_independent_extracts():
     """A single sample stream yields different values per side."""
-    engine = build_derived_engine(local_tz=timezone.utc)
+    engine = build_derived_engine(local_tz=UTC)
     # Two samples in hour 10: solar 4, charging 1, AC out 2.8, no grid, no backup.
     # consumption = 0 + 2.8 + 0 = 2.8
     # losses      = 4 − 1 − 2.8 − 0 = 0.2

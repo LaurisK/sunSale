@@ -24,7 +24,7 @@ Today is always raw — the next-day bake-in finalises it.
 """
 from __future__ import annotations
 
-from datetime import datetime, timedelta, timezone
+from datetime import UTC, datetime, timedelta
 from datetime import tzinfo as TzInfo
 from typing import Any
 
@@ -50,7 +50,6 @@ from ..telemetry import (
 )
 from .bake_in import baked_slots_by_date
 from .engine import ObservedSeriesEngine, Side
-
 
 # Side identifiers for the grid engine. Stable across the codebase —
 # referenced by the bake-in store, the integration check, and the debug view
@@ -245,7 +244,7 @@ class _DailyTotalKwhTranslator:
             ``reading_cls`` instance, or None on missing / non-numeric state.
         """
         if now is None:
-            now = datetime.now(timezone.utc)
+            now = datetime.now(UTC)
         value = read_float_state(hass, self._entity_id)
         if value is None:
             return None
@@ -287,7 +286,7 @@ def build_observed_grid_series(
     export_power_history: GridExportPowerHistory,
     price_slots: tuple,
     now: datetime | None = None,
-    local_tz: TzInfo = timezone.utc,
+    local_tz: TzInfo = UTC,
     baked_history: BakedObservedHistory | None = None,
 ) -> ObservedGridSeries:
     """Derive per-slot gross import / export kWh from per-direction samples.
@@ -316,7 +315,7 @@ def build_observed_grid_series(
         when no price grid is supplied or both histories are empty.
     """
     if now is None:
-        now = datetime.now(timezone.utc)
+        now = datetime.now(UTC)
 
     if not price_slots or (
         not import_power_history.samples and not export_power_history.samples
@@ -460,4 +459,4 @@ def _day_start(t: datetime, local_tz: TzInfo) -> datetime:
     """
     local_t = t.astimezone(local_tz)
     local_midnight = local_t.replace(hour=0, minute=0, second=0, microsecond=0)
-    return local_midnight.astimezone(timezone.utc)
+    return local_midnight.astimezone(UTC)

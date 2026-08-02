@@ -18,7 +18,6 @@ from custom_components.sun_sale.pipeline.slot_physics import (
 )
 from tests.conftest import default_battery_config
 
-
 # ---------------------------------------------------------------------------
 # Helpers
 # ---------------------------------------------------------------------------
@@ -291,7 +290,6 @@ def test_gulp_solar_offsets_baseload_import():
 
 def test_dump_discharges_battery_and_exports():
     """Discharge: battery drains at max rate; AC after baseload exports."""
-    cfg = default_battery_config()
     out = _sim(mode=StorageMode.Discharge, solar_kwh=0.0, baseload_kwh=0.5, soc_in=0.50)
     # storage drawdown = 4 kWh; max_discharge_storage = 5/0.9 ≈ 5.56 → storage drained = 4
     # batt_discharge_ac = 4 * 0.9 = 3.6
@@ -393,7 +391,6 @@ def test_soc_clamped_within_bounds_on_overshoot():
 
 def test_reward_matches_revenue_cost_degradation_formula():
     """reward = grid_out·sell − grid_in·buy − throughput·deg."""
-    cfg = default_battery_config()
     out = _sim(
         mode=StorageMode.GridCharge,
         solar_kwh=0.0,

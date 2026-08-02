@@ -8,9 +8,9 @@ import pytest
 
 from custom_components.sun_sale.contract.models import StorageMode
 from custom_components.sun_sale.select import (
+    _OVERRIDE_OPTIONS,
     MODE_OVERRIDE_SUNSALE,
     ModeOverrideSelect,
-    _OVERRIDE_OPTIONS,
 )
 
 

@@ -9,7 +9,7 @@ declare (hardware would be needed to validate those).
 """
 from __future__ import annotations
 
-from datetime import datetime, timezone
+from datetime import UTC, datetime
 from unittest.mock import AsyncMock, MagicMock
 
 import pytest
@@ -18,21 +18,19 @@ from custom_components.sun_sale.contract.models import (
     DISPATCHABLE_MODES,
     StorageMode,
 )
+from custom_components.sun_sale.outbound.deye_driver import make_deye_driver
 from custom_components.sun_sale.outbound.driver import InverterControlDriver
 from custom_components.sun_sale.outbound.entity_control import (
-    ControlPlan,
     EntityActuator,
     EntityControlDriver,
     EntityWrite,
     InverterContext,
 )
-from custom_components.sun_sale.outbound.deye_driver import make_deye_driver
 from custom_components.sun_sale.outbound.goodwe_driver import make_goodwe_driver
 from custom_components.sun_sale.outbound.huawei_driver import make_huawei_driver
 from custom_components.sun_sale.outbound.solax_driver import make_solax_driver
 from custom_components.sun_sale.outbound.sungrow_driver import make_sungrow_driver
 from tests.conftest import default_battery_config
-
 
 # --- Fakes ------------------------------------------------------------------ #
 
@@ -247,7 +245,7 @@ def test_observe_packs_decoded_mode(name: str) -> None:
     assert spec is not None
     mode_write = spec.writes[0]
     hass.set_state(_ROLES[mode_write.role], str(mode_write.value))
-    now = datetime(2026, 6, 27, 12, tzinfo=timezone.utc)
+    now = datetime(2026, 6, 27, 12, tzinfo=UTC)
     reading = drv.observe(now)
     assert reading.timestamp == now
     assert reading.mode == StorageMode.SelfUse

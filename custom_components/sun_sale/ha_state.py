@@ -16,7 +16,7 @@ cycle.
 """
 from __future__ import annotations
 
-from datetime import datetime, timezone
+from datetime import UTC, datetime
 from typing import TYPE_CHECKING, Any
 
 if TYPE_CHECKING:
@@ -95,7 +95,7 @@ def normalize_energy_to_kwh(value: float, unit: str) -> float:
     return value * _ENERGY_UNIT_SCALERS.get(unit.strip(), 1.0)
 
 
-def available_state(hass: Any, entity_id: str) -> "State | None":
+def available_state(hass: Any, entity_id: str) -> State | None:
     """Return the entity's HA ``State`` when it carries a usable value.
 
     Guards the cases every HA-edge reader must reject before trusting a
@@ -181,7 +181,7 @@ def read_power_kw(
     if max_age_s != float("inf"):
         last_updated = getattr(state, "last_updated", None)
         if last_updated is not None and last_updated.tzinfo is not None:
-            ref = now or datetime.now(timezone.utc)
+            ref = now or datetime.now(UTC)
             if (ref - last_updated).total_seconds() > max_age_s:
                 return None
     unit = str((state.attributes or {}).get("unit_of_measurement") or "").strip()

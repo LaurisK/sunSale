@@ -3,11 +3,6 @@ from __future__ import annotations
 
 from unittest.mock import MagicMock
 
-from custom_components.sun_sale.inbound import solis_entity_resolver as solis
-from custom_components.sun_sale.inbound.inverter_entity_resolver import (
-    resolve_inverter_entities,
-)
-from custom_components.sun_sale.outbound.inverter import InverterPlatform
 from custom_components.sun_sale.contract.const import (
     CONF_INVERTER_ENTITY_AC_PORT_POWER,
     CONF_INVERTER_ENTITY_BATTERY_POWER,
@@ -22,6 +17,11 @@ from custom_components.sun_sale.contract.const import (
     DEFAULT_SOLIS_RC_TIMEOUT,
     DEFAULT_SOLIS_SELF_USE_SWITCH,
 )
+from custom_components.sun_sale.inbound import solis_entity_resolver as solis
+from custom_components.sun_sale.inbound.inverter_entity_resolver import (
+    resolve_inverter_entities,
+)
+from custom_components.sun_sale.outbound.inverter import InverterPlatform
 
 
 def _hass_with_solis_entries(entries):

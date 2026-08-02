@@ -1,7 +1,7 @@
 """Tests for the InverterControlModule (observer / dispatcher behind one entry point)."""
 from __future__ import annotations
 
-from datetime import datetime, timedelta, timezone
+from datetime import UTC, datetime, timedelta
 from unittest.mock import AsyncMock, MagicMock
 
 import pytest
@@ -29,7 +29,7 @@ def _driver_for(inverter) -> SolisDriver:
     return SolisDriver(inverter, default_battery_config(), 10_000, 10_000)
 
 
-NOW = datetime(2026, 5, 30, 12, 0, tzinfo=timezone.utc)
+NOW = datetime(2026, 5, 30, 12, 0, tzinfo=UTC)
 
 
 def _mock_inverter() -> MagicMock:
@@ -71,7 +71,7 @@ def _wire_inverter_to_spec(
 def _module(inverter=None) -> InverterControlModule:
     return InverterControlModule(
         driver=_driver_for(inverter or _mock_inverter()),
-        local_tz=timezone.utc,
+        local_tz=UTC,
     )
 
 
@@ -494,7 +494,7 @@ def _module_with_hass(inverter=None) -> InverterControlModule:
     """Build a module with a non-None hass so the verify scheduler runs."""
     return InverterControlModule(
         driver=_driver_for(inverter or _mock_inverter()),
-        local_tz=timezone.utc,
+        local_tz=UTC,
         hass=MagicMock(),
     )
 
@@ -604,7 +604,7 @@ async def test_shutdown_cancels_pending_verify_and_drops_callback(call_later):
     on_change = MagicMock()
     mod = InverterControlModule(
         driver=_driver_for(inv),
-        local_tz=timezone.utc,
+        local_tz=UTC,
         hass=MagicMock(),
         on_state_change=on_change,
     )

@@ -21,16 +21,35 @@ registering all built-in validators into the global registry.
 """
 from __future__ import annotations
 
+from . import validators  # noqa: F401  — registers built-in validators on import
+from .app import IntegrationCheckApp
+from .battery import (
+    BatteryCheckResult,
+    BatteryRuntimeCheckResult,
+    check_battery,
+    check_battery_runtime,
+)
+from .billing import MonthlyBillCheckResult, check_monthly_bill
+from .calculation import CalculationCheckResult, check_calculation
+from .cli import main
 from .client import (
     DEBUG_PATH,
     STATE_PATH,
     HAClient,
 )
+from .consumption import (
+    BaseLoadCheckResult,
+    HouseholdConsumptionCheckResult,
+    check_base_load,
+    check_household_consumption,
+)
 from .credentials import CredentialsError, resolve_credentials
-from .snapshot import Snapshot, collect
-from .registry import CheckResult, Validator, validator
-from . import validators  # noqa: F401  — registers built-in validators on import
-
+from .derived import (
+    ObservedConsumptionCheckResult,
+    ObservedLossesCheckResult,
+    check_observed_consumption,
+    check_observed_losses,
+)
 from .forecast import (
     ForecastAccuracyCheckResult,
     ForecastCheckResult,
@@ -39,16 +58,7 @@ from .forecast import (
     check_forecast_accuracy,
     check_forecast_quality,
 )
-from .pricing import PricingCheckResult, check_pricing
-from .calculation import CalculationCheckResult, check_calculation
-from .schedule import ScheduleCheckResult, check_schedule
 from .inverter import InverterModeCheckResult, check_inverter_mode
-from .battery import (
-    BatteryCheckResult,
-    BatteryRuntimeCheckResult,
-    check_battery,
-    check_battery_runtime,
-)
 from .observed import (
     BakedObservedCheckResult,
     BakedObservedCheckRow,
@@ -58,23 +68,12 @@ from .observed import (
     check_observed_generation,
     check_observed_grid,
 )
-from .consumption import (
-    BaseLoadCheckResult,
-    HouseholdConsumptionCheckResult,
-    check_base_load,
-    check_household_consumption,
-)
+from .pricing import PricingCheckResult, check_pricing
 from .profitability import ProfitabilityCheckResult, check_profitability
-from .billing import MonthlyBillCheckResult, check_monthly_bill
-from .derived import (
-    ObservedConsumptionCheckResult,
-    ObservedLossesCheckResult,
-    check_observed_consumption,
-    check_observed_losses,
-)
+from .registry import CheckResult, Validator, validator
 from .report import render_json, render_text, render_values, run_checks
-from .app import IntegrationCheckApp
-from .cli import main
+from .schedule import ScheduleCheckResult, check_schedule
+from .snapshot import Snapshot, collect
 
 __all__ = [
     # infra

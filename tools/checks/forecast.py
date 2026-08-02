@@ -2,7 +2,7 @@
 from __future__ import annotations
 
 from dataclasses import dataclass, field
-from datetime import date, datetime, timedelta, timezone
+from datetime import UTC, date, datetime, timedelta
 
 from rich.text import Text
 from textual.app import ComposeResult
@@ -53,8 +53,8 @@ def _parse_watts(watts: dict) -> tuple[list[tuple[datetime, float]], int]:
         try:
             dt = datetime.fromisoformat(str(ts_str))
             if dt.tzinfo is None:
-                dt = dt.replace(tzinfo=timezone.utc)
-            parsed.append((dt.astimezone(timezone.utc), float(w)))
+                dt = dt.replace(tzinfo=UTC)
+            parsed.append((dt.astimezone(UTC), float(w)))
         except (ValueError, TypeError):
             continue
     parsed.sort(key=lambda x: x[0])
@@ -101,7 +101,7 @@ def check_forecast(snap: Snapshot) -> ForecastCheckResult:
     result.n_arrays = len(arrays_with_data)
     result.array_eids = list(arrays_with_data)
 
-    now = datetime.now(timezone.utc)
+    now = datetime.now(UTC)
     today = now.date()
 
     day_plan: list[tuple[str, date]] = [
@@ -154,9 +154,9 @@ def check_forecast(snap: Snapshot) -> ForecastCheckResult:
         try:
             dt = datetime.fromisoformat(entry["start"])
             if dt.tzinfo is None:
-                dt = dt.replace(tzinfo=timezone.utc)
+                dt = dt.replace(tzinfo=UTC)
             kwh = float(entry["kwh"])
-            result.yesterday_store_slots.append((dt.astimezone(timezone.utc), kwh))
+            result.yesterday_store_slots.append((dt.astimezone(UTC), kwh))
             yday_total += kwh
         except (KeyError, ValueError, TypeError):
             continue
@@ -243,7 +243,7 @@ class ForecastSlotsTable(Static):
 
     def on_mount(self) -> None:
         """Populate the DataTable with slot rows for yesterday, today, and tomorrow."""
-        now_utc = datetime.now(timezone.utc)
+        now_utc = datetime.now(UTC)
         today_d = now_utc.date()
         yesterday_d = today_d - timedelta(days=1)
         tomorrow_d = today_d + timedelta(days=1)
@@ -275,8 +275,8 @@ class ForecastSlotsTable(Static):
             try:
                 dt = datetime.fromisoformat(s["start"])
                 if dt.tzinfo is None:
-                    dt = dt.replace(tzinfo=timezone.utc)
-                dt_utc = dt.astimezone(timezone.utc)
+                    dt = dt.replace(tzinfo=UTC)
+                dt_utc = dt.astimezone(UTC)
                 if dt_utc.date() in in_range:
                     module_data[dt_utc] = s.get("expected_kwh", 0.0)
             except (KeyError, ValueError):
@@ -646,7 +646,7 @@ class ForecastAccuracySlotsTable(Static):
 
         for row in self._fa.slot_rows:
             try:
-                dt = datetime.fromisoformat(row["start"]).astimezone(timezone.utc)
+                dt = datetime.fromisoformat(row["start"]).astimezone(UTC)
                 time_str = dt.strftime("%H:%M")
                 cur_date = dt.date()
             except (ValueError, AttributeError):
@@ -848,9 +848,15 @@ class ForecastQualityBucketTable(Static):
         """Populate the DataTable with one row per bucket."""
         table = self.query_one(DataTable)
         table.add_columns("Bucket", "n", "Bias Wh", "MAE Wh", "RMSE Wh", "MAPE %", "R²", "")
+        def fmt(v: float | None) -> str:
+            """Format a value to 1 decimal place, or an em dash when None."""
+            return f"{v:.1f}" if v is not None else "—"
+
+        def fmt4(v: float | None) -> str:
+            """Format a value to 4 decimal places, or an em dash when None."""
+            return f"{v:.4f}" if v is not None else "—"
+
         for row in self._rows:
-            fmt = lambda v: f"{v:.1f}" if v is not None else "—"
-            fmt4 = lambda v: f"{v:.4f}" if v is not None else "—"
             ok_style = "" if row["ok"] else "red"
             table.add_row(
                 Text(str(row["key"]),     style="cyan"),

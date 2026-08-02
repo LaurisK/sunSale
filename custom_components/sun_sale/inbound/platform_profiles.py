@@ -28,12 +28,14 @@ the entity that didn't match, and adjust that role's ``uid_patterns`` /
 from __future__ import annotations
 
 import logging
+from collections.abc import Iterable
 from dataclasses import dataclass, field
-from typing import Iterable
 
 from homeassistant.core import HomeAssistant
 from homeassistant.helpers import (
     device_registry as dr,
+)
+from homeassistant.helpers import (
     entity_registry as er,
 )
 

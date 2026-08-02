@@ -1,7 +1,7 @@
 """Sensor entities for sunSale."""
 from __future__ import annotations
 
-from datetime import datetime, timedelta, timezone
+from datetime import UTC, datetime, timedelta
 from typing import Any
 
 from homeassistant.components.sensor import (
@@ -20,8 +20,6 @@ from .contract.const import (
     CONF_INVERTER_ENTITY_SOLAR_ENERGY,
     DOMAIN,
 )
-from .currency import currency_icon, per_kwh_unit, resolve_currency
-from .orchestration.coordinator import SunSaleCoordinator
 from .contract.models import (
     BakedObservedHistory,
     BaseLoadProfile,
@@ -44,6 +42,8 @@ from .contract.models import (
     StorageMode,
     SunTimes,
 )
+from .currency import currency_icon, per_kwh_unit, resolve_currency
+from .orchestration.coordinator import SunSaleCoordinator
 
 
 async def async_setup_entry(
@@ -235,7 +235,7 @@ class _BaseSensor(CoordinatorEntity, SensorEntity):
         schedule = self._schedule
         if not schedule or not schedule.slots:
             return None
-        now = datetime.now(timezone.utc)
+        now = datetime.now(UTC)
         return next(
             (s for s in schedule.slots if s.start <= now < s.end),
             schedule.slots[0],
@@ -248,7 +248,7 @@ class _BaseSensor(CoordinatorEntity, SensorEntity):
         pricing: PriceSeries | None = self.coordinator.data.get("pricing")
         if not pricing or not pricing.slots:
             return None
-        now = datetime.now(timezone.utc)
+        now = datetime.now(UTC)
         return pricing.slot_at(now) or pricing.slots[0]
 
 
@@ -285,7 +285,7 @@ class NextActionSensor(_BaseSensor):
         schedule = self._schedule
         if not schedule or not schedule.slots:
             return StorageMode.SelfUse.value
-        now = datetime.now(timezone.utc)
+        now = datetime.now(UTC)
         current = self._current_slot()
         if current is None:
             return StorageMode.SelfUse.value
@@ -311,7 +311,7 @@ class NextActionTimeSensor(_BaseSensor):
         schedule = self._schedule
         if not schedule or not schedule.slots:
             return None
-        now = datetime.now(timezone.utc)
+        now = datetime.now(UTC)
         current = self._current_slot()
         if current is None:
             return None
@@ -339,7 +339,7 @@ class ExpectedProfitSensor(_BaseSensor):
         schedule = self._schedule
         if not schedule:
             return 0.0
-        today = datetime.now(timezone.utc).date()
+        today = datetime.now(UTC).date()
         return round(
             sum(s.expected_profit_eur for s in schedule.slots if s.start.date() == today),
             4,
@@ -496,7 +496,7 @@ class InverterModeSensor(_BaseSensor):
         forecast: GenerationSeries | None = data.get("forecast")
         load_kw: float = data.get("household_load_kw") or 0.0
 
-        now = datetime.now(timezone.utc)
+        now = datetime.now(UTC)
         slot_start = now.replace(minute=(now.minute // 15) * 15, second=0, microsecond=0)
         slot_end = slot_start + timedelta(minutes=15)
 
@@ -652,7 +652,7 @@ class DashboardSensor(_BaseSensor):
         """Return serialized pipeline outputs and battery summary for the panel."""
         if self.coordinator.data is None:
             return {}
-        now = datetime.now(timezone.utc)
+        now = datetime.now(UTC)
         bc = self.coordinator.battery_config
         config = {**self._entry.data, **self._entry.options}
         err: ForecastErrorSeries | None = self.coordinator.data.get("forecast_error")
@@ -912,7 +912,7 @@ class ForecastPipelineSensor(_BaseSensor):
         gen: GenerationSeries | None = (self.coordinator.data or {}).get("forecast")
         if not gen:
             return 0.0
-        today = datetime.now(timezone.utc).date()
+        today = datetime.now(UTC).date()
         return round(
             sum(s.expected_kwh for s in gen.slots if s.start.date() == today),
             2,
@@ -1032,7 +1032,7 @@ class CurrentBaseloadSensor(_BaseloadSensor):
         if profile is None:
             return None
         local_tz = self.coordinator._sun_sale_config.local_tz
-        return round(profile.at(datetime.now(timezone.utc), local_tz), 3)
+        return round(profile.at(datetime.now(UTC), local_tz), 3)
 
     @property
     def extra_state_attributes(self) -> dict[str, Any]:
@@ -1188,7 +1188,7 @@ class MonthlyBillSensor(_BaseSensor):
         Returns:
             Timezone-aware datetime for midnight on the 1st of the current month.
         """
-        now = datetime.now(timezone.utc)
+        now = datetime.now(UTC)
         return now.replace(day=1, hour=0, minute=0, second=0, microsecond=0)
 
     @property
@@ -1252,7 +1252,7 @@ class _DailyCostSensorBase(_BaseSensor):
         read ``last_reset`` before the first refresh completes).
         """
         cfg = getattr(self.coordinator, "_sun_sale_config", None)
-        return getattr(cfg, "local_tz", timezone.utc) or timezone.utc
+        return getattr(cfg, "local_tz", UTC) or UTC
 
     def _local_midnight_utc(self, days_ago: int) -> datetime:
         """Return the UTC instant of local midnight ``days_ago`` days back.
@@ -1264,8 +1264,8 @@ class _DailyCostSensorBase(_BaseSensor):
             Timezone-aware UTC datetime of that local midnight.
         """
         local_tz = self._local_tz()
-        d = datetime.now(timezone.utc).astimezone(local_tz).date() - timedelta(days=days_ago)
-        return datetime(d.year, d.month, d.day, tzinfo=local_tz).astimezone(timezone.utc)
+        d = datetime.now(UTC).astimezone(local_tz).date() - timedelta(days=days_ago)
+        return datetime(d.year, d.month, d.day, tzinfo=local_tz).astimezone(UTC)
 
     @staticmethod
     def _sum_flows(slots, start: datetime, end: datetime | None) -> dict[str, float]:
@@ -1546,7 +1546,7 @@ class _YesterdayBakedKwhSensor(_ObservedKwhSensorBase):
         if history is None:
             return None
         local_tz = self.coordinator._sun_sale_config.local_tz  # noqa: SLF001
-        local_today = datetime.now(timezone.utc).astimezone(local_tz).date()
+        local_today = datetime.now(UTC).astimezone(local_tz).date()
         yesterday_str = (local_today - timedelta(days=1)).isoformat()
         for r in history.records:
             if r.date_str == yesterday_str and r.side_id == self._side_id:

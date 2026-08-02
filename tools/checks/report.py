@@ -4,7 +4,7 @@ from __future__ import annotations
 import json
 from typing import Any
 
-from .registry import CheckResult, _VALIDATORS
+from .registry import _VALIDATORS, CheckResult
 from .snapshot import Snapshot
 
 

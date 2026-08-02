@@ -1,18 +1,16 @@
 """Tests for the /api/sun_sale/debug view."""
 from __future__ import annotations
 
-from datetime import datetime, timedelta, timezone
+from datetime import UTC, datetime, timedelta
 from unittest.mock import MagicMock
 
 import pytest
 
-from custom_components.sun_sale.orchestration.debug_view import SunSaleDebugView, _coordinator_to_dict
 from custom_components.sun_sale.contract.models import (
     BatteryState,
     CalculationResult,
     GenerationSeries,
     PriceSeries,
-    PriceSlot,
     Schedule,
     ScheduleSlot,
     SlotDecision,
@@ -20,9 +18,13 @@ from custom_components.sun_sale.contract.models import (
     TariffConfig,
 )
 from custom_components.sun_sale.inbound.pricing import build_price_series
+from custom_components.sun_sale.orchestration.debug_view import (
+    SunSaleDebugView,
+    _coordinator_to_dict,
+)
 from tests.conftest import BASE_DT, default_tariff_config, make_price
 
-BASE = datetime(2026, 4, 26, 10, 0, 0, tzinfo=timezone.utc)
+BASE = datetime(2026, 4, 26, 10, 0, 0, tzinfo=UTC)
 NOW = BASE_DT
 
 

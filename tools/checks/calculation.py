@@ -2,7 +2,7 @@
 from __future__ import annotations
 
 from dataclasses import dataclass, field
-from datetime import date, datetime, timezone
+from datetime import UTC, datetime
 
 from rich.text import Text
 from textual.app import ComposeResult
@@ -131,7 +131,7 @@ class CalculationSlotsTable(Static):
 
         for row in self._cc.slot_rows:
             try:
-                dt = datetime.fromisoformat(row["start"]).astimezone(timezone.utc)
+                dt = datetime.fromisoformat(row["start"]).astimezone(UTC)
                 time_str = dt.strftime("%H:%M")
                 cur_date = dt.date()
             except (ValueError, AttributeError):

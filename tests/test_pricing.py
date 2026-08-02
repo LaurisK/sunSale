@@ -1,6 +1,6 @@
 """Tests for pricing.py — pure Python, no HA required."""
 import dataclasses
-from datetime import datetime, timedelta, timezone
+from datetime import UTC, datetime, timedelta
 from zoneinfo import ZoneInfo
 
 from custom_components.sun_sale.contract.models import (
@@ -202,10 +202,10 @@ def test_zero_fill_no_gap_when_tomorrow_partial_in_local_tz():
     # LT (UTC+3): raw_today covers UTC 21:00 16 May → UTC 21:00 17 May; the
     # first 4 raw_tomorrow entries (LT 00:00–01:00 18 May) land on UTC-today.
     res = timedelta(minutes=15)
-    today_start_utc = datetime(2026, 5, 16, 21, 0, tzinfo=timezone.utc)
+    today_start_utc = datetime(2026, 5, 16, 21, 0, tzinfo=UTC)
     today = [_q(today_start_utc + i * res, 0.10, res) for i in range(96)]
     tomorrow_partial = [_q(today_start_utc + (96 + i) * res, 0.15, res) for i in range(4)]
-    now = datetime(2026, 5, 17, 14, 15, tzinfo=timezone.utc)
+    now = datetime(2026, 5, 17, 14, 15, tzinfo=UTC)
 
     out = _zero_fill_tomorrow(today + tomorrow_partial, res, now)
 
@@ -222,9 +222,9 @@ def test_zero_fill_no_gap_when_raw_tomorrow_empty_in_local_tz():
     # Only raw_today published. Fill must start where raw_today ends, not at
     # UTC midnight (the old buggy anchor).
     res = timedelta(minutes=15)
-    today_start_utc = datetime(2026, 5, 16, 21, 0, tzinfo=timezone.utc)
+    today_start_utc = datetime(2026, 5, 16, 21, 0, tzinfo=UTC)
     today = [_q(today_start_utc + i * res, 0.10, res) for i in range(96)]
-    now = datetime(2026, 5, 17, 14, 15, tzinfo=timezone.utc)
+    now = datetime(2026, 5, 17, 14, 15, tzinfo=UTC)
 
     out = _zero_fill_tomorrow(today, res, now)
 
@@ -238,9 +238,9 @@ def test_zero_fill_30min_resolution_produces_correct_slot_count():
     # The old branch hard-coded 96/24 slots-per-day; a 30-min sensor would be
     # mis-sized. The new fill is resolution-driven.
     res = timedelta(minutes=30)
-    start = datetime(2026, 5, 16, 21, 0, tzinfo=timezone.utc)
+    start = datetime(2026, 5, 16, 21, 0, tzinfo=UTC)
     real = [_q(start + i * res, 0.10, res) for i in range(48)]
-    now = datetime(2026, 5, 17, 14, 15, tzinfo=timezone.utc)
+    now = datetime(2026, 5, 17, 14, 15, tzinfo=UTC)
 
     out = _zero_fill_tomorrow(real, res, now)
 
@@ -253,9 +253,9 @@ def test_zero_fill_30min_resolution_produces_correct_slot_count():
 
 def test_zero_fill_passthrough_when_already_covers_48h():
     res = timedelta(hours=1)
-    start = datetime(2026, 5, 16, 21, 0, tzinfo=timezone.utc)
+    start = datetime(2026, 5, 16, 21, 0, tzinfo=UTC)
     full = [_q(start + i * res, 0.10, res) for i in range(48)]
-    now = datetime(2026, 5, 17, 14, 15, tzinfo=timezone.utc)
+    now = datetime(2026, 5, 17, 14, 15, tzinfo=UTC)
 
     out = _zero_fill_tomorrow(full, res, now)
 
@@ -264,7 +264,7 @@ def test_zero_fill_passthrough_when_already_covers_48h():
 
 def test_zero_fill_empty_input_passthrough():
     res = timedelta(hours=1)
-    now = datetime(2026, 5, 17, 14, 15, tzinfo=timezone.utc)
+    now = datetime(2026, 5, 17, 14, 15, tzinfo=UTC)
     assert _zero_fill_tomorrow([], res, now) == []
 
 
@@ -416,7 +416,7 @@ def test_tou_translator_emits_synthetic_schedule():
 
     # Two bands: cheap overnight (00:00) and peak (08:00), UTC for simplicity.
     bands = ((0, 0.10), (8 * 60, 0.40))
-    translator = TouScheduleTranslator(bands, resolution=timedelta(hours=1), local_tz=timezone.utc)
+    translator = TouScheduleTranslator(bands, resolution=timedelta(hours=1), local_tz=UTC)
     feed = translator.parse(None, now=NOW)
     assert len(feed.entries) == 48  # today + tomorrow at 1h
     by_start = {e.start: e.price_eur_kwh for e in feed.entries}
@@ -427,7 +427,7 @@ def test_tou_translator_emits_synthetic_schedule():
 def test_tou_translator_empty_bands_returns_empty():
     from custom_components.sun_sale.inbound.pricing import TouScheduleTranslator
 
-    feed = TouScheduleTranslator((), local_tz=timezone.utc).parse(None, now=NOW)
+    feed = TouScheduleTranslator((), local_tz=UTC).parse(None, now=NOW)
     assert feed.entries == []
 
 

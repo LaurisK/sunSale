@@ -1,5 +1,5 @@
 """Tests for pipeline/profitability.py — pure Python, no HA mocking needed."""
-from datetime import date, datetime, timedelta, timezone
+from datetime import UTC, date, datetime, timedelta
 from zoneinfo import ZoneInfo
 
 import pytest
@@ -12,7 +12,6 @@ from custom_components.sun_sale.contract.models import (
 )
 from custom_components.sun_sale.inbound.pricing import build_price_series
 from custom_components.sun_sale.pipeline.profitability import (
-    MIN_HISTORY_DAYS,
     classify_day,
     compute_class_medians,
     compute_profitability_score,
@@ -36,7 +35,7 @@ def _history(peaks: list[DailyPeak]) -> PriceHistory:
 
 def _price_series_for_day(d: date, peak_at_hour: int, peak_value: float):
     """Build a 24h PriceSeries on `d` with a single peak hour."""
-    base = datetime.combine(d, datetime.min.time()).replace(tzinfo=timezone.utc)
+    base = datetime.combine(d, datetime.min.time()).replace(tzinfo=UTC)
     entries = [
         PriceEntry(
             start=base + timedelta(hours=h),
@@ -155,7 +154,7 @@ def test_today_peak_buckets_slots_by_local_date():
     riga = ZoneInfo("Europe/Riga")
     saturday = date(2024, 1, 13)
     # UTC start of local Saturday 00:00 in Riga (UTC+2) is Fri 22:00.
-    base_utc = datetime(2024, 1, 12, 22, 0, tzinfo=timezone.utc)
+    base_utc = datetime(2024, 1, 12, 22, 0, tzinfo=UTC)
     entries = [
         PriceEntry(
             start=base_utc + timedelta(hours=h),
@@ -193,7 +192,7 @@ def _build_30d_weekday_only_history(end_day: date, peak_value: float = 0.20):
 
 def test_score_sparse_history_returns_none():
     today = date(2024, 1, 15)
-    now = datetime(2024, 1, 15, 20, 0, tzinfo=timezone.utc)
+    now = datetime(2024, 1, 15, 20, 0, tzinfo=UTC)
     history = _history([_peak(today - timedelta(days=i), 0.20) for i in range(1, 5)])
     series = _price_series_for_day(today, peak_at_hour=18, peak_value=0.30)
     result = compute_profitability_score(series, history, now=now)
@@ -205,7 +204,7 @@ def test_score_sparse_history_returns_none():
 
 def test_score_today_far_above_history():
     today = date(2024, 1, 15)  # Monday
-    now = datetime(2024, 1, 15, 20, 0, tzinfo=timezone.utc)
+    now = datetime(2024, 1, 15, 20, 0, tzinfo=UTC)
     history = _build_30d_weekday_only_history(today, peak_value=0.20)
     series = _price_series_for_day(today, peak_at_hour=18, peak_value=10.0)
     result = compute_profitability_score(series, history, now=now)
@@ -214,7 +213,7 @@ def test_score_today_far_above_history():
 
 def test_score_today_far_below_history():
     today = date(2024, 1, 15)
-    now = datetime(2024, 1, 15, 20, 0, tzinfo=timezone.utc)
+    now = datetime(2024, 1, 15, 20, 0, tzinfo=UTC)
     history = _build_30d_weekday_only_history(today, peak_value=0.20)
     series = _price_series_for_day(today, peak_at_hour=18, peak_value=0.001)
     result = compute_profitability_score(series, history, now=now)
@@ -223,7 +222,7 @@ def test_score_today_far_below_history():
 
 def test_score_today_equals_history_is_midpoint():
     today = date(2024, 1, 15)
-    now = datetime(2024, 1, 15, 20, 0, tzinfo=timezone.utc)
+    now = datetime(2024, 1, 15, 20, 0, tzinfo=UTC)
     history = _build_30d_weekday_only_history(today, peak_value=0.20)
     series = _price_series_for_day(today, peak_at_hour=18, peak_value=0.20)
     result = compute_profitability_score(series, history, now=now)
@@ -232,7 +231,7 @@ def test_score_today_equals_history_is_midpoint():
 
 def test_score_excludes_today_from_distribution():
     today = date(2024, 1, 15)
-    now = datetime(2024, 1, 15, 20, 0, tzinfo=timezone.utc)
+    now = datetime(2024, 1, 15, 20, 0, tzinfo=UTC)
     history = _build_30d_weekday_only_history(today, peak_value=0.20)
     # Inject a today-dated outlier; it must NOT be part of the distribution
     spiked = _history(list(history.peaks) + [_peak(today, 999.0)])
@@ -252,7 +251,7 @@ def test_score_normalises_by_day_class():
     weekend adjusted ~1). Expected: score very high.
     """
     saturday = date(2024, 1, 20)  # Saturday
-    now = datetime(2024, 1, 20, 20, 0, tzinfo=timezone.utc)
+    now = datetime(2024, 1, 20, 20, 0, tzinfo=UTC)
 
     peaks: list[DailyPeak] = []
     d = saturday
@@ -273,7 +272,7 @@ def test_score_normalises_by_day_class():
 def test_score_uses_holiday_bucket():
     """A holiday on a weekday is classified as HOLIDAY and gets its own median."""
     holiday = date(2024, 1, 15)  # Monday flagged as holiday
-    now = datetime(2024, 1, 15, 20, 0, tzinfo=timezone.utc)
+    now = datetime(2024, 1, 15, 20, 0, tzinfo=UTC)
 
     peaks: list[DailyPeak] = []
     d = holiday
@@ -312,7 +311,7 @@ def test_score_rank_window_limits_to_recent_days():
     today would be near the top of the distribution instead.
     """
     today = date(2024, 6, 3)  # Monday — keep today_class = WEEKDAY
-    now = datetime(2024, 6, 3, 20, 0, tzinfo=timezone.utc)
+    now = datetime(2024, 6, 3, 20, 0, tzinfo=UTC)
 
     peaks: list[DailyPeak] = []
     d = today
@@ -337,7 +336,7 @@ def test_score_resolves_today_in_local_time():
     23:00. With local_tz the day-class is WEEKEND; UTC logic says WEEKDAY.
     """
     riga = ZoneInfo("Europe/Riga")
-    now = datetime(2024, 1, 12, 23, 0, tzinfo=timezone.utc)  # == local Sat 01:00
+    now = datetime(2024, 1, 12, 23, 0, tzinfo=UTC)  # == local Sat 01:00
     history = _build_30d_weekday_only_history(date(2024, 1, 13))
     series = _price_series_for_day(date(2024, 1, 13), peak_at_hour=12, peak_value=0.20)
 
@@ -355,7 +354,7 @@ def test_score_resolves_today_in_local_time():
 
 def test_daily_peak_from_entries_picks_max():
     day = date(2024, 1, 15)
-    base = datetime.combine(day, datetime.min.time()).replace(tzinfo=timezone.utc)
+    base = datetime.combine(day, datetime.min.time()).replace(tzinfo=UTC)
     entries = [
         PriceEntry(start=base + timedelta(hours=h), end=base + timedelta(hours=h + 1), price_eur_kwh=v)
         for h, v in [(0, 0.10), (12, 0.25), (18, 0.40), (23, 0.15)]
@@ -369,6 +368,6 @@ def test_daily_peak_from_entries_picks_max():
 
 def test_daily_peak_from_entries_none_when_no_match():
     day = date(2024, 1, 15)
-    other = datetime(2024, 1, 16, 12, tzinfo=timezone.utc)
+    other = datetime(2024, 1, 16, 12, tzinfo=UTC)
     entries = [PriceEntry(start=other, end=other + timedelta(hours=1), price_eur_kwh=0.20)]
     assert daily_peak_from_entries(day, entries) is None

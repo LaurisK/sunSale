@@ -5,7 +5,7 @@ builder consumes two non-negative histories (import / export) directly.
 """
 from __future__ import annotations
 
-from datetime import datetime, timedelta, timezone
+from datetime import datetime, timedelta
 
 from custom_components.sun_sale.contract.models import (
     GridExportPowerHistory,

@@ -35,7 +35,7 @@ import logging
 from abc import ABC, abstractmethod
 from dataclasses import dataclass
 from datetime import datetime
-from typing import Any, TypeVar
+from typing import Any, TypeVar, cast
 
 from ..contract.models import SunSaleConfig
 
@@ -87,8 +87,8 @@ class NodeContext:
             The stored value, or None.
         """
         if t in self.primary:
-            return self.primary[t]
-        return self.secondary.get(t)
+            return cast("T | None", self.primary[t])
+        return cast("T | None", self.secondary.get(t))
 
     def require(self, t: type[T]) -> T:
         """Return the value for type t; raise MissingDependencyError if absent.

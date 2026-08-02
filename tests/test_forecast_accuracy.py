@@ -1,5 +1,5 @@
 """Tests for pipeline/forecast_accuracy.py — pure Python, no HA required."""
-from datetime import timedelta, timezone
+from datetime import UTC, timedelta
 
 from custom_components.sun_sale.contract.models import (
     ForecastQualityStore,
@@ -18,7 +18,7 @@ from custom_components.sun_sale.pipeline.forecast_accuracy import (
 from tests.conftest import BASE_DT
 
 NOW = BASE_DT
-UTC = timezone.utc
+UTC = UTC
 
 
 def _history(*changes: tuple[int, StorageMode]) -> InverterModeHistory:

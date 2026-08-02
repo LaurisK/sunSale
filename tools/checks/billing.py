@@ -2,12 +2,12 @@
 from __future__ import annotations
 
 from dataclasses import dataclass, field
-from datetime import date, datetime, timedelta, timezone
+from datetime import UTC, date, datetime, timedelta
 
 try:
     from zoneinfo import ZoneInfo
 except ImportError:    # pragma: no cover
-    from backports.zoneinfo import ZoneInfo    # type: ignore[no-redef]
+    from backports.zoneinfo import ZoneInfo  # type: ignore[no-redef]
 
 from rich.text import Text
 from textual.app import ComposeResult
@@ -60,7 +60,7 @@ def _local_midnight_utc(tz_name: str, days_ago: int) -> datetime | None:
     except Exception:    # pragma: no cover - defensive against bad tz strings
         return None
     d = datetime.now(tz).date() - timedelta(days=days_ago)
-    return datetime(d.year, d.month, d.day, tzinfo=tz).astimezone(timezone.utc)
+    return datetime(d.year, d.month, d.day, tzinfo=tz).astimezone(UTC)
 
 
 def _local_date_of(iso_ts: str, tz_name: str) -> date | None:
@@ -387,7 +387,7 @@ class MonthlyBillSlotsTable(Static):
 
         for row in self._mb.slot_rows:
             try:
-                dt = datetime.fromisoformat(row["start"]).astimezone(timezone.utc)
+                dt = datetime.fromisoformat(row["start"]).astimezone(UTC)
                 time_str = dt.strftime("%H:%M")
                 cur_date = dt.date()
             except (ValueError, AttributeError):

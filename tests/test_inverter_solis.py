@@ -16,7 +16,6 @@ from custom_components.sun_sale.outbound.inverter import (
 )
 from custom_components.sun_sale.outbound.storage_mode_specs import build_specs
 
-
 # ---------------------------------------------------------------------------
 # Helpers
 # ---------------------------------------------------------------------------

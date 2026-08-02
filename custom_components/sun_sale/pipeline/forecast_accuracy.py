@@ -49,7 +49,7 @@ Positive errors are never censored — curtailment cannot manufacture energy.
 """
 from __future__ import annotations
 
-from datetime import date, datetime, timedelta, timezone
+from datetime import UTC, date, datetime, timedelta
 from typing import TYPE_CHECKING
 
 if TYPE_CHECKING:
@@ -172,7 +172,7 @@ def build_forecast_error_series(
         Returns an all-zero series when forecast is empty.
     """
     if now is None:
-        now = datetime.now(timezone.utc)
+        now = datetime.now(UTC)
 
     if not forecast.slots:
         return _empty(now)
@@ -325,10 +325,10 @@ def _floor_to_slot(dt: datetime, res_s: int) -> datetime:
     Returns:
         UTC datetime aligned to the slot boundary.
     """
-    aware = dt if dt.tzinfo is not None else dt.replace(tzinfo=timezone.utc)
+    aware = dt if dt.tzinfo is not None else dt.replace(tzinfo=UTC)
     ts = int(aware.timestamp())
     slot_ts = (ts // res_s) * res_s
-    return datetime.fromtimestamp(slot_ts, tz=timezone.utc)
+    return datetime.fromtimestamp(slot_ts, tz=UTC)
 
 
 def _g2_position(
@@ -354,12 +354,12 @@ def _g2_position(
     n = _G2_N_15MIN if res_s <= _RES_15MIN_S else _G2_N_1H
 
     sunrise_slot = _floor_to_slot(sunrise, res_s)
-    dawn_offset = int((slot_start.astimezone(timezone.utc) - sunrise_slot).total_seconds() / res_s)
+    dawn_offset = int((slot_start.astimezone(UTC) - sunrise_slot).total_seconds() / res_s)
     if 0 <= dawn_offset < n:
         return dawn_offset + 1
 
     sunset_slot = _floor_to_slot(sunset, res_s)
-    dusk_offset = int((sunset_slot - slot_start.astimezone(timezone.utc)).total_seconds() / res_s)
+    dusk_offset = int((sunset_slot - slot_start.astimezone(UTC)).total_seconds() / res_s)
     if 0 <= dusk_offset < n:
         # sunset slot → position n*2, one before → n*2-1, ..., (n-1)th before → n+1
         return n * 2 - dusk_offset
@@ -663,7 +663,7 @@ def build_forecast_accuracy_result(
         quality store (same object as quality_store when provided).
     """
     if now is None:
-        now = datetime.now(timezone.utc)
+        now = datetime.now(UTC)
 
     error_series = build_forecast_error_series(forecast, observed, now, mode_history)
     store = quality_store if quality_store is not None else ForecastQualityStore()

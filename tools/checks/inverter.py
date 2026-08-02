@@ -2,7 +2,7 @@
 from __future__ import annotations
 
 from dataclasses import dataclass, field
-from datetime import datetime, timezone
+from datetime import UTC, datetime
 
 from rich.text import Text
 from textual.app import ComposeResult
@@ -63,7 +63,7 @@ def check_inverter_mode(snap: Snapshot) -> InverterModeCheckResult:
     result.observed_reg = reading.get("raw_state")
     result.automation_enabled = bool(block.get("automation_enabled"))
 
-    now = datetime.now(timezone.utc)
+    now = datetime.now(UTC)
 
     # ── History bands: stretch each event up to the next event's t (or now). ─
     history_bands: list[dict] = []
@@ -73,7 +73,7 @@ def check_inverter_mode(snap: Snapshot) -> InverterModeCheckResult:
         start_str = ev.get("t", "") or ""
         mode = ev.get("mode", "") or ""
         try:
-            start_dt: datetime | None = datetime.fromisoformat(start_str).astimezone(timezone.utc)
+            start_dt: datetime | None = datetime.fromisoformat(start_str).astimezone(UTC)
         except (ValueError, AttributeError):
             start_dt = None
 
@@ -90,7 +90,7 @@ def check_inverter_mode(snap: Snapshot) -> InverterModeCheckResult:
         if i + 1 < len(history):
             end_str = history[i + 1].get("t", "") or ""
             try:
-                end_dt: datetime | None = datetime.fromisoformat(end_str).astimezone(timezone.utc)
+                end_dt: datetime | None = datetime.fromisoformat(end_str).astimezone(UTC)
             except (ValueError, AttributeError):
                 end_dt = None
         else:
@@ -130,11 +130,11 @@ def check_inverter_mode(snap: Snapshot) -> InverterModeCheckResult:
         slot_start = slot.get("start", "") or ""
         slot_end   = slot.get("end", "")   or ""
         try:
-            slot_start_dt: datetime | None = datetime.fromisoformat(slot_start).astimezone(timezone.utc)
+            slot_start_dt: datetime | None = datetime.fromisoformat(slot_start).astimezone(UTC)
         except (ValueError, AttributeError):
             slot_start_dt = None
         try:
-            slot_end_dt: datetime | None = datetime.fromisoformat(slot_end).astimezone(timezone.utc)
+            slot_end_dt: datetime | None = datetime.fromisoformat(slot_end).astimezone(UTC)
         except (ValueError, AttributeError):
             slot_end_dt = None
 
@@ -244,7 +244,7 @@ def _fmt_band_time(value: object) -> str:
     if not isinstance(value, str) or not value:
         return ""
     try:
-        dt = datetime.fromisoformat(value).astimezone(timezone.utc)
+        dt = datetime.fromisoformat(value).astimezone(UTC)
     except (ValueError, AttributeError):
         return value
     return dt.strftime("%m-%d %H:%M")

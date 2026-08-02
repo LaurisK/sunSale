@@ -1,13 +1,11 @@
 """Shared fixtures and helpers for sunSale tests."""
 from __future__ import annotations
 
-import sys
 import os
-from datetime import datetime, timedelta, timezone
+import sys
+from datetime import datetime, timedelta
 from types import ModuleType
 from unittest.mock import MagicMock
-
-import pytest
 
 # Ensure project root is on sys.path so pure-Python modules can be imported
 # without a full HA installation.
@@ -201,6 +199,7 @@ _restore_mod.RestoreEntity = _RestoreEntityStub
 # panel_custom: register_panel must be awaitable, not bare MagicMock
 _panel_mod = sys.modules["homeassistant.components.panel_custom"]
 from unittest.mock import AsyncMock as _AsyncMock  # noqa: E402
+
 _panel_mod.async_register_panel = _AsyncMock()
 
 # http: StaticPathConfig is a dataclass-like; expose a passthrough
@@ -208,8 +207,9 @@ _http_mod.StaticPathConfig = lambda *a, **kw: object()
 
 # dt_util.now() returns a real datetime so format strings work in tests
 import datetime as _dt  # noqa: E402
+
 _dt_util_mod = sys.modules["homeassistant.util.dt"]
-_dt_util_mod.now = lambda: _dt.datetime.now(_dt.timezone.utc)
+_dt_util_mod.now = lambda: _dt.datetime.now(_dt.UTC)
 
 # @callback must be a no-op pass-through decorator
 _core_mod = sys.modules["homeassistant.core"]
@@ -224,12 +224,11 @@ _const_mod.STATE_OFF = "off"
 _const_mod.STATE_UNKNOWN = "unknown"
 _const_mod.STATE_UNAVAILABLE = "unavailable"
 
-from custom_components.sun_sale.contract.models import (
+from custom_components.sun_sale.contract.models import (  # noqa: E402  (after HA stubs)
     BatteryConfig,
     BatteryState,
     PriceEntry,
     SolarForecast,
-    TariffBand,
     TariffConfig,
 )
 
@@ -237,7 +236,7 @@ from custom_components.sun_sale.contract.models import (
 # Helpers
 # ---------------------------------------------------------------------------
 
-BASE_DT = datetime(2024, 1, 15, 0, 0, 0, tzinfo=timezone.utc)
+BASE_DT = datetime(2024, 1, 15, 0, 0, 0, tzinfo=_dt.UTC)
 
 
 def make_price(hour: int, price: float, base: datetime = BASE_DT) -> PriceEntry:

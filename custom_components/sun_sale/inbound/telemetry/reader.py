@@ -26,7 +26,7 @@ Only this module is HA-coupled (it reads ``hass.states``); :mod:`.binding` and
 """
 from __future__ import annotations
 
-from datetime import datetime, timezone
+from datetime import UTC, datetime
 from typing import Any, Protocol, runtime_checkable
 
 from ...ha_state import available_state
@@ -71,7 +71,7 @@ def _read_raw(
     if max_age_s != _NO_MAX_AGE:
         last_updated = getattr(state, "last_updated", None)
         if last_updated is not None and getattr(last_updated, "tzinfo", None) is not None:
-            ref = now or datetime.now(timezone.utc)
+            ref = now or datetime.now(UTC)
             if (ref - last_updated).total_seconds() > max_age_s:
                 return None, ""
     unit = str((state.attributes or {}).get("unit_of_measurement") or "").strip()

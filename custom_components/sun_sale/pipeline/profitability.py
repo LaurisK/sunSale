@@ -16,9 +16,9 @@ depending on it.
 """
 from __future__ import annotations
 
-from datetime import date, datetime, timezone, tzinfo
+from collections.abc import Callable, Iterable
+from datetime import UTC, date, datetime, tzinfo
 from statistics import median
-from typing import Callable, Iterable
 
 from ..contract.models import (
     DailyPeak,
@@ -27,7 +27,6 @@ from ..contract.models import (
     PriceSeries,
     ProfitabilityScore,
 )
-
 
 # Minimum days required in the rolling window before a score is meaningful.
 MIN_HISTORY_DAYS = 14
@@ -142,7 +141,7 @@ def percentile_rank(value: float, distribution: list[float]) -> float:
 def today_peak_from_price_series(
     price_series: PriceSeries,
     today: date,
-    local_tz: tzinfo = timezone.utc,
+    local_tz: tzinfo = UTC,
 ) -> float | None:
     """Extract the highest Nordpool spot price for the given local date.
 
@@ -176,7 +175,7 @@ def compute_profitability_score(
     now: datetime | None = None,
     is_holiday: Callable[[date], bool] | None = None,
     rank_window_days: int = DEFAULT_RANK_WINDOW_DAYS,
-    local_tz: tzinfo = timezone.utc,
+    local_tz: tzinfo = UTC,
 ) -> ProfitabilityScore:
     """Score today's day-class-normalised peak against the rolling history window.
 
@@ -194,7 +193,7 @@ def compute_profitability_score(
         ProfitabilityScore with a 0–1 percentile score (None when history is sparse).
     """
     if now is None:
-        now = datetime.now(timezone.utc)
+        now = datetime.now(UTC)
 
     # "Today" is the operator's local date — history peaks are keyed the same
     # way, so day-class and window-exclusion stay consistent. Using now.date()
@@ -242,7 +241,7 @@ def daily_peak_from_entries(
     day: date,
     entries: Iterable,
     is_holiday: Callable[[date], bool] | None = None,
-    local_tz: tzinfo = timezone.utc,
+    local_tz: tzinfo = UTC,
 ) -> DailyPeak | None:
     """Build a DailyPeak snapshot for a given day from PriceEntry-like objects.
 

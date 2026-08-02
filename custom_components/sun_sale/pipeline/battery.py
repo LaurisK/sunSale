@@ -277,7 +277,7 @@ class CapacityEstimator:
         data: dict,
         round_trip_efficiency: float = 1.0,
         current_nominal_kwh: float | None = None,
-    ) -> "CapacityEstimator":
+    ) -> CapacityEstimator:
         """Deserialise from the HA persistent-storage dict format.
 
         Stored observations are discarded — and the estimate falls back to

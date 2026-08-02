@@ -4,7 +4,7 @@ Pure Python, no HA required. These tests check schedule-level invariants
 (chronology, SoC bounds, profit accounting, mode selection under price
 extremes). Per-mode energy physics is covered by tests/test_slot_physics.py.
 """
-from datetime import datetime, timedelta, timezone
+from datetime import UTC
 
 import pytest
 
@@ -358,7 +358,7 @@ def test_baseload_increases_grid_import_when_battery_empty():
 
     result = optimize_schedule(
         ps, calc, bc, state, deg, NOW,
-        base_load_profile=profile, local_tz=timezone.utc,
+        base_load_profile=profile, local_tz=UTC,
     )
     # Expected baseload draw per hour = 0.5 kWh. Schedule reports per-slot reward;
     # at min_soc with no solar and no headroom-useful trade, baseload import shows up
@@ -388,7 +388,7 @@ def test_baseload_does_not_change_pure_arbitrage_decision():
 
     result = optimize_schedule(
         ps, calc, bc, state, deg, NOW,
-        base_load_profile=profile, local_tz=timezone.utc,
+        base_load_profile=profile, local_tz=UTC,
     )
     slot_0 = next(s for s in result.slots if s.start.hour == 0)
     slot_12 = next(s for s in result.slots if s.start.hour == 12)

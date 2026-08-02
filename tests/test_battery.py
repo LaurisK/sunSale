@@ -1,15 +1,15 @@
 """Tests for battery.py — pure Python, no HA required."""
-from datetime import datetime, timezone
-import pytest
+from datetime import UTC, datetime
+
+from custom_components.sun_sale.contract.models import BatteryState, CapacityObservation
 from custom_components.sun_sale.pipeline.battery import (
     CapacityEstimator,
     degradation_cost_per_kwh,
     trade_profit_per_kwh,
 )
-from custom_components.sun_sale.contract.models import BatteryConfig, BatteryState, CapacityObservation
 from tests.conftest import default_battery_config, default_battery_state
 
-NOW = datetime(2024, 1, 1, tzinfo=timezone.utc)
+NOW = datetime(2024, 1, 1, tzinfo=UTC)
 
 
 def obs(soc_start, soc_end, energy_kwh, direction="charge"):

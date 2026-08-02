@@ -8,12 +8,12 @@ from custom_components.sun_sale.outbound.driver import (
     InverterControlDriver,
     InverterDriver,
 )
+from custom_components.sun_sale.outbound.driver_factory import make_inverter_driver
+from custom_components.sun_sale.outbound.entity_control import InverterContext
 from custom_components.sun_sale.outbound.inverter import (
     RC_ADJUSTMENT_AC_PORT_VALUE,
     InverterPlatform,
 )
-from custom_components.sun_sale.outbound.entity_control import InverterContext
-from custom_components.sun_sale.outbound.driver_factory import make_inverter_driver
 from custom_components.sun_sale.outbound.solis_driver import SolisDriver
 from tests.conftest import default_battery_config
 

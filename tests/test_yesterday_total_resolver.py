@@ -2,7 +2,7 @@
 from __future__ import annotations
 
 from dataclasses import dataclass
-from datetime import date, datetime, timedelta, timezone
+from datetime import UTC, date, datetime
 
 from custom_components.sun_sale.contract.const import (
     SOURCE_KIND_DEDICATED_SENSOR,
@@ -17,8 +17,7 @@ from custom_components.sun_sale.inbound.yesterday_total_resolver import (
     resolve_yesterday_total,
 )
 
-
-LOCAL_TZ = timezone.utc
+LOCAL_TZ = UTC
 TARGET = date(2024, 1, 14)
 
 
@@ -40,7 +39,7 @@ class _Hass:
 
 def _snapshot(side_id: str, day: date, value: float, hour: int = 23, minute: int = 45) -> CounterSnapshotRecord:
     """Build a CounterSnapshotRecord captured at the given local date / time."""
-    captured = datetime(day.year, day.month, day.day, hour, minute, tzinfo=timezone.utc)
+    captured = datetime(day.year, day.month, day.day, hour, minute, tzinfo=UTC)
     return CounterSnapshotRecord(
         side_id=side_id, captured_at=captured, today_total_kwh=value,
     )

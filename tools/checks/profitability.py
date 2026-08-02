@@ -2,7 +2,7 @@
 from __future__ import annotations
 
 from dataclasses import dataclass, field
-from datetime import datetime, timezone, tzinfo
+from datetime import UTC, datetime, tzinfo
 from zoneinfo import ZoneInfo
 
 from textual.app import ComposeResult
@@ -22,11 +22,11 @@ def _resolve_local_tz(tz_name: str | None) -> tzinfo:
         tzinfo for the name, or UTC when unset or unparseable.
     """
     if not tz_name:
-        return timezone.utc
+        return UTC
     try:
         return ZoneInfo(tz_name)
     except Exception:    # ZoneInfoNotFoundError + anything unexpected
-        return timezone.utc
+        return UTC
 
 
 @dataclass
@@ -79,7 +79,7 @@ def check_profitability(snap: Snapshot) -> ProfitabilityCheckResult:
     pricing = snap.pipeline.get("pricing")
     if pricing and result.today_peak_eur_kwh > 0:
         local_tz = _resolve_local_tz(snap.config.get("time_zone"))
-        today_local = datetime.now(timezone.utc).astimezone(local_tz).date()
+        today_local = datetime.now(UTC).astimezone(local_tz).date()
         today_spots = []
         for s in pricing.get("slots") or []:
             try:

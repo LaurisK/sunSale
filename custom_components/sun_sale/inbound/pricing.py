@@ -14,10 +14,10 @@ tariff formulas and stitch in persisted yesterday entries to produce the full
 from __future__ import annotations
 
 import logging
-from datetime import datetime, timedelta, timezone, tzinfo
-from typing import Any, Protocol, Sequence
+from collections.abc import Sequence
+from datetime import UTC, datetime, timedelta, tzinfo
+from typing import Any, Protocol
 
-from ..pipeline import tariff as tariff_module
 from ..contract.const import (
     PRICE_SOURCE_AMBER,
     PRICE_SOURCE_ENTSOE,
@@ -34,6 +34,7 @@ from ..contract.models import (
     TariffConfig,
     YesterdayPrices,
 )
+from ..pipeline import tariff as tariff_module
 
 _LOGGER = logging.getLogger(__name__)
 
@@ -65,7 +66,7 @@ def build_price_series(
         PriceSeries with buy/sell/spot populated for each entry.
     """
     if now is None:
-        now = datetime.now(timezone.utc)
+        now = datetime.now(UTC)
 
     slots: list[PriceSlot] = []
     for p in prices:
@@ -196,7 +197,7 @@ class NordpoolTranslator:
             Returns an empty NordpoolData on missing or unparseable state.
         """
         if now is None:
-            now = datetime.now(timezone.utc)
+            now = datetime.now(UTC)
 
         state = hass.states.get(self._entity_id)
         if state is None:
@@ -230,8 +231,8 @@ class NordpoolTranslator:
                 sv = entry["start"]
                 dt = sv if isinstance(sv, datetime) else datetime.fromisoformat(str(sv))
                 if dt.tzinfo is None:
-                    dt = dt.replace(tzinfo=timezone.utc)
-                start_utc = dt.astimezone(timezone.utc).replace(second=0, microsecond=0)
+                    dt = dt.replace(tzinfo=UTC)
+                start_utc = dt.astimezone(UTC).replace(second=0, microsecond=0)
                 parsed.append((start_utc, float(entry["value"])))
             except (KeyError, ValueError, TypeError):
                 continue
@@ -273,7 +274,7 @@ class NordpoolTranslator:
                     continue
                 start = datetime(
                     base_date.year, base_date.month, base_date.day,
-                    hour_idx, 0, 0, tzinfo=timezone.utc,
+                    hour_idx, 0, 0, tzinfo=UTC,
                 )
                 entries.append(PriceEntry(start=start, end=start + resolution, price_eur_kwh=float(price)))
 
@@ -310,7 +311,7 @@ class PriceFeedTranslator(Protocol):
     TOU source, no sensor) and produces source-agnostic ``PriceFeedData``.
     """
 
-    output_type: type
+    output_type: type[PriceFeedData]
 
     def parse(self, hass: Any, now: datetime | None = None) -> PriceFeedData:
         """Read HA state synchronously and return PriceFeedData."""
@@ -338,8 +339,8 @@ def _to_utc_minute(value: Any) -> datetime | None:
     except (ValueError, TypeError):
         return None
     if dt.tzinfo is None:
-        dt = dt.replace(tzinfo=timezone.utc)
-    return dt.astimezone(timezone.utc).replace(second=0, microsecond=0)
+        dt = dt.replace(tzinfo=UTC)
+    return dt.astimezone(UTC).replace(second=0, microsecond=0)
 
 
 def _build_feed(
@@ -437,7 +438,7 @@ class EntsoeTranslator:
     def parse(self, hass: Any, now: datetime | None = None) -> PriceFeedData:
         """Parse the ENTSO-e sensor state into PriceFeedData (today + tomorrow)."""
         if now is None:
-            now = datetime.now(timezone.utc)
+            now = datetime.now(UTC)
         state = hass.states.get(self._entity_id)
         if state is None:
             _LOGGER.warning("ENTSO-e entity '%s' not found", self._entity_id)
@@ -485,7 +486,7 @@ class OctopusAgileTranslator:
     def parse(self, hass: Any, now: datetime | None = None) -> PriceFeedData:
         """Parse the Octopus import (+ optional export) rate sensors."""
         if now is None:
-            now = datetime.now(timezone.utc)
+            now = datetime.now(UTC)
         points = self._read_rates(hass, self._entity_id)
         if not points:
             _LOGGER.warning("Octopus entity '%s' not found or empty", self._entity_id)
@@ -530,7 +531,7 @@ class AmberTranslator:
     def parse(self, hass: Any, now: datetime | None = None) -> PriceFeedData:
         """Parse the Amber general-price (+ optional feed-in) forecast sensors."""
         if now is None:
-            now = datetime.now(timezone.utc)
+            now = datetime.now(UTC)
         points = self._read_forecasts(hass, self._entity_id)
         if not points:
             _LOGGER.warning("Amber entity '%s' not found or empty", self._entity_id)
@@ -625,7 +626,7 @@ class TouScheduleTranslator:
         """
         self._bands = tuple(bands)
         self._resolution = resolution
-        self._local_tz = local_tz or timezone.utc
+        self._local_tz = local_tz or UTC
 
     def parse(self, hass: Any, now: datetime | None = None) -> PriceFeedData:
         """Generate a 48h synthetic feed from the TOU schedule.
@@ -638,7 +639,7 @@ class TouScheduleTranslator:
             PriceFeedData spanning local today 00:00 → tomorrow 23:59.
         """
         if now is None:
-            now = datetime.now(timezone.utc)
+            now = datetime.now(UTC)
         if not self._bands:
             return PriceFeedData(entries=[], resolution=self._resolution)
 
@@ -647,7 +648,7 @@ class TouScheduleTranslator:
         target_end = cur + timedelta(hours=48)
         entries: list[PriceEntry] = []
         while cur < target_end:
-            start_utc = cur.astimezone(timezone.utc).replace(second=0, microsecond=0)
+            start_utc = cur.astimezone(UTC).replace(second=0, microsecond=0)
             price = _select_tou_price(self._bands, cur)
             entries.append(PriceEntry(
                 start=start_utc, end=start_utc + self._resolution, price_eur_kwh=price,

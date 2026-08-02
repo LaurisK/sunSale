@@ -38,9 +38,10 @@ diverging.
 from __future__ import annotations
 
 import logging
+from collections.abc import Callable, Mapping
 from dataclasses import dataclass, field
 from datetime import datetime
-from typing import Any, Callable, Literal, Mapping
+from typing import Any, Literal
 
 from homeassistant.core import HomeAssistant
 
@@ -464,7 +465,7 @@ class EntityControlDriver:
         mode_label: str = "Operating mode",
         sub_decode_role: str | None = None,
         sub_decode_map: Mapping[str, StorageMode] | None = None,
-    ) -> "EntityControlDriver":
+    ) -> EntityControlDriver:
         """Build a driver from a neutral context, owning actuator construction.
 
         Absorbs the boilerplate every platform's ``make_*_driver`` repeated —
@@ -669,7 +670,7 @@ class EntityControlDriver:
         """
         if write.kind == "number":
             observed: Any = self._actuator.read_float(write.role)
-            desired = float(write.value)
+            desired: Any = float(write.value)
             match = observed is not None and abs(observed - desired) <= write.tolerance
             return ControlRow(write.role, write.label, desired, observed, match)
         if write.kind == "switch":

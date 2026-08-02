@@ -1,7 +1,7 @@
 """Tests for the InverterModeTranslator."""
 from __future__ import annotations
 
-from datetime import datetime, timezone
+from datetime import UTC, datetime
 from unittest.mock import MagicMock
 
 import pytest
@@ -11,8 +11,7 @@ from custom_components.sun_sale.inbound.inverter_mode import InverterModeTransla
 from custom_components.sun_sale.outbound.solis_driver import SolisDriver
 from tests.conftest import default_battery_config
 
-
-NOW = datetime(2026, 5, 30, 10, 0, tzinfo=timezone.utc)
+NOW = datetime(2026, 5, 30, 10, 0, tzinfo=UTC)
 
 
 def _driver(inv) -> SolisDriver:
@@ -130,7 +129,7 @@ def test_parse_returns_unknown_when_register_unavailable():
 
 def test_parse_preserves_timestamp():
     inv = _make_inverter(reg=1, charge_a=0.0, discharge_a=0.0, rc_w=0)
-    other = datetime(2026, 5, 30, 12, 34, tzinfo=timezone.utc)
+    other = datetime(2026, 5, 30, 12, 34, tzinfo=UTC)
     reading = InverterModeTranslator(_driver(inv)).parse(None, other)
     assert reading.timestamp == other
 

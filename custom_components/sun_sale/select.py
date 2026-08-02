@@ -25,7 +25,6 @@ from .contract.const import DOMAIN
 from .contract.models import DISPATCHABLE_MODES, StorageMode
 from .orchestration.coordinator import SunSaleCoordinator
 
-
 # Sentinel value indicating "no override — follow the scheduler's choice".
 # Rendered as "sunSale" in the panel UI via the panel's option-label map.
 MODE_OVERRIDE_SUNSALE = "sunsale"

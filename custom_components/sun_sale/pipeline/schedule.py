@@ -28,10 +28,8 @@ at the exact SoC to keep rewards and projected SoC continuous.
 from __future__ import annotations
 
 from datetime import datetime, tzinfo
-
 from statistics import median
 
-from .slot_physics import SlotOutcome, simulate_slot
 from ..contract.models import (
     DISPATCHABLE_MODES,
     BaseLoadProfile,
@@ -45,7 +43,7 @@ from ..contract.models import (
     ScheduleSlot,
     StorageMode,
 )
-
+from .slot_physics import SlotOutcome, simulate_slot
 
 # Action set the DP may pick — the canonical dispatchable-mode tuple shared
 # with the operator override (see contract.models.DISPATCHABLE_MODES). The
@@ -754,7 +752,7 @@ def _reason_for(
         return f"Self-use, no export; solar→batt {outcome.batt_charge_kwh:.2f} kWh"
     if mode == StorageMode.StandBy:
         return "Idle"
-    return mode.value
+    return str(mode.value)
 
 
 # ---------------------------------------------------------------------------

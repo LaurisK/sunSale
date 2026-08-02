@@ -10,7 +10,7 @@ store, invisible to consumers here.
 """
 from __future__ import annotations
 
-from datetime import datetime, timedelta, timezone
+from datetime import UTC, datetime, timedelta
 from typing import Any
 
 from ..contract.models import (
@@ -43,7 +43,7 @@ def build_generation_series(
         GenerationSeries with one GenerationSlot per price slot and daily totals.
     """
     if now is None:
-        now = datetime.now(timezone.utc)
+        now = datetime.now(UTC)
 
     ext = _compute_extended_day_totals(solar.entries, now, local_tz)
 
@@ -312,7 +312,7 @@ class SolarTranslator:
             when no recognised entity or attribute is found.
         """
         if now is None:
-            now = datetime.now(timezone.utc)
+            now = datetime.now(UTC)
 
         combined_watts: dict[datetime, float] = {}
         for base_eid in self._base_entities:
@@ -330,8 +330,8 @@ class SolarTranslator:
                     try:
                         dt = datetime.fromisoformat(str(ts_str))
                         if dt.tzinfo is None:
-                            dt = dt.replace(tzinfo=timezone.utc)
-                        slot_utc = dt.astimezone(timezone.utc).replace(second=0, microsecond=0)
+                            dt = dt.replace(tzinfo=UTC)
+                        slot_utc = dt.astimezone(UTC).replace(second=0, microsecond=0)
                         combined_watts[slot_utc] = combined_watts.get(slot_utc, 0.0) + float(w)
                     except (ValueError, TypeError):
                         continue
@@ -350,8 +350,8 @@ class SolarTranslator:
                 try:
                     dt = datetime.fromisoformat(str(slot["time"]))
                     if dt.tzinfo is None:
-                        dt = dt.replace(tzinfo=timezone.utc)
-                    slot_utc = dt.astimezone(timezone.utc).replace(second=0, microsecond=0)
+                        dt = dt.replace(tzinfo=UTC)
+                    slot_utc = dt.astimezone(UTC).replace(second=0, microsecond=0)
                     kwh = float(slot.get("pv_estimate", slot.get("energy", 0.0)))
                     combined_kwh[slot_utc] = combined_kwh.get(slot_utc, 0.0) + kwh
                 except (KeyError, ValueError, TypeError):

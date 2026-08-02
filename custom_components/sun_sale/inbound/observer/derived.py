@@ -33,7 +33,7 @@ without touching the series-builder surface.
 """
 from __future__ import annotations
 
-from datetime import datetime, timedelta, timezone
+from datetime import UTC, datetime, timedelta
 from datetime import tzinfo as TzInfo
 from typing import Any
 
@@ -58,7 +58,6 @@ from ..telemetry import (
     resolve_bindings,
 )
 from .engine import ObservedSeriesEngine, Side
-
 
 # Side identifiers for the derived-power engine instance. Stable across the
 # codebase — used as the canonical keys in engine output dicts and (if a
@@ -198,7 +197,7 @@ def build_observed_consumption_series(
     derived_history: DerivedPowerHistory,
     price_slots: tuple,
     now: datetime | None = None,
-    local_tz: TzInfo = timezone.utc,
+    local_tz: TzInfo = UTC,
     baked_history: BakedObservedHistory | None = None,
 ) -> ObservedConsumptionSeries:
     """Derive per-slot observed home consumption from cross-stream samples.
@@ -219,7 +218,7 @@ def build_observed_consumption_series(
         grid-aligned. Empty when no price grid or no samples.
     """
     if now is None:
-        now = datetime.now(timezone.utc)
+        now = datetime.now(UTC)
 
     if not price_slots or not derived_history.samples:
         return ObservedConsumptionSeries(slots=(), computed_at=now)
@@ -268,7 +267,7 @@ def build_observed_losses_series(
     derived_history: DerivedPowerHistory,
     price_slots: tuple,
     now: datetime | None = None,
-    local_tz: TzInfo = timezone.utc,
+    local_tz: TzInfo = UTC,
     baked_history: BakedObservedHistory | None = None,
 ) -> ObservedLossesSeries:
     """Derive per-slot observed inverter losses from cross-stream samples.
@@ -290,7 +289,7 @@ def build_observed_losses_series(
         grid-aligned. Empty when no price grid or no samples.
     """
     if now is None:
-        now = datetime.now(timezone.utc)
+        now = datetime.now(UTC)
 
     if not price_slots or not derived_history.samples:
         return ObservedLossesSeries(slots=(), computed_at=now)
@@ -347,7 +346,7 @@ def _day_start(t: datetime, local_tz: TzInfo) -> datetime:
     """
     local_t = t.astimezone(local_tz)
     local_midnight = local_t.replace(hour=0, minute=0, second=0, microsecond=0)
-    return local_midnight.astimezone(timezone.utc)
+    return local_midnight.astimezone(UTC)
 
 
 # ---------------------------------------------------------------------------
@@ -398,7 +397,7 @@ class AcPortPowerTranslator:
             AcPortPowerReading, or None on absent / unparseable / stale state.
         """
         if now is None:
-            now = datetime.now(timezone.utc)
+            now = datetime.now(UTC)
         power_kw = self._reader.read(
             hass, TelemetrySignal.AC_PORT_POWER, now=now, max_age_s=self._max_age_s
         )
@@ -455,7 +454,7 @@ class BackupPowerTranslator:
             unparseable / stale state.
         """
         if now is None:
-            now = datetime.now(timezone.utc)
+            now = datetime.now(UTC)
         power_kw = self._reader.read(
             hass, TelemetrySignal.BACKUP_POWER, now=now, max_age_s=self._max_age_s
         )

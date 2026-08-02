@@ -1,6 +1,6 @@
 """Tests for tariff.py — pure Python, no HA required."""
 import dataclasses
-from datetime import datetime, timezone
+from datetime import UTC, datetime
 
 from custom_components.sun_sale.contract.models import TariffBand
 from custom_components.sun_sale.pipeline.tariff import (
@@ -61,8 +61,8 @@ def test_buy_always_greater_than_sell_for_same_spot():
 # ---------------------------------------------------------------------------
 
 # 2024-01-15 is a Monday; 2024-01-20 is a Saturday.
-_MON = datetime(2024, 1, 15, tzinfo=timezone.utc)
-_SAT = datetime(2024, 1, 20, tzinfo=timezone.utc)
+_MON = datetime(2024, 1, 15, tzinfo=UTC)
+_SAT = datetime(2024, 1, 20, tzinfo=UTC)
 
 
 def _tou_config():
@@ -152,7 +152,7 @@ def test_bands_from_config_empty_or_none():
 # Sell-price models (sell_mode)
 # ---------------------------------------------------------------------------
 
-WEEKDAY = datetime(2024, 1, 15, 12, 0, tzinfo=timezone.utc)  # Monday local-noon
+WEEKDAY = datetime(2024, 1, 15, 12, 0, tzinfo=UTC)  # Monday local-noon
 
 
 def test_sell_mode_spot_is_default_formula():

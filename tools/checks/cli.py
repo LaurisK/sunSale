@@ -3,7 +3,6 @@ from __future__ import annotations
 
 import argparse
 import json
-import os
 import sys
 import urllib.error
 
@@ -12,8 +11,8 @@ from .battery import check_battery, check_battery_runtime
 from .billing import check_monthly_bill
 from .calculation import check_calculation
 from .client import HAClient
-from .credentials import CredentialsError, resolve_credentials
 from .consumption import check_base_load, check_household_consumption
+from .credentials import CredentialsError, resolve_credentials
 from .derived import check_observed_consumption, check_observed_losses
 from .forecast import (
     check_forecast,

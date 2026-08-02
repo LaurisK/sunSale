@@ -48,7 +48,7 @@ month's last day lives in `previous_month_eur`, not in `slots`).
 """
 from __future__ import annotations
 
-from datetime import date, datetime, timedelta, timezone
+from datetime import UTC, date, datetime, timedelta
 from typing import TYPE_CHECKING
 
 from ..contract.models import (
@@ -264,4 +264,4 @@ def _local_midnight_utc(d: date, local_tz: tzinfo) -> datetime:
     Returns:
         UTC-aware datetime corresponding to 00:00 local time on `d`.
     """
-    return datetime(d.year, d.month, d.day, tzinfo=local_tz).astimezone(timezone.utc)
+    return datetime(d.year, d.month, d.day, tzinfo=local_tz).astimezone(UTC)

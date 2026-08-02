@@ -3,8 +3,6 @@ from __future__ import annotations
 
 import logging
 
-from .. import schedule as schedule_module
-from ..dag_engine import DagNode, NodeContext
 from ...contract.models import (
     BaseLoadProfile,
     BatteryState,
@@ -17,6 +15,8 @@ from ...contract.models import (
     Schedule,
     SchedulePolicy,
 )
+from .. import schedule as schedule_module
+from ..dag_engine import DagNode, NodeContext
 
 _LOGGER = logging.getLogger(__name__)
 

@@ -49,8 +49,9 @@ from __future__ import annotations
 
 import asyncio
 import logging
+from collections.abc import Callable
 from datetime import datetime, timedelta
-from typing import Any, Callable
+from typing import Any
 
 from homeassistant.core import HomeAssistant, callback
 from homeassistant.helpers.event import async_call_later, async_track_time_interval

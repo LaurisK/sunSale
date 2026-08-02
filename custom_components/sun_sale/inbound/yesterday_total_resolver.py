@@ -17,7 +17,7 @@ bake-in marks the day ``failed_no_source`` for that side.
 """
 from __future__ import annotations
 
-from datetime import date, datetime, time, timedelta, timezone
+from datetime import date
 from datetime import tzinfo as TzInfo
 from typing import Any
 
@@ -27,7 +27,6 @@ from ..contract.const import (
 )
 from ..contract.models import CounterSnapshotHistory
 from ..ha_state import read_float_state
-
 
 # Per-side config key for the dedicated yesterday-total entity mapping. The
 # coordinator populates ``raw_config`` from the config entry; missing keys

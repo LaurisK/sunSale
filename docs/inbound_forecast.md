@@ -131,7 +131,7 @@ Buckets are derived from `now.date()` (UTC):
 | `total_tomorrow_kwh` | `slot.start.date() == now.date() + 1 day` |
 | `today_remaining_kwh` | `slot.start.date() == today` **and** `slot.start >= now` |
 
-`today_remaining_kwh` is a strict `>=` on slot start, matching the pre-resample convention from `_make_solar_data` in `translators.py`. The slot currently in progress (whose `start < now`) is **not** included; precision is whatever the grid resolution gives (15-min grids yield a tighter "remaining" than hourly).
+`today_remaining_kwh` is a strict `>=` on slot start, matching the pre-resample convention from `_make_solar_data` in `forecast.py`. The slot currently in progress (whose `start < now`) is **not** included; precision is whatever the grid resolution gives (15-min grids yield a tighter "remaining" than hourly).
 
 Totals are rounded to 4 decimals.
 

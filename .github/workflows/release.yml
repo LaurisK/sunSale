@@ -1,0 +1,31 @@
+name: Release
+
+# Cut a GitHub release from a pushed ``v*`` tag. The release carries a zip of
+# the integration directory so HACS can consume it as a zip release (enable
+# ``zip_release`` in hacs.json when publishing that way).
+on:
+  push:
+    tags:
+      - "v*"
+
+permissions:
+  contents: write
+
+jobs:
+  release:
+    runs-on: ubuntu-latest
+    steps:
+      - uses: actions/checkout@v4
+
+      # HACS zip releases expect the integration files at the archive root, so
+      # zip from inside custom_components/sun_sale.
+      - name: Build integration zip
+        run: |
+          cd custom_components/sun_sale
+          zip -r "$GITHUB_WORKSPACE/sun_sale.zip" . -x '*.pyc' -x '*/__pycache__/*'
+
+      - name: Create GitHub release
+        uses: softprops/action-gh-release@v2
+        with:
+          files: sun_sale.zip
+          generate_release_notes: true

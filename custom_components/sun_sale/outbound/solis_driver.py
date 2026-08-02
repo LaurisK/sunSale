@@ -27,13 +27,13 @@ from ..contract.models import (
     InverterModeReading,
     StorageMode,
 )
-from .storage_mode_specs import StorageModeSpec, build_specs, decode_mode
 from .driver import ControlRow
 from .inverter import (
     _NUMBER_WRITE_EPSILON,
     RC_ADJUSTMENT_AC_PORT_VALUE,
     InverterController,
 )
+from .storage_mode_specs import StorageModeSpec, build_specs, decode_mode
 
 
 class SolisDriver:

@@ -4,49 +4,48 @@ from __future__ import annotations
 from textual.app import App, ComposeResult
 from textual.widgets import Footer, Static
 
-from .snapshot import Snapshot
-from .registry import CheckResult
-from .forecast import (
-    ForecastCheckResult,
-    ForecastCheckWidget,
-    ForecastAccuracyCheckResult,
-    ForecastAccuracyCheckWidget,
-    ForecastQualityCheckResult,
-    ForecastQualityCheckWidget,
-)
-from .pricing import PricingCheckResult, PricingCheckWidget
-from .calculation import CalculationCheckResult, CalculationCheckWidget
-from .schedule import ScheduleCheckResult, ScheduleCheckWidget
-from .inverter import InverterModeCheckResult, InverterModeCheckWidget
 from .battery import (
     BatteryCheckResult,
     BatteryCheckWidget,
     BatteryRuntimeCheckResult,
     BatteryRuntimeCheckWidget,
 )
-from .observed import (
-    ObservedGenerationCheckResult,
-    ObservedGenerationCheckWidget,
-    ObservedGridCheckResult,
-    ObservedGridCheckWidget,
-    BakedObservedCheckResult,
-    BakedObservedCheckWidget,
-)
+from .billing import MonthlyBillCheckResult, MonthlyBillCheckWidget
+from .calculation import CalculationCheckResult, CalculationCheckWidget
 from .consumption import (
     BaseLoadCheckResult,
     BaseLoadCheckWidget,
     HouseholdConsumptionCheckResult,
     HouseholdConsumptionCheckWidget,
 )
-from .profitability import ProfitabilityCheckResult, ProfitabilityCheckWidget
-from .billing import MonthlyBillCheckResult, MonthlyBillCheckWidget
 from .derived import (
     ObservedConsumptionCheckResult,
     ObservedConsumptionCheckWidget,
     ObservedLossesCheckResult,
     ObservedLossesCheckWidget,
 )
-
+from .forecast import (
+    ForecastAccuracyCheckResult,
+    ForecastAccuracyCheckWidget,
+    ForecastCheckResult,
+    ForecastCheckWidget,
+    ForecastQualityCheckResult,
+    ForecastQualityCheckWidget,
+)
+from .inverter import InverterModeCheckResult, InverterModeCheckWidget
+from .observed import (
+    BakedObservedCheckResult,
+    BakedObservedCheckWidget,
+    ObservedGenerationCheckResult,
+    ObservedGenerationCheckWidget,
+    ObservedGridCheckResult,
+    ObservedGridCheckWidget,
+)
+from .pricing import PricingCheckResult, PricingCheckWidget
+from .profitability import ProfitabilityCheckResult, ProfitabilityCheckWidget
+from .registry import CheckResult
+from .schedule import ScheduleCheckResult, ScheduleCheckWidget
+from .snapshot import Snapshot
 
 _DEEP_CATS: frozenset[str] = frozenset({
     "forecast", "pricing", "calculation", "schedule", "battery",

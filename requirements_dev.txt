@@ -3,3 +3,6 @@ pytest-asyncio>=0.21
 ruff>=0.1
 mypy>=1.0
 pytest-homeassistant-custom-component>=2024.1.0
+# TUI stack for tools/checks (the integration-check harness); also pulled in at
+# test collection via test_baked_observed_check.py → tools.integration_check.
+textual>=0.50

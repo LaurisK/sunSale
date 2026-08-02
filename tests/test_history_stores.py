@@ -1,10 +1,19 @@
 """Tests for the declarative history-store registry."""
 from __future__ import annotations
 
-from datetime import datetime, timedelta, timezone
+from datetime import UTC, datetime, timedelta
 
 import pytest
 
+from custom_components.sun_sale.contract.models import (
+    DerivedPowerSample,
+    GenerationReading,
+    GridExportPowerReading,
+    GridExportTodayReading,
+    GridImportPowerReading,
+    GridImportTodayReading,
+    PvPowerReading,
+)
 from custom_components.sun_sale.orchestration.history_stores import (
     ALL_HISTORY_SPECS,
     DERIVED_POWER_SPEC,
@@ -17,17 +26,8 @@ from custom_components.sun_sale.orchestration.history_stores import (
     SAMPLE_HISTORY_SPECS,
     append_and_inject,
 )
-from custom_components.sun_sale.contract.models import (
-    DerivedPowerSample,
-    GenerationReading,
-    GridExportPowerReading,
-    GridExportTodayReading,
-    GridImportPowerReading,
-    GridImportTodayReading,
-    PvPowerReading,
-)
 
-T0 = datetime(2026, 6, 11, 8, 0, 0, tzinfo=timezone.utc)
+T0 = datetime(2026, 6, 11, 8, 0, 0, tzinfo=UTC)
 
 
 class _FakeStore:

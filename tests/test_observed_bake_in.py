@@ -2,7 +2,7 @@
 from __future__ import annotations
 
 from dataclasses import dataclass
-from datetime import datetime, timedelta, timezone
+from datetime import UTC, datetime, timedelta
 
 from custom_components.sun_sale.contract.const import (
     SOURCE_KIND_DEDICATED_SENSOR,
@@ -28,8 +28,7 @@ from custom_components.sun_sale.inbound.yesterday_total_resolver import (
     DEDICATED_ENTITY_CONFIG_KEY,
 )
 
-
-LOCAL_TZ = timezone.utc
+LOCAL_TZ = UTC
 
 
 @dataclass(frozen=True)
@@ -96,18 +95,18 @@ def _hourly_slots(start: datetime, hours: int) -> list[_Slot]:
 
 def test_does_not_re_bake_existing_record() -> None:
     """A record already present for (yesterday, generation) is preserved."""
-    now = datetime(2024, 1, 15, 10, 0, tzinfo=timezone.utc)
+    now = datetime(2024, 1, 15, 10, 0, tzinfo=UTC)
     yesterday = "2024-01-14"
     existing = BakedDayRecord(
         date_str=yesterday,
         side_id="generation",
         counter_total_used=5.0,
         source_kind=SOURCE_KIND_DEDICATED_SENSOR,
-        baked_slots=(SlotKwh(datetime(2024, 1, 14, 10, 0, tzinfo=timezone.utc),
-                              datetime(2024, 1, 14, 11, 0, tzinfo=timezone.utc),
+        baked_slots=(SlotKwh(datetime(2024, 1, 14, 10, 0, tzinfo=UTC),
+                              datetime(2024, 1, 14, 11, 0, tzinfo=UTC),
                               5.0),),
         baked_sum=5.0,
-        baked_at=datetime(2024, 1, 15, 0, 5, tzinfo=timezone.utc),
+        baked_at=datetime(2024, 1, 15, 0, 5, tzinfo=UTC),
     )
     hass = _Hass({"sensor.fresh": _State("99.0")})
     raw_config = {DEDICATED_ENTITY_CONFIG_KEY["generation"]: "sensor.fresh"}
@@ -115,9 +114,9 @@ def test_does_not_re_bake_existing_record() -> None:
     out = try_bake_yesterday(
         engine=_gen_engine(),
         samples_by_side={"generation": [
-            _PowerSample(datetime(2024, 1, 14, 10, 30, tzinfo=timezone.utc), kw=1.0),
+            _PowerSample(datetime(2024, 1, 14, 10, 30, tzinfo=UTC), kw=1.0),
         ]},
-        price_slots=_hourly_slots(datetime(2024, 1, 14, tzinfo=timezone.utc), 24),
+        price_slots=_hourly_slots(datetime(2024, 1, 14, tzinfo=UTC), 24),
         baked_history=BakedObservedHistory(records=(existing,)),
         snapshot_history=CounterSnapshotHistory(records=()),
         hass=hass,
@@ -138,18 +137,18 @@ def test_does_not_re_bake_existing_record() -> None:
 
 def test_bake_with_dedicated_sensor() -> None:
     """Dedicated sensor reading produces a record with source_kind=dedicated_sensor."""
-    now = datetime(2024, 1, 15, 8, 0, tzinfo=timezone.utc)
+    now = datetime(2024, 1, 15, 8, 0, tzinfo=UTC)
     hass = _Hass({"sensor.gen_yest": _State("4.0")})
     raw_config = {DEDICATED_ENTITY_CONFIG_KEY["generation"]: "sensor.gen_yest"}
 
     # Yesterday samples: 2 kW for one hour → 2.0 kWh raw → factor = 2.0
-    yest_start = datetime(2024, 1, 14, 10, tzinfo=timezone.utc)
+    yest_start = datetime(2024, 1, 14, 10, tzinfo=UTC)
     samples = [_PowerSample(yest_start + timedelta(minutes=30), kw=2.0)]
 
     out = try_bake_yesterday(
         engine=_gen_engine(),
         samples_by_side={"generation": samples},
-        price_slots=_hourly_slots(datetime(2024, 1, 14, tzinfo=timezone.utc), 24),
+        price_slots=_hourly_slots(datetime(2024, 1, 14, tzinfo=UTC), 24),
         baked_history=BakedObservedHistory(records=()),
         snapshot_history=CounterSnapshotHistory(records=()),
         hass=hass,
@@ -166,20 +165,20 @@ def test_bake_with_dedicated_sensor() -> None:
 
 def test_bake_with_snapshot_fallback() -> None:
     """When no dedicated sensor, the latest snapshot in target_date drives the bake."""
-    now = datetime(2024, 1, 15, 1, 0, tzinfo=timezone.utc)
-    yest = datetime(2024, 1, 14, 23, 45, tzinfo=timezone.utc)
+    now = datetime(2024, 1, 15, 1, 0, tzinfo=UTC)
+    yest = datetime(2024, 1, 14, 23, 45, tzinfo=UTC)
     snaps = CounterSnapshotHistory(records=(
         CounterSnapshotRecord(side_id="generation", captured_at=yest, today_total_kwh=6.0),
     ))
     samples = [
-        _PowerSample(datetime(2024, 1, 14, 10, 30, tzinfo=timezone.utc), kw=2.0),
-        _PowerSample(datetime(2024, 1, 14, 11, 30, tzinfo=timezone.utc), kw=2.0),
+        _PowerSample(datetime(2024, 1, 14, 10, 30, tzinfo=UTC), kw=2.0),
+        _PowerSample(datetime(2024, 1, 14, 11, 30, tzinfo=UTC), kw=2.0),
     ]    # raw sum 4.0; counter 6.0; factor 1.5
 
     out = try_bake_yesterday(
         engine=_gen_engine(),
         samples_by_side={"generation": samples},
-        price_slots=_hourly_slots(datetime(2024, 1, 14, tzinfo=timezone.utc), 24),
+        price_slots=_hourly_slots(datetime(2024, 1, 14, tzinfo=UTC), 24),
         baked_history=BakedObservedHistory(records=()),
         snapshot_history=snaps,
         hass=_Hass(),
@@ -204,19 +203,19 @@ def test_skips_when_price_grid_misses_target_day() -> None:
     """
     hass = _Hass({"sensor.gen_yest": _State("4.0")})
     raw_config = {DEDICATED_ENTITY_CONFIG_KEY["generation"]: "sensor.gen_yest"}
-    samples = [_PowerSample(datetime(2024, 1, 14, 10, 30, tzinfo=timezone.utc), kw=2.0)]
+    samples = [_PowerSample(datetime(2024, 1, 14, 10, 30, tzinfo=UTC), kw=2.0)]
 
     # 00:02, just after midnight: price grid covers only today + tomorrow,
     # NOT the 2024-01-14 target day.
     out = try_bake_yesterday(
         engine=_gen_engine(),
         samples_by_side={"generation": samples},
-        price_slots=_hourly_slots(datetime(2024, 1, 15, tzinfo=timezone.utc), 48),
+        price_slots=_hourly_slots(datetime(2024, 1, 15, tzinfo=UTC), 48),
         baked_history=BakedObservedHistory(records=()),
         snapshot_history=CounterSnapshotHistory(records=()),
         hass=hass,
         raw_config=raw_config,
-        now=datetime(2024, 1, 15, 0, 2, tzinfo=timezone.utc),
+        now=datetime(2024, 1, 15, 0, 2, tzinfo=UTC),
         local_tz=LOCAL_TZ,
     )
     assert out.records == ()    # skipped, not frozen
@@ -225,12 +224,12 @@ def test_skips_when_price_grid_misses_target_day() -> None:
     out2 = try_bake_yesterday(
         engine=_gen_engine(),
         samples_by_side={"generation": samples},
-        price_slots=_hourly_slots(datetime(2024, 1, 14, tzinfo=timezone.utc), 24),
+        price_slots=_hourly_slots(datetime(2024, 1, 14, tzinfo=UTC), 24),
         baked_history=BakedObservedHistory(records=()),
         snapshot_history=CounterSnapshotHistory(records=()),
         hass=hass,
         raw_config=raw_config,
-        now=datetime(2024, 1, 15, 8, 0, tzinfo=timezone.utc),
+        now=datetime(2024, 1, 15, 8, 0, tzinfo=UTC),
         local_tz=LOCAL_TZ,
     )
     rec = next(r for r in out2.records if r.side_id == "generation")
@@ -246,13 +245,13 @@ def test_skips_when_price_grid_misses_target_day() -> None:
 
 def test_skips_when_no_source_before_cutoff() -> None:
     """Before hard cutoff, no source → no record written (retry next cycle)."""
-    now = datetime(2024, 1, 15, 1, 0, tzinfo=timezone.utc)  # 01:00 < 06:00 cutoff
+    now = datetime(2024, 1, 15, 1, 0, tzinfo=UTC)  # 01:00 < 06:00 cutoff
     out = try_bake_yesterday(
         engine=_gen_engine(),
         samples_by_side={"generation": [
-            _PowerSample(datetime(2024, 1, 14, 10, tzinfo=timezone.utc), kw=2.0),
+            _PowerSample(datetime(2024, 1, 14, 10, tzinfo=UTC), kw=2.0),
         ]},
-        price_slots=_hourly_slots(datetime(2024, 1, 14, tzinfo=timezone.utc), 24),
+        price_slots=_hourly_slots(datetime(2024, 1, 14, tzinfo=UTC), 24),
         baked_history=BakedObservedHistory(records=()),
         snapshot_history=CounterSnapshotHistory(records=()),
         hass=_Hass(),
@@ -265,13 +264,13 @@ def test_skips_when_no_source_before_cutoff() -> None:
 
 def test_records_failed_no_source_past_cutoff() -> None:
     """Past hard cutoff with no source → record failed_no_source, freeze."""
-    now = datetime(2024, 1, 15, 6, 5, tzinfo=timezone.utc)  # 06:05 > 06:00 cutoff
-    samples = [_PowerSample(datetime(2024, 1, 14, 10, 30, tzinfo=timezone.utc), kw=2.0)]
+    now = datetime(2024, 1, 15, 6, 5, tzinfo=UTC)  # 06:05 > 06:00 cutoff
+    samples = [_PowerSample(datetime(2024, 1, 14, 10, 30, tzinfo=UTC), kw=2.0)]
 
     out = try_bake_yesterday(
         engine=_gen_engine(),
         samples_by_side={"generation": samples},
-        price_slots=_hourly_slots(datetime(2024, 1, 14, tzinfo=timezone.utc), 24),
+        price_slots=_hourly_slots(datetime(2024, 1, 14, tzinfo=UTC), 24),
         baked_history=BakedObservedHistory(records=()),
         snapshot_history=CounterSnapshotHistory(records=()),
         hass=_Hass(),
@@ -293,22 +292,22 @@ def test_records_failed_no_source_past_cutoff() -> None:
 
 def test_grid_independent_per_side_outcomes() -> None:
     """One side bakes from snapshot; the other has no source → independent records."""
-    now = datetime(2024, 1, 15, 7, 0, tzinfo=timezone.utc)  # past cutoff
-    yest = datetime(2024, 1, 14, 23, 45, tzinfo=timezone.utc)
+    now = datetime(2024, 1, 15, 7, 0, tzinfo=UTC)  # past cutoff
+    yest = datetime(2024, 1, 14, 23, 45, tzinfo=UTC)
     snaps = CounterSnapshotHistory(records=(
         # Only import has a snapshot.
         CounterSnapshotRecord(side_id="grid_import", captured_at=yest, today_total_kwh=3.0),
     ))
     # 1 h pure import @ 2 kW; no export samples.
     import_samples = [
-        _PowerSample(datetime(2024, 1, 14, 10, m, tzinfo=timezone.utc), kw=2.0)
+        _PowerSample(datetime(2024, 1, 14, 10, m, tzinfo=UTC), kw=2.0)
         for m in (10, 20, 30, 40, 50)
     ]
 
     out = try_bake_yesterday(
         engine=_grid_engine(),
         samples_by_side={"grid_import": import_samples, "grid_export": []},
-        price_slots=_hourly_slots(datetime(2024, 1, 14, tzinfo=timezone.utc), 24),
+        price_slots=_hourly_slots(datetime(2024, 1, 14, tzinfo=UTC), 24),
         baked_history=BakedObservedHistory(records=()),
         snapshot_history=snaps,
         hass=_Hass(),
@@ -330,7 +329,7 @@ def test_grid_independent_per_side_outcomes() -> None:
 
 def test_retention_drops_old_records() -> None:
     """Records older than the retention window are pruned from the output."""
-    now = datetime(2024, 1, 15, 0, 5, tzinfo=timezone.utc)
+    now = datetime(2024, 1, 15, 0, 5, tzinfo=UTC)
     # 40 days ago is past the 35-day default retention.
     old = BakedDayRecord(
         date_str="2023-12-05",
@@ -366,19 +365,19 @@ def test_baked_slots_by_date_indexes_by_date_str() -> None:
         date_str="2024-01-13", side_id="generation",
         counter_total_used=1.0, source_kind=SOURCE_KIND_DEDICATED_SENSOR,
         baked_slots=(), baked_sum=1.0,
-        baked_at=datetime(2024, 1, 14, tzinfo=timezone.utc),
+        baked_at=datetime(2024, 1, 14, tzinfo=UTC),
     )
     rec_b = BakedDayRecord(
         date_str="2024-01-14", side_id="generation",
         counter_total_used=2.0, source_kind=SOURCE_KIND_DEDICATED_SENSOR,
         baked_slots=(), baked_sum=2.0,
-        baked_at=datetime(2024, 1, 15, tzinfo=timezone.utc),
+        baked_at=datetime(2024, 1, 15, tzinfo=UTC),
     )
     other_side = BakedDayRecord(
         date_str="2024-01-14", side_id="grid_import",
         counter_total_used=9.0, source_kind=SOURCE_KIND_DEDICATED_SENSOR,
         baked_slots=(), baked_sum=9.0,
-        baked_at=datetime(2024, 1, 15, tzinfo=timezone.utc),
+        baked_at=datetime(2024, 1, 15, tzinfo=UTC),
     )
     history = BakedObservedHistory(records=(rec_a, rec_b, other_side))
     idx = baked_slots_by_date(history, "generation")

@@ -5,7 +5,7 @@ counter-difference fallback have been removed; only the PV-power averaging
 path remains. Yesterday's slots are raw averages until the once-per-day
 bake-in (Phase 3) replaces them with proportionally-corrected values.
 """
-from datetime import datetime, timedelta, timezone
+from datetime import datetime, timedelta
 
 from custom_components.sun_sale.contract.const import SOURCE_KIND_DEDICATED_SENSOR
 from custom_components.sun_sale.contract.models import (

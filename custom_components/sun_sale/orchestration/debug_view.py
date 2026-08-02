@@ -2,13 +2,19 @@
 from __future__ import annotations
 
 import dataclasses
-from datetime import datetime, timezone
+from datetime import UTC, datetime
 from typing import Any
 
 from aiohttp import web
 from homeassistant.components.http import HomeAssistantView
 
-from ..contract.const import CONF_SOLAR_FORECAST_ENTITY, CONF_SOLAR_FORECAST_ENTITY_2, CONF_SOLAR_FORECAST_DEVICE_IDS, CONF_NORDPOOL_ENTITY, DOMAIN
+from ..contract.const import (
+    CONF_NORDPOOL_ENTITY,
+    CONF_SOLAR_FORECAST_DEVICE_IDS,
+    CONF_SOLAR_FORECAST_ENTITY,
+    CONF_SOLAR_FORECAST_ENTITY_2,
+    DOMAIN,
+)
 
 
 class SunSaleDebugView(HomeAssistantView):
@@ -91,7 +97,7 @@ def _coordinator_to_dict(entry_id: str, coordinator: Any) -> dict:
     cfg = coordinator._config  # noqa: SLF001
     return {
         "entry_id": entry_id,
-        "timestamp": datetime.now(timezone.utc).isoformat(),
+        "timestamp": datetime.now(UTC).isoformat(),
         "automation_enabled": coordinator.automation_enabled,
         "mode_override": (
             coordinator.mode_override.value
@@ -102,7 +108,7 @@ def _coordinator_to_dict(entry_id: str, coordinator: Any) -> dict:
             # Local timezone (IANA name) used for all day-bucketing. Lets the
             # integration check mirror the coordinator's local-date logic for
             # the profitability peak cross-check.
-            "time_zone": str(getattr(coordinator._sun_sale_config, "local_tz", timezone.utc)),  # noqa: SLF001
+            "time_zone": str(getattr(coordinator._sun_sale_config, "local_tz", UTC)),  # noqa: SLF001
             "nordpool_entity": cfg.get(CONF_NORDPOOL_ENTITY, ""),
             "price_source": getattr(
                 coordinator._sun_sale_config, "price_source", "nordpool"  # noqa: SLF001

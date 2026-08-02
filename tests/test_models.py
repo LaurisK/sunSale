@@ -1,13 +1,19 @@
 """Tests for models.py — data structure correctness."""
-from datetime import datetime, timezone, timedelta
+from datetime import UTC, datetime, timedelta
+
 import pytest
+
 from custom_components.sun_sale.contract.models import (
-    PriceEntry, TariffConfig, BatteryConfig, BatteryState,
-    SolarForecast, ScheduleSlot, Schedule, CapacityObservation, StorageMode,
+    BatteryConfig,
+    BatteryState,
+    CapacityObservation,
+    PriceEntry,
+    ScheduleSlot,
+    StorageMode,
+    TariffConfig,
 )
 
-
-NOW = datetime(2024, 1, 15, 12, 0, tzinfo=timezone.utc)
+NOW = datetime(2024, 1, 15, 12, 0, tzinfo=UTC)
 
 
 def test_storage_mode_enum_values():

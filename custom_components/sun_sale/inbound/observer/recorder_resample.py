@@ -40,9 +40,10 @@ freshness verdict) are merged in alongside.
 from __future__ import annotations
 
 import logging
+from collections.abc import Sequence
 from dataclasses import dataclass
 from datetime import datetime, timedelta
-from typing import Any, Sequence
+from typing import Any
 
 from ...contract.models import (
     DerivedPowerSample,

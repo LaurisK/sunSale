@@ -2,7 +2,7 @@
 from __future__ import annotations
 
 from dataclasses import dataclass
-from datetime import datetime, timedelta, timezone
+from datetime import UTC, datetime, timedelta
 
 from custom_components.sun_sale.contract.models import (
     CounterSnapshotHistory,
@@ -12,10 +12,9 @@ from custom_components.sun_sale.inbound.pre_rollover_snapshot import (
     maybe_capture_snapshots,
 )
 
-
 # Local timezone fixed at UTC throughout these tests so the window check
 # matches the supplied wall-clock hours/minutes directly.
-LOCAL_TZ = timezone.utc
+LOCAL_TZ = UTC
 
 
 @dataclass(frozen=True)
@@ -31,7 +30,7 @@ def _empty() -> CounterSnapshotHistory:
 
 def test_outside_window_no_snapshot_taken() -> None:
     """When ``now`` is outside the window, history is returned unchanged."""
-    now = datetime(2024, 1, 15, 12, 0, tzinfo=timezone.utc)
+    now = datetime(2024, 1, 15, 12, 0, tzinfo=UTC)
     out = maybe_capture_snapshots(
         snapshot_history=_empty(),
         sources=[("generation", _Reading(5.0))],
@@ -43,7 +42,7 @@ def test_outside_window_no_snapshot_taken() -> None:
 
 def test_inside_window_appends_snapshot_per_side() -> None:
     """All non-None readings produce records inside the window."""
-    now = datetime(2024, 1, 15, 23, 45, tzinfo=timezone.utc)
+    now = datetime(2024, 1, 15, 23, 45, tzinfo=UTC)
     out = maybe_capture_snapshots(
         snapshot_history=_empty(),
         sources=[
@@ -63,7 +62,7 @@ def test_inside_window_appends_snapshot_per_side() -> None:
 
 def test_none_reading_skipped() -> None:
     """A side with reading=None is not snapshotted."""
-    now = datetime(2024, 1, 15, 23, 45, tzinfo=timezone.utc)
+    now = datetime(2024, 1, 15, 23, 45, tzinfo=UTC)
     out = maybe_capture_snapshots(
         snapshot_history=_empty(),
         sources=[
@@ -79,8 +78,8 @@ def test_none_reading_skipped() -> None:
 
 def test_multiple_cycles_in_window_accumulate() -> None:
     """Two cycles both in window → two snapshots per side, both retained."""
-    t1 = datetime(2024, 1, 15, 23, 35, tzinfo=timezone.utc)
-    t2 = datetime(2024, 1, 15, 23, 55, tzinfo=timezone.utc)
+    t1 = datetime(2024, 1, 15, 23, 35, tzinfo=UTC)
+    t2 = datetime(2024, 1, 15, 23, 55, tzinfo=UTC)
     h1 = maybe_capture_snapshots(
         snapshot_history=_empty(),
         sources=[("generation", _Reading(10.0))],
@@ -98,7 +97,7 @@ def test_multiple_cycles_in_window_accumulate() -> None:
 
 def test_retention_prunes_old_records() -> None:
     """Records older than retention_days are dropped on the returned history."""
-    now = datetime(2024, 1, 15, 23, 45, tzinfo=timezone.utc)
+    now = datetime(2024, 1, 15, 23, 45, tzinfo=UTC)
     old = CounterSnapshotRecord(
         side_id="generation",
         captured_at=now - timedelta(days=5),
@@ -118,7 +117,7 @@ def test_retention_prunes_old_records() -> None:
 
 def test_retention_runs_outside_window_too() -> None:
     """Even when the window is closed, stale records are pruned."""
-    now = datetime(2024, 1, 15, 12, 0, tzinfo=timezone.utc)
+    now = datetime(2024, 1, 15, 12, 0, tzinfo=UTC)
     old = CounterSnapshotRecord(
         side_id="generation",
         captured_at=now - timedelta(days=5),
@@ -142,7 +141,7 @@ def test_reading_without_attribute_skipped_gracefully() -> None:
         """No today_total_kwh attribute."""
         value: float
 
-    now = datetime(2024, 1, 15, 23, 45, tzinfo=timezone.utc)
+    now = datetime(2024, 1, 15, 23, 45, tzinfo=UTC)
     out = maybe_capture_snapshots(
         snapshot_history=_empty(),
         sources=[("generation", _Bad(5.0))],
@@ -160,7 +159,7 @@ def test_positive_skew_shifts_capture_earlier_in_ha_time() -> None:
     want the snapshot. ``clock_skew_seconds=+300`` should align the window
     check with the inverter's idea of "now".
     """
-    ha_now = datetime(2024, 1, 15, 23, 25, tzinfo=timezone.utc)
+    ha_now = datetime(2024, 1, 15, 23, 25, tzinfo=UTC)
 
     # Without skew: outside window, no capture.
     without = maybe_capture_snapshots(
@@ -190,7 +189,7 @@ def test_negative_skew_extends_window_later_in_ha_time() -> None:
     HA 00:02 (next day) is past the window normally. With skew=-300s the
     window check uses 23:57 — still inside the window, capture happens.
     """
-    ha_now = datetime(2024, 1, 16, 0, 2, tzinfo=timezone.utc)
+    ha_now = datetime(2024, 1, 16, 0, 2, tzinfo=UTC)
     with_skew = maybe_capture_snapshots(
         snapshot_history=_empty(),
         sources=[("generation", _Reading(5.0))],
@@ -204,7 +203,7 @@ def test_negative_skew_extends_window_later_in_ha_time() -> None:
 def test_window_boundary_inclusive() -> None:
     """Snapshots at the exact start and end-of-minute of the window are captured."""
     # Start boundary
-    t_start = datetime(2024, 1, 15, 23, 30, 0, tzinfo=timezone.utc)
+    t_start = datetime(2024, 1, 15, 23, 30, 0, tzinfo=UTC)
     out_start = maybe_capture_snapshots(
         snapshot_history=_empty(),
         sources=[("generation", _Reading(1.0))],
@@ -214,7 +213,7 @@ def test_window_boundary_inclusive() -> None:
     assert len(out_start.records) == 1
 
     # End boundary (end is inclusive at end:59.999999)
-    t_end = datetime(2024, 1, 15, 23, 59, 59, tzinfo=timezone.utc)
+    t_end = datetime(2024, 1, 15, 23, 59, 59, tzinfo=UTC)
     out_end = maybe_capture_snapshots(
         snapshot_history=_empty(),
         sources=[("generation", _Reading(1.0))],

@@ -2,7 +2,7 @@
 from __future__ import annotations
 
 from dataclasses import dataclass, field
-from datetime import date, datetime, timezone
+from datetime import UTC, datetime
 
 from rich.text import Text
 from textual.app import ComposeResult
@@ -46,7 +46,7 @@ def check_schedule(snap: Snapshot) -> ScheduleCheckResult:
     result.slot_count = len(slots)
     result.total_expected_profit_eur = schedule.get("total_expected_profit_eur") or 0.0
 
-    now = datetime.now(timezone.utc)
+    now = datetime.now(UTC)
     last_dt: datetime | None = None
     computed_profit = 0.0
 
@@ -55,12 +55,12 @@ def check_schedule(snap: Snapshot) -> ScheduleCheckResult:
         end_str = s.get("end", start_str)
 
         try:
-            start_dt: datetime | None = datetime.fromisoformat(start_str).astimezone(timezone.utc)
+            start_dt: datetime | None = datetime.fromisoformat(start_str).astimezone(UTC)
         except (ValueError, AttributeError):
             start_dt = None
 
         try:
-            end_dt: datetime | None = datetime.fromisoformat(end_str).astimezone(timezone.utc)
+            end_dt: datetime | None = datetime.fromisoformat(end_str).astimezone(UTC)
         except (ValueError, AttributeError):
             end_dt = None
 
@@ -130,7 +130,7 @@ class ScheduleSlotsTable(Static):
 
         for row in self._sc.slot_rows:
             try:
-                dt = datetime.fromisoformat(row["start"]).astimezone(timezone.utc)
+                dt = datetime.fromisoformat(row["start"]).astimezone(UTC)
                 time_str = dt.strftime("%H:%M")
                 cur_date = dt.date()
             except (ValueError, AttributeError):
