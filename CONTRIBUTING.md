@@ -6,7 +6,7 @@ requests are all welcome.
 ## Before you start
 
 - **Bugs & features:** open an issue at
-  <https://github.com/LaurisK/sun-sale/issues> first for anything non-trivial, so we can
+  <https://github.com/LaurisK/sunSale/issues> first for anything non-trivial, so we can
   agree on the approach before you write code.
 - **Read** [`CONVENTIONS.md`](CONVENTIONS.md) — the coding, docstring, testing, and
   integration-check conventions the codebase follows. Architecture and the control-loop

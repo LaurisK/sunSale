@@ -27,7 +27,7 @@ Everything flows through other HA integrations — sunSale calls no external API
 ## Install
 
 **HACS (custom repository):** HACS → Integrations → ⋮ → *Custom repositories* → add
-`https://github.com/LaurisK/sun-sale` as category **Integration** → Download → restart HA.
+`https://github.com/LaurisK/sunSale` as category **Integration** → Download → restart HA.
 
 **Manual:** copy `custom_components/sun_sale/` into `config/custom_components/`, restart HA.
 
