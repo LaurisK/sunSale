@@ -8,7 +8,7 @@ solar + battery storage. It runs a SoC-bucketed dynamic-programming scheduler ov
 spot prices, your tariff, the solar forecast, a learned household baseload, battery state, and
 degradation cost — then drives the inverter to the most profitable storage mode each slot.
 
-> **Status: alpha (v0.0.1).** Only the **Solis** platform (`solis_modbus`) is verified on real
+> **Status: alpha (v0.1.0).** Only the **Solis** platform (`solis_modbus`) is verified on real
 > hardware. The Huawei / SolaX / Sungrow / GoodWe / Deye drivers are implemented and selectable but
 > **untested against hardware** — verify on first connect. Fronius / SMA / Kostal are telemetry-only
 > (no write). Run with the **Automation** switch off first to observe before trusting it.
