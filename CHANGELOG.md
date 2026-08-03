@@ -10,6 +10,69 @@ Any behavior-affecting change bumps the `version` in
 
 ## [Unreleased]
 
+## [0.2.0] — 2026-08-03
+
+### Fixed
+- **Control loop could never verify a clamped write.** `apply_mode` wrote each
+  number target clamped into the entity's advertised `min`/`max`, while
+  `control_surface` compared the readback against the *unclamped* composed
+  `StorageModeSpec`. Any target above an upstream bound therefore reported a
+  permanent mismatch: two force-writes and an `ERROR` per slot boundary, then
+  `verify_state: "mismatch"` forever. Live since solis_modbus v4.2.0 began
+  honouring the declared 0–200 A ceiling on registers 43117/43118 against a
+  292.97 A composed target. Drivers now return an **effective** spec
+  (`effective_spec`), so the value written and the value verified are the same
+  number; the unreduced composition stays available as `declared_spec`.
+- **An unreadable control point was treated as register drift.** `ControlRow`
+  collapsed "readback disagrees" and "no readback" into `match=False`, which
+  pinned `_registers_drifted()` True for as long as an entity stayed
+  unavailable — starving the stale-verdict self-heal. Rows now carry a
+  four-state `status` (`match` / `mismatch` / `unknown` / `no_target`); only
+  `mismatch` counts as drift. `match` is retained as a derived property so the
+  panel, sensor attributes and debug API keep their shape.
+- **`decode_mode` reported a confident StandBy for an unreadable inverter.**
+  Under register 43110 = 1, `discharge_a` is the sole discriminator between
+  StandBy and the SelfUse variants, and it was defaulted to 0 when `None`. An
+  inverter whose current registers stopped publishing therefore read as StandBy
+  while it may have been actively discharging. It now decodes to `UNKNOWN`.
+
+### Added
+- **Capability seam** (`docs/capability_seam.md`). `EntityActuator.limit_for()`
+  is the single place sunSale reads an upstream entity's advertised bounds,
+  resolved live each cycle because solis_modbus v4.2.2 derives them from BMS
+  mirror registers after entity construction. It feeds the write clamp, the
+  drivers' `effective_spec`, and a new `InverterCapability` projection.
+- Verify state `unknown`, reported when every disagreeing control point is
+  merely unreadable. No retry is issued — re-writing an invisible register
+  proves nothing — and the panel renders those rows grey rather than red.
+
+### Changed
+- **The DP now plans against the hardware's live envelope.** `capability()`
+  projects the control-point bounds into kW and the coordinator reduces the
+  configured export / discharge-to-grid caps by it before the planner runs, so
+  the schedule stops budgeting transfer rates the dispatcher would clamp.
+  Discharge-to-grid takes the binding one of its three legs — battery current at
+  the configured bus voltage, the RC active-power setpoint, and the export cap.
+  On the reference install those are 10.24 kW, 10.0 kW and 20.0 kW, so planned
+  peak export drops from the configured 15 kW to 10 kW. **This changes generated
+  schedules.** `number.sunsale_max_discharge_to_grid` can now only ever *reduce*
+  the planned rate.
+- The battery legs are reduced too: `ScheduleNode` substitutes the resolved
+  ceilings into `BatteryConfig`'s power limits, so the DP's per-slot energy
+  envelope in `slot_physics` follows the hardware. Previously it stayed at the
+  configured value — on the reference install budgeting 3.75 kWh of charge per
+  15-min slot against an achievable 2.56 kWh. Grid-charge and solar-absorption
+  planning shift as a result.
+- Entity-driven platforms (Huawei / SolaX / Sungrow / GoodWe / Deye) get the
+  same per-write reduction, so their verify loop is honest too. Their
+  `capability()` reports no resolved bounds — there is no uniform role
+  vocabulary across them to map legs from, and inventing one for drivers that
+  have never been hardware-verified would feed the planner unchecked numbers.
+  They therefore keep planning on configured caps, exactly as before.
+- New `capability` integration check validating that the planner's caps equal
+  `min(configured, capable)` per leg, wired into the TUI and exposed under
+  `pipeline.schedule_policy.effective` in the debug view.
+
 ## [0.1.0] — 2026-08-03
 
 First tagged release. Alpha: only the Solis platform (`solis_modbus`) is verified
