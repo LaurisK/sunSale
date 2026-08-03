@@ -7,6 +7,7 @@ from unittest.mock import AsyncMock, MagicMock
 import pytest
 
 from custom_components.sun_sale.contract.models import (
+    UNKNOWN_LIMIT,
     InverterModeChange,
     InverterModeHistory,
     InverterModeReading,
@@ -18,6 +19,7 @@ from custom_components.sun_sale.outbound.inverter import RC_ADJUSTMENT_AC_PORT_V
 from custom_components.sun_sale.outbound.inverter_control_module import (
     _DRIFT_RECONCILE_CYCLES,
     _RC_KEEPALIVE_INTERVAL_S,
+    _VERIFY_WINDOW_S,
     InverterControlModule,
 )
 from custom_components.sun_sale.outbound.solis_driver import SolisDriver
@@ -46,6 +48,10 @@ def _mock_inverter() -> MagicMock:
     inv.get_rc_setpoint_w = MagicMock(return_value=None)
     inv.get_rc_adjustment_value = MagicMock(return_value=None)
     inv.refresh_rc = AsyncMock()
+    # No advertised bounds by default, so ``effective_spec`` leaves the composed
+    # spec untouched. A bare MagicMock here would coerce every reduced target to
+    # a stray int and silently rewrite the spec under the tests.
+    inv.limit_for = MagicMock(return_value=UNKNOWN_LIMIT)
     return inv
 
 
@@ -977,7 +983,7 @@ async def test_holding_engaged_rc_mode_refreshes_deadman(call_later):
     await _hold_tick(mod, StorageMode.Discharge, minutes=5)
     assert mod.last_dispatch_outcome == "holding"
     assert inv.refresh_rc.await_count == 1
-    assert inv.refresh_rc.await_args.args[0] is mod._driver.spec_for(StorageMode.Discharge)
+    assert inv.refresh_rc.await_args.args[0] == mod._driver.spec_for(StorageMode.Discharge)
     await _hold_tick(mod, StorageMode.Discharge, minutes=10)
     assert inv.refresh_rc.await_count == 2
 
@@ -1017,7 +1023,7 @@ async def test_rc_keepalive_armed_and_fires_on_engaged_rc_mode(call_later, track
     # Fire the heartbeat → full re-arm of the held mode's RC registers.
     await track_interval.action(NOW + timedelta(seconds=_RC_KEEPALIVE_INTERVAL_S))
     assert inv.refresh_rc.await_count == 1
-    assert inv.refresh_rc.await_args.args[0] is mod._driver.spec_for(StorageMode.Discharge)
+    assert inv.refresh_rc.await_args.args[0] == mod._driver.spec_for(StorageMode.Discharge)
 
 
 @pytest.mark.asyncio
@@ -1165,3 +1171,127 @@ def test_observed_mode_decodes_from_live_readbacks():
     # Unreadable register → UNKNOWN.
     inv.get_storage_control_word = MagicMock(return_value=None)
     assert mod.observed_mode is StorageMode.UNKNOWN
+
+
+# ---------------------------------------------------------------------------
+# Unreadable ≠ drifted (capability seam, phase 2)
+#
+# An entity that stops publishing must not read as register drift. The live
+# 2026-08-03 failure: solis_modbus stopped publishing 43117/43118, every
+# targeted current row went observed=None, and because ``match=False`` covered
+# both "wrong" and "unreadable" the module treated a comms gap as a control
+# fault — pinning ``_registers_drifted()`` True, starving the stale-verdict
+# self-heal, and burning two force-writes plus an ERROR per slot boundary.
+# ---------------------------------------------------------------------------
+
+
+@pytest.mark.asyncio
+async def test_unreadable_registers_do_not_count_as_drift(call_later):
+    """Currents going unavailable must not trigger reconcile re-writes."""
+    inv = _mock_inverter()
+    mod = _module_with_hass(inv)
+    await _engage_ok(mod, inv, call_later)
+    assert inv.apply_mode.await_count == 1
+
+    # The two current registers stop being published; everything else still reads.
+    inv.get_charge_current_a = MagicMock(return_value=None)
+    inv.get_discharge_current_a = MagicMock(return_value=None)
+
+    # Well past the drift debounce: still holding, never re-commanded.
+    for i in range(1, _DRIFT_RECONCILE_CYCLES + 3):
+        await _hold_tick(mod, StorageMode.Discharge, minutes=5 * i)
+        assert mod.last_dispatch_outcome == "holding"
+    assert inv.apply_mode.await_count == 1
+    assert mod.verify_state == "ok"
+
+
+@pytest.mark.asyncio
+async def test_unreadable_rows_report_unknown_status(call_later):
+    """The panel payload distinguishes unreadable from wrong."""
+    inv = _mock_inverter()
+    mod = _module_with_hass(inv)
+    await _engage_ok(mod, inv, call_later)
+    inv.get_charge_current_a = MagicMock(return_value=None)
+    await _hold_tick(mod, StorageMode.Discharge, minutes=5)
+
+    rows = {r["name"]: r for r in mod.register_status}
+    assert rows["charge_a"]["status"] == "unknown"
+    assert rows["reg_43110"]["status"] == "match"
+    # Legacy boolean stays available and falsy for the unreadable row.
+    assert rows["charge_a"]["match"] is False
+
+
+@pytest.mark.asyncio
+async def test_verify_reports_unknown_not_mismatch_when_only_unreadable(call_later):
+    """A comms gap during verify yields ``unknown`` and issues no retry.
+
+    Re-writing a register we cannot read proves nothing, so the retry is skipped
+    entirely — the old code force-wrote twice and then declared ``mismatch``.
+    """
+    inv = _mock_inverter()
+    mod = _module_with_hass(inv)
+    # reg_43110 matches; the currents this mode targets are unreadable.
+    spec = mod._driver.spec_for(StorageMode.SelfUse)
+    inv.get_storage_control_word = MagicMock(return_value=spec.reg_43110_value)
+    inv.get_backflow_power_w = MagicMock(return_value=spec.export_limit_w)
+    inv.get_rc_setpoint_w = MagicMock(return_value=spec.rc_setpoint_w)
+    inv.get_rc_adjustment_value = MagicMock(return_value=0)
+
+    await mod.tick(
+        now=NOW, schedule=_schedule_with(StorageMode.SelfUse),
+        reading=_reading(StorageMode.SelfUse, reg=1),
+        history=InverterModeHistory(samples=()), automation_enabled=True,
+    )
+    assert inv.apply_mode.await_count == 1
+    # Exhaust the verify window.
+    await call_later.last_callback(NOW + timedelta(seconds=_VERIFY_WINDOW_S + 5))
+    assert mod.verify_state == "unknown"
+    assert inv.apply_mode.await_count == 1  # no retry issued
+
+
+@pytest.mark.asyncio
+async def test_unknown_verify_clears_to_ok_only_on_positive_confirmation(call_later):
+    """``unknown`` needs every row read back and matching before it clears.
+
+    "Not drifted" is insufficient — an unreadable row is also not drifted, so
+    accepting that would flip the badge green with no evidence.
+    """
+    inv = _mock_inverter()
+    mod = _module_with_hass(inv)
+    spec = mod._driver.spec_for(StorageMode.SelfUse)
+    inv.get_storage_control_word = MagicMock(return_value=spec.reg_43110_value)
+    inv.get_backflow_power_w = MagicMock(return_value=spec.export_limit_w)
+    inv.get_rc_setpoint_w = MagicMock(return_value=spec.rc_setpoint_w)
+    inv.get_rc_adjustment_value = MagicMock(return_value=0)
+    await mod.tick(
+        now=NOW, schedule=_schedule_with(StorageMode.SelfUse),
+        reading=_reading(StorageMode.SelfUse, reg=1),
+        history=InverterModeHistory(samples=()), automation_enabled=True,
+    )
+    await call_later.last_callback(NOW + timedelta(seconds=_VERIFY_WINDOW_S + 5))
+    assert mod.verify_state == "unknown"
+
+    # Still unreadable → stays unknown, no false green.
+    await _hold_tick(mod, StorageMode.SelfUse, minutes=5)
+    assert mod.verify_state == "unknown"
+
+    # Registers come back and agree → now it may clear.
+    _wire_inverter_to_spec(inv, mod, StorageMode.SelfUse)
+    await _hold_tick(mod, StorageMode.SelfUse, minutes=10)
+    assert mod.verify_state == "ok"
+
+
+@pytest.mark.asyncio
+async def test_genuine_drift_still_reconciles_after_seam_change(call_later):
+    """Guard: making unreadable benign must not disarm real drift detection."""
+    inv = _mock_inverter()
+    mod = _module_with_hass(inv)
+    await _engage_ok(mod, inv, call_later)
+    # A readable-but-wrong current is drift, and must still be re-commanded.
+    inv.get_charge_current_a = MagicMock(return_value=1.0)
+    for i in range(1, _DRIFT_RECONCILE_CYCLES):
+        await _hold_tick(mod, StorageMode.Discharge, minutes=5 * i)
+        assert mod.last_dispatch_outcome == "holding"
+    await _hold_tick(mod, StorageMode.Discharge, minutes=5 * _DRIFT_RECONCILE_CYCLES)
+    assert mod.last_dispatch_outcome == "reconcile"
+    assert inv.apply_mode.await_count == 2

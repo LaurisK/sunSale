@@ -10,6 +10,7 @@ from .app import IntegrationCheckApp
 from .battery import check_battery, check_battery_runtime
 from .billing import check_monthly_bill
 from .calculation import check_calculation
+from .capability import check_capability
 from .client import HAClient
 from .consumption import check_base_load, check_household_consumption
 from .credentials import CredentialsError, resolve_credentials
@@ -108,6 +109,7 @@ def main(argv: list[str] | None = None) -> int:
     observed_consumption_results   = {s.entry_id: check_observed_consumption(s)      for s in snapshots}
     observed_losses_results        = {s.entry_id: check_observed_losses(s)           for s in snapshots}
     inverter_mode_results          = {s.entry_id: check_inverter_mode(s)             for s in snapshots}
+    capability_results             = {s.entry_id: check_capability(s)                for s in snapshots}
     app = IntegrationCheckApp(
         report,
         forecast_results, pricing_results, calculation_results,
@@ -122,6 +124,7 @@ def main(argv: list[str] | None = None) -> int:
         observed_consumption_results,
         observed_losses_results,
         inverter_mode_results,
+        capability_results,
     )
     app.run(inline=True)
     return app.exit_code

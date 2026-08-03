@@ -160,6 +160,8 @@ class ScheduleKnobs:
     terminal_value_discount: float
     max_discharge_to_grid_kw: float | None
     export_limit_kw: float | None = None
+    max_battery_charge_kw: float | None = None
+    max_battery_discharge_kw: float | None = None
 
 
 class CycleStep:
@@ -636,4 +638,8 @@ class SchedulePolicyStep(CycleStep):
             # Deployment config from the config flow, not a user-set entity
             # knob — passed through unclamped.
             export_limit_kw=k.export_limit_kw,
+            # Hardware-resolved battery legs; already reduced against config by
+            # the coordinator, so no further clamping here.
+            max_battery_charge_kw=k.max_battery_charge_kw,
+            max_battery_discharge_kw=k.max_battery_discharge_kw,
         )

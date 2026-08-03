@@ -173,6 +173,13 @@ class MaxDischargeToGridKwNumber(CoordinatorEntity, RestoreEntity, NumberEntity)
     schedules grid export. ``max_discharge_to_grid_kw`` on the coordinator
     stores ``None`` for "use hardware max", represented in the UI as the
     entity's maximum value (``SCHEDULE_MAX_DISCHARGE_TO_GRID_KW_MAX``).
+
+    This knob can only ever *reduce* the planned export rate. The coordinator
+    additionally reduces it by the driver's live ``capability()`` before the DP
+    sees it (``_read_schedule_knobs``), so a value above what the inverter's
+    control registers will accept has no effect — the binding cap wins. Raising
+    this to its maximum therefore means "no planner-side cap beyond the
+    hardware's own", not "export faster than the hardware allows".
     """
 
     _attr_name = "sunSale Max Discharge to Grid"

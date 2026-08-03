@@ -28,6 +28,7 @@ from homeassistant.core import HomeAssistant
 
 from ..contract.models import (
     BatteryConfig,
+    Limit,
     StorageMode,
 )
 from ..ha_state import (
@@ -584,6 +585,23 @@ class InverterController:
                 issue the underlying ``select.select_option`` service call.
         """
         await self._actuator.set_select(role, option, force=force)
+
+    def limit_for(self, role: str) -> Limit:
+        """Return the live writable bound advertised for one actuator ``role``.
+
+        Pass-through to :meth:`..outbound.entity_control.EntityActuator.limit_for`
+        — the single place upstream ``min``/``max`` attributes are read. Lets
+        :class:`..outbound.solis_driver.SolisDriver` reduce a composed spec
+        through the same bounds the write path clamps to.
+
+        Args:
+            role: Entity-ID map key (e.g. ``battery_max_charge_current``).
+
+        Returns:
+            The resolved :class:`Limit`; ``known=False`` when the role is
+            unmapped or its entity is absent.
+        """
+        return self._actuator.limit_for(role)
 
     def _read_optional_float(self, key: str) -> float | None:
         """Read a numeric HA state; return ``None`` when absent or unparseable.

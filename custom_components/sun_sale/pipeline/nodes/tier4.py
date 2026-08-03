@@ -2,9 +2,11 @@
 from __future__ import annotations
 
 import logging
+from dataclasses import replace
 
 from ...contract.models import (
     BaseLoadProfile,
+    BatteryConfig,
     BatteryState,
     CalculationResult,
     DegradationCost,
@@ -19,6 +21,41 @@ from .. import schedule as schedule_module
 from ..dag_engine import DagNode, NodeContext
 
 _LOGGER = logging.getLogger(__name__)
+
+
+def _capped_battery(
+    battery: BatteryConfig, policy: SchedulePolicy,
+) -> BatteryConfig:
+    """Return ``battery`` with its power limits reduced to the hardware's ceilings.
+
+    The configured charge/discharge power sets the DP's per-slot energy envelope
+    in ``slot_physics``. When the inverter's control registers advertise a lower
+    ceiling than the configuration claims — solis_modbus bounding the battery
+    current numbers at 200 A, which at a 51.2 V bus is ~10.24 kW against a
+    configured 15 kW — planning against the configured value budgets transfers
+    the hardware cannot perform. The policy carries the already-reduced legs
+    (see ``InverterCapability``); this substitutes them in.
+
+    Args:
+        battery: The configured battery limits.
+        policy: Schedule policy carrying the resolved hardware legs. ``None``
+            on either leg leaves that limit as configured.
+
+    Returns:
+        ``battery`` unchanged when neither leg is constrained, otherwise a copy
+        with the reduced power limits.
+    """
+    charge = policy.max_battery_charge_kw
+    discharge = policy.max_battery_discharge_kw
+    if charge is None and discharge is None:
+        return battery
+    return replace(
+        battery,
+        max_charge_power_kw=min(battery.max_charge_power_kw, charge)
+        if charge is not None else battery.max_charge_power_kw,
+        max_discharge_power_kw=min(battery.max_discharge_power_kw, discharge)
+        if discharge is not None else battery.max_discharge_power_kw,
+    )
 
 
 class ScheduleNode(DagNode):
@@ -69,7 +106,7 @@ class ScheduleNode(DagNode):
         schedule = schedule_module.optimize_schedule(
             price_series=price_series,
             calc=calc,
-            battery_config=ctx.config.battery,
+            battery_config=_capped_battery(ctx.config.battery, policy),
             battery_state=battery_state,
             degradation_cost=deg_cost.value_kwh,
             now=ctx.now,

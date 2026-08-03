@@ -31,6 +31,7 @@ from .battery import (
 )
 from .billing import MonthlyBillCheckResult, check_monthly_bill
 from .calculation import CalculationCheckResult, check_calculation
+from .capability import CapabilityCheckResult, check_capability
 from .cli import main
 from .client import (
     DEBUG_PATH,
@@ -93,6 +94,7 @@ __all__ = [
     "ForecastQualityCheckResult",
     "PricingCheckResult",
     "CalculationCheckResult",
+    "CapabilityCheckResult",
     "ScheduleCheckResult",
     "InverterModeCheckResult",
     "BatteryCheckResult",
@@ -113,6 +115,7 @@ __all__ = [
     "check_forecast_quality",
     "check_pricing",
     "check_calculation",
+    "check_capability",
     "check_schedule",
     "check_inverter_mode",
     "check_battery",

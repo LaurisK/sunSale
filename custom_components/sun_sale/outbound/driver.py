@@ -37,9 +37,11 @@ from __future__ import annotations
 
 from dataclasses import dataclass
 from datetime import datetime
-from typing import Any, Protocol, runtime_checkable
+from typing import Any, Literal, Protocol, runtime_checkable
 
-from ..contract.models import InverterModeReading, StorageMode
+from ..contract.models import InverterCapability, InverterModeReading, StorageMode
+
+ControlStatus = Literal["match", "mismatch", "unknown", "no_target"]
 
 
 @dataclass(frozen=True)
@@ -51,6 +53,14 @@ class ControlRow:
     panel renders; the driver chooses the ``name`` / ``label`` (and may use its
     own vocabulary there, e.g. Solis ``reg_43110``).
 
+    ``status`` is the authoritative four-state verdict. It exists because
+    "the readback disagrees with the target" and "there is no readback" demand
+    opposite responses from the control loop: the first is drift worth
+    re-commanding, the second is an upstream comms gap where re-writing achieves
+    nothing and a red badge is a lie. Collapsing both into ``match=False`` (as
+    this row used to) wedges the verify loop for as long as an entity stays
+    unavailable.
+
     Attributes:
         name: Stable machine key for the control point (driver-defined, e.g.
             ``reg_43110`` on Solis or ``work_mode_select`` on an entity driver).
@@ -59,16 +69,35 @@ class ControlRow:
             ``None`` when the commanded mode leaves it at the hardware default
             (an informational, no-target row).
         observed: The current readback, or ``None`` when unavailable.
-        match: Tri-state — ``True`` on match, ``False`` when observed is missing
-            or differs beyond the driver's write tolerance, and ``None`` when
-            ``desired`` is ``None`` (no target to compare against).
+        status: ``match`` — readback agrees within the driver's write tolerance;
+            ``mismatch`` — readback was obtained and disagrees; ``unknown`` —
+            targeted, but no readback available; ``no_target`` — ``desired`` is
+            ``None``, nothing to compare.
     """
 
     name: str
     label: str
     desired: Any
     observed: Any
-    match: bool | None
+    status: ControlStatus
+
+    @property
+    def match(self) -> bool | None:
+        """Return the legacy tri-state match flag derived from ``status``.
+
+        Kept so the panel JS, sensor attributes and debug API keep their existing
+        shape: ``True`` on match, ``None`` for a no-target row, ``False``
+        otherwise. Callers that must distinguish *drift* from *unreadable* —
+        the control module's drift check above all — read ``status`` instead.
+        """
+        if self.status == "no_target":
+            return None
+        return self.status == "match"
+
+    @property
+    def readable(self) -> bool:
+        """Return whether a readback was obtained for this control point."""
+        return self.status != "unknown"
 
     def as_dict(self) -> dict[str, Any]:
         """Return the row as the plain dict the sensor attributes / panel JS consume."""
@@ -78,6 +107,7 @@ class ControlRow:
             "desired": self.desired,
             "observed": self.observed,
             "match": self.match,
+            "status": self.status,
         }
 
 
@@ -148,10 +178,27 @@ class InverterControlDriver(InverterDriver, Protocol):
     """
 
     def spec_for(self, mode: StorageMode) -> Any | None:
-        """Return the opaque per-platform spec for ``mode``, or ``None``.
+        """Return the opaque per-platform *effective* spec for ``mode``, or ``None``.
 
         The returned token is passed back to ``apply_mode`` / ``refresh_rc`` /
         ``needs_keepalive`` uninspected by the generic layer.
+
+        **Effective is part of the contract.** Every target in the returned spec
+        must already be reduced to what the hardware advertises it will accept,
+        because ``control_surface`` compares readbacks against these same values.
+        A driver that returns an unreduced spec while its write path clamps
+        produces a control point that can never verify — the write lands on the
+        clamped value and the comparison expects the composed one. Drivers expose
+        the unreduced composition as ``declared_spec`` for diagnostics.
+        """
+        ...
+
+    def declared_spec(self, mode: StorageMode) -> Any | None:
+        """Return the spec as composed from config, before capability reduction.
+
+        Diagnostic counterpart to ``spec_for``: comparing the two shows where the
+        hardware's advertised bounds fall short of what the planner asked for.
+        Never handed to ``apply_mode``.
         """
         ...
 
@@ -180,6 +227,20 @@ class InverterControlDriver(InverterDriver, Protocol):
 
         Returns:
             One :class:`ControlRow` per control point, in apply-mode write order.
+        """
+        ...
+
+    def capability(self, now: datetime) -> InverterCapability:
+        """Return what the hardware currently advertises it will accept, in kW.
+
+        The planner-facing half of the capability seam: the same live bounds
+        ``spec_for`` reduces against, projected into the neutral kW vocabulary so
+        the DP can plan an envelope the dispatcher can actually command. Drivers
+        that cannot resolve a bound report ``None`` for that field and name the
+        control point in ``degraded``.
+
+        Args:
+            now: Cycle timestamp, recorded as ``resolved_at``.
         """
         ...
 

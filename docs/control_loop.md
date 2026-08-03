@@ -6,6 +6,15 @@ register-level details of the Solis writes themselves live in
 [`solis_control.md`](solis_control.md); the surrounding pipeline is in
 [`ARCHITECTURE.md`](ARCHITECTURE.md) and [`MODULES.md`](MODULES.md).
 
+> **Capability seam (v0.2.0).** `driver.spec_for(mode)` returns an *effective*
+> spec — every target already reduced to what the hardware advertises it will
+> accept — so the value written and the value verified are the same number. Rows
+> carry a four-state `status` (`match` / `mismatch` / `unknown` / `no_target`),
+> and only `mismatch` counts as drift: an unreadable register is a comms gap, not
+> a control fault. Before this, a spec target above an upstream bound could never
+> verify, and an unavailable entity pinned the drift check True indefinitely. See
+> [`capability_seam.md`](capability_seam.md).
+
 ## Mode override semantics
 
 `select.sunsale_mode_override` is the single source of operator mode intent. Options are the

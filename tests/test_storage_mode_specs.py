@@ -181,9 +181,29 @@ def test_decode_discharge_requires_engaged_rc_selector():
     assert decode_mode(64, 50.0, 50.0, 5000, rc_engaged=None) == StorageMode.Discharge
 
 
-def test_decode_handles_none_currents_as_zero():
-    # Translator may pass None when the number entity is unavailable.
-    assert decode_mode(1, None, None, None) == StorageMode.StandBy
+def test_decode_unreadable_discharge_current_is_unknown_not_standby():
+    """An unreadable discharge current under bitmask 1 must not read as StandBy.
+
+    ``discharge_a`` is the *only* discriminator between StandBy and the SelfUse
+    variants, so when the number entity is unavailable the mode genuinely cannot
+    be told apart. Defaulting it to 0 (the old behaviour) reported a confident
+    StandBy for what may have been an actively discharging inverter — observed
+    live on 2026-08-03 when solis_modbus stopped publishing 43117/43118.
+    """
+    assert decode_mode(1, None, None, None) == StorageMode.UNKNOWN
+    # An unreadable *charge* current is not a discriminator and must not matter.
+    assert decode_mode(1, None, 50.0, None, backflow_power_w=5000) == StorageMode.SelfUse
+    # A genuine zero still means StandBy — only None is indeterminate.
+    assert decode_mode(1, None, 0.0, None) == StorageMode.StandBy
+
+
+def test_decode_unreadable_currents_do_not_block_other_bitmasks():
+    """Bitmasks 33 / 64 don't use the currents, so None there is still decodable."""
+    assert decode_mode(33, None, None, None) == StorageMode.GridCharge
+    assert decode_mode(64, None, None, 0, rc_engaged=False) == StorageMode.FeedIn
+    assert decode_mode(
+        64, None, None, 10_000, rc_engaged=True,
+    ) == StorageMode.Discharge
 
 
 def test_decode_round_trip_applied_modes_match_build_specs():

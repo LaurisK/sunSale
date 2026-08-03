@@ -12,6 +12,7 @@ from .battery import (
 )
 from .billing import MonthlyBillCheckResult, MonthlyBillCheckWidget
 from .calculation import CalculationCheckResult, CalculationCheckWidget
+from .capability import CapabilityCheckResult, CapabilityCheckWidget
 from .consumption import (
     BaseLoadCheckResult,
     BaseLoadCheckWidget,
@@ -54,7 +55,7 @@ _DEEP_CATS: frozenset[str] = frozenset({
     "household_consumption", "profitability", "forecast_quality",
     "monthly_bill", "baked_observed",
     "observed_consumption", "observed_losses",
-    "inverter_mode",
+    "inverter_mode", "capability",
 })
 
 
@@ -73,6 +74,7 @@ class IntegrationCheckApp(App):
     CalculationCheckWidget { height: auto; }
     CalculationSlotsTable DataTable { height: 22; }
     ScheduleCheckWidget { height: auto; }
+    CapabilityCheckWidget { height: auto; }
     _SocSparkline Sparkline { height: 5; }
     ScheduleSlotsTable DataTable { height: 18; }
     BatteryCheckWidget { height: auto; }
@@ -118,6 +120,7 @@ class IntegrationCheckApp(App):
         observed_consumption_results: dict[str, ObservedConsumptionCheckResult],
         observed_losses_results: dict[str, ObservedLossesCheckResult],
         inverter_mode_results: dict[str, InverterModeCheckResult],
+        capability_results: dict[str, CapabilityCheckResult],
     ) -> None:
         """Initialise with validator report and all deep-check results.
 
@@ -127,6 +130,7 @@ class IntegrationCheckApp(App):
             pricing_results: Per-entry pricing deep-check results.
             calculation_results: Per-entry calculation deep-check results.
             schedule_results: Per-entry schedule deep-check results.
+            capability_results: Per-entry capability deep-check results.
             battery_results: Per-entry battery state/status deep-check results.
             observed_gen_results: Per-entry observed generation deep-check results.
             observed_grid_results: Per-entry observed grid import/export deep-check results.
@@ -148,6 +152,7 @@ class IntegrationCheckApp(App):
         self._pricing_results = pricing_results
         self._calculation_results = calculation_results
         self._schedule_results = schedule_results
+        self._capability_results = capability_results
         self._battery_results = battery_results
         self._observed_gen_results = observed_gen_results
         self._observed_grid_results = observed_grid_results
@@ -179,6 +184,7 @@ class IntegrationCheckApp(App):
             + list(self._observed_gen_results.values())
             + list(self._observed_grid_results.values())
             + list(self._baked_observed_results.values())
+            + list(self._capability_results.values())
             + list(self._forecast_acc_results.values())
             + list(self._base_load_results.values())
             + list(self._battery_runtime_results.values())
@@ -215,6 +221,7 @@ class IntegrationCheckApp(App):
                 ("calculation",             CalculationCheckWidget,             self._calculation_results),
                 ("schedule",                ScheduleCheckWidget,                self._schedule_results),
                 ("inverter_mode",           InverterModeCheckWidget,            self._inverter_mode_results),
+                ("capability",              CapabilityCheckWidget,              self._capability_results),
                 ("battery",                 BatteryCheckWidget,                 self._battery_results),
                 ("observed_generation",     ObservedGenerationCheckWidget,      self._observed_gen_results),
                 ("observed_grid",           ObservedGridCheckWidget,            self._observed_grid_results),

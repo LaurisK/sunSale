@@ -39,15 +39,21 @@ from __future__ import annotations
 
 import logging
 from collections.abc import Callable, Mapping
-from dataclasses import dataclass, field
+from dataclasses import dataclass, field, replace
 from datetime import datetime
 from typing import Any, Literal
 
 from homeassistant.core import HomeAssistant
 
-from ..contract.models import InverterModeReading, StorageMode
+from ..contract.models import (
+    UNKNOWN_LIMIT,
+    InverterCapability,
+    InverterModeReading,
+    Limit,
+    StorageMode,
+)
 from ..ha_state import available_state, read_float_state
-from .driver import ControlRow
+from .driver import ControlRow, ControlStatus
 from .inverter import InverterPlatform
 
 _LOGGER = logging.getLogger(__name__)
@@ -320,6 +326,42 @@ class EntityActuator:
             what=f"number({role})",
         )
 
+    def limit_for(self, role: str) -> Limit:
+        """Return the live writable bound a ``number`` role advertises.
+
+        **The single place sunSale reads an upstream entity's ``min``/``max``.**
+        Everything that needs to know what the hardware will accept — the write
+        clamp, the driver's effective spec, the capability projection the planner
+        consumes — resolves it through here, so there is one answer per cycle
+        rather than one per consumer.
+
+        Resolved on every call rather than cached: solis_modbus v4.2.2 resolves
+        these bounds from BMS mirror registers via a live property, so they can
+        change between cycles as the BMS reports new limits.
+
+        Args:
+            role: Role key into the entity map.
+
+        Returns:
+            The resolved :class:`Limit`, or ``UNKNOWN_LIMIT`` when the role is
+            unmapped, absent from the state machine, or advertises bounds that
+            cannot be parsed as floats.
+        """
+        entity_id = self._entity_ids.get(role, "")
+        if not entity_id:
+            return UNKNOWN_LIMIT
+        state = self._hass.states.get(entity_id)
+        if state is None:
+            return UNKNOWN_LIMIT
+        try:
+            raw_low = state.attributes.get("min")
+            raw_high = state.attributes.get("max")
+            low = None if raw_low is None else float(raw_low)
+            high = None if raw_high is None else float(raw_high)
+        except (TypeError, ValueError):
+            return UNKNOWN_LIMIT
+        return Limit(low=low, high=high, known=True)
+
     def _clamp_to_entity_range(
         self, role: str, entity_id: str, target_value: float
     ) -> float:
@@ -335,9 +377,15 @@ class EntityActuator:
         so the ceiling is treated as authoritative rather than trusted to match
         the configured battery limits.
 
+        This is the write path's second line of defence. Callers that compose a
+        spec (the Solis driver's ``effective_spec``) already reduce their targets
+        through :meth:`limit_for`, so a clamp here normally finds nothing left to
+        do; it still fires for direct writers and for a bound that moved between
+        composition and write.
+
         Args:
-            role: Role key, for logging.
-            entity_id: Resolved target entity id.
+            role: Role key, used to resolve the bound and for logging.
+            entity_id: Resolved target entity id, for the warning message.
             target_value: Desired value in the entity's own unit.
 
         Returns:
@@ -346,19 +394,8 @@ class EntityActuator:
             bounds.
         """
         state = self._hass.states.get(entity_id)
-        if state is None:
-            return target_value
-        clamped = target_value
-        try:
-            low = state.attributes.get("min")
-            if low is not None:
-                clamped = max(clamped, float(low))
-            high = state.attributes.get("max")
-            if high is not None:
-                clamped = min(clamped, float(high))
-        except (TypeError, ValueError):
-            return target_value
-        if clamped == target_value:
+        clamped = self.limit_for(role).clamp(target_value)
+        if state is None or clamped == target_value:
             self._clamp_warned.pop(role, None)
             return target_value
         if self._clamp_warned.get(role) != target_value:
@@ -620,12 +657,87 @@ class EntityControlDriver:
     # --- Spec table ----------------------------------------------------- #
 
     def spec_for(self, mode: StorageMode) -> ControlPlan | None:
-        """Return the :class:`ControlPlan` for ``mode``, or ``None`` if unsupported."""
+        """Return the *effective* plan for ``mode``, or ``None`` if unsupported.
+
+        See :meth:`effective_spec`; :meth:`declared_spec` returns the unreduced
+        plan.
+        """
+        return self.effective_spec(mode)
+
+    def declared_spec(self, mode: StorageMode) -> ControlPlan | None:
+        """Return the plan as composed from config, before capability reduction."""
         return self._plans.get(mode)
+
+    def effective_spec(self, mode: StorageMode) -> ControlPlan | None:
+        """Return ``mode``'s plan with each ``number`` write reduced to its live bound.
+
+        ``set_number`` clamps a target into the entity's advertised range, so a
+        plan value above that range is written as the clamped value. Reducing the
+        plan here keeps the control surface (and therefore the verify loop)
+        comparing readbacks against what was actually written — without it, any
+        such write reports a permanent mismatch.
+
+        ``select`` / ``switch`` writes and service actions pass through unchanged:
+        they carry no numeric bound.
+
+        Args:
+            mode: Mode whose plan to resolve.
+
+        Returns:
+            The reduced :class:`ControlPlan`, or ``None`` when ``mode`` has no
+            plan on this platform.
+        """
+        plan = self._plans.get(mode)
+        if plan is None:
+            return None
+        return replace(
+            plan,
+            writes=tuple(self._reduce_write(write) for write in plan.writes),
+        )
+
+    def _reduce_write(self, write: EntityWrite) -> EntityWrite:
+        """Return ``write`` with a ``number`` target clamped into its live bound."""
+        if write.kind != "number":
+            return write
+        clamped = self._actuator.limit_for(write.role).clamp(float(write.value))
+        if clamped == float(write.value):
+            return write
+        return replace(write, value=clamped)
 
     def needs_keepalive(self, spec: ControlPlan) -> bool:
         """Return whether holding ``spec`` needs a periodic re-issue."""
         return spec.keepalive
+
+    def capability(self, now: datetime) -> InverterCapability:
+        """Return an unconstrained capability — entity platforms don't map roles to legs yet.
+
+        Every field is ``None`` (nothing resolved), which leaves the planner on
+        its configured caps: exactly the behaviour these platforms had before the
+        capability seam existed, so nothing changes for them.
+
+        The reduction that *does* apply on these platforms is per-write, in
+        :meth:`effective_spec` — that is what keeps their verify loop honest. What
+        is missing here is the platform-specific knowledge of which role bounds
+        which physical leg (battery charge vs discharge vs export), and unlike
+        Solis there is no uniform role vocabulary across Huawei / SolaX / Sungrow
+        / GoodWe / Deye to derive it from. Returning ``None`` is deliberate:
+        inventing a mapping for six drivers that have never been hardware-verified
+        would feed the DP numbers nobody has checked. Per-platform wiring is the
+        extension point — declare the role for each leg and project it here.
+
+        Args:
+            now: Cycle timestamp recorded as ``resolved_at``.
+
+        Returns:
+            An :class:`InverterCapability` with no resolved bounds.
+        """
+        return InverterCapability(
+            max_battery_charge_kw=None,
+            max_battery_discharge_kw=None,
+            max_export_kw=None,
+            max_grid_discharge_kw=None,
+            resolved_at=now,
+        )
 
     # --- Write side ----------------------------------------------------- #
 
@@ -741,12 +853,12 @@ class EntityControlDriver:
         Returns:
             One :class:`ControlRow` per controllable write, in apply order.
         """
-        plan = self._plans.get(commanded) if commanded is not None else None
+        plan = self.effective_spec(commanded) if commanded is not None else None
         if plan is None:
             observed = self._actuator.read_state(self._mode_role)
             return [ControlRow(
                 name=self._mode_role, label=self._mode_label,
-                desired=None, observed=observed, match=None,
+                desired=None, observed=observed, status="no_target",
             )]
         return [self._row_for(write) for write in plan.writes]
 
@@ -757,19 +869,37 @@ class EntityControlDriver:
             write: The entity write to render.
 
         Returns:
-            A :class:`ControlRow` whose ``match`` is ``True`` on match, ``False``
-            when the readback is missing or differs beyond tolerance.
+            A :class:`ControlRow` whose ``status`` is ``unknown`` when the
+            readback is missing (an upstream comms gap, not drift) and
+            ``match`` / ``mismatch`` otherwise.
         """
         if write.kind == "number":
             observed: Any = self._actuator.read_float(write.role)
             desired: Any = float(write.value)
-            match = observed is not None and abs(observed - desired) <= write.tolerance
-            return ControlRow(write.role, write.label, desired, observed, match)
+            if observed is None:
+                return ControlRow(write.role, write.label, desired, None, "unknown")
+            return ControlRow(
+                write.role, write.label, desired, observed,
+                "match" if abs(observed - desired) <= write.tolerance else "mismatch",
+            )
         if write.kind == "switch":
             observed = self._actuator.read_state(write.role)
             want = "on" if bool(write.value) else "off"
-            return ControlRow(write.role, write.label, want, observed, observed == want)
+            return ControlRow(
+                write.role, write.label, want, observed,
+                self._compare_state(observed, want),
+            )
         # select
         observed = self._actuator.read_state(write.role)
         desired = str(write.value)
-        return ControlRow(write.role, write.label, desired, observed, observed == desired)
+        return ControlRow(
+            write.role, write.label, desired, observed,
+            self._compare_state(observed, desired),
+        )
+
+    @staticmethod
+    def _compare_state(observed: str | None, desired: str) -> ControlStatus:
+        """Return the status of a string-valued control point against its target."""
+        if observed is None:
+            return "unknown"
+        return "match" if observed == desired else "mismatch"

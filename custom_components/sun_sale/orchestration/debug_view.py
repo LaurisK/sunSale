@@ -483,6 +483,11 @@ def _coordinator_to_dict(entry_id: str, coordinator: Any) -> dict:
                     getattr(coordinator, "_export_limit_w", DEFAULT_EXPORT_LIMIT_W)
                     / 1000.0
                 ),
+                # The caps above are as *configured*; these are what the DP
+                # actually received after the driver's live capability reduced
+                # them. A gap between the two is a hardware shortfall, not a
+                # config error — see docs/capability_seam.md.
+                "effective": _effective_caps_block(coordinator),
             },
         },
         "outputs": {
@@ -509,6 +514,70 @@ def _coordinator_to_dict(entry_id: str, coordinator: Any) -> dict:
             if coordinator.last_dispatched_at is not None else None
         ),
     }
+
+
+def _effective_caps_block(coordinator: Any) -> dict | None:
+    """Build the ``schedule_policy.effective`` capability sub-block.
+
+    Exposes the driver's live per-leg ceilings alongside the caps the DP was
+    actually handed, so the integration check can assert that
+    ``effective == min(configured, capable)`` and an operator can see at a glance
+    which leg is binding.
+
+    Args:
+        coordinator: SunSaleCoordinator instance.
+
+    Returns:
+        The capability dict, or ``None`` when no driver is set up yet or its
+        capability could not be resolved.
+    """
+    capability = coordinator._current_capability()
+    if capability is None:
+        return None
+    knobs = coordinator._read_schedule_knobs()
+    return {
+        "max_battery_charge_kw":  capability.max_battery_charge_kw,
+        "max_battery_discharge_kw": capability.max_battery_discharge_kw,
+        "max_export_kw":          capability.max_export_kw,
+        "max_grid_discharge_kw":  capability.max_grid_discharge_kw,
+        "resolved_at":            capability.resolved_at.isoformat(),
+        "degraded":               list(capability.degraded),
+        # What the DP received, i.e. post-reduction.
+        "planned_max_discharge_to_grid_kw": knobs.max_discharge_to_grid_kw,
+        "planned_export_limit_kw":          knobs.export_limit_kw,
+        # The battery legs are reduced against BatteryConfig inside ScheduleNode,
+        # so what the DP saw is min(configured, capable).
+        "planned_max_battery_charge_kw": _reduced(
+            getattr(coordinator.battery_config, "max_charge_power_kw", None),
+            capability.max_battery_charge_kw,
+        ),
+        "planned_max_battery_discharge_kw": _reduced(
+            getattr(coordinator.battery_config, "max_discharge_power_kw", None),
+            capability.max_battery_discharge_kw,
+        ),
+    }
+
+
+def _as_float(value: Any) -> float | None:
+    """Return ``value`` as a float, or ``None`` when it is not a real number.
+
+    Guards the diagnostic block against a coordinator attribute that is absent or
+    not numeric — the debug view must never raise, since it is the tool used to
+    diagnose a broken coordinator.
+    """
+    if isinstance(value, bool) or not isinstance(value, (int, float)):
+        return None
+    return float(value)
+
+
+def _reduced(configured: Any, capable: float | None) -> float | None:
+    """Return the binding value of a configured limit and a hardware ceiling."""
+    conf = _as_float(configured)
+    if conf is None:
+        return capable
+    if capable is None:
+        return conf
+    return min(conf, capable)
 
 
 def _inverter_mode_block(data: dict, coordinator: Any) -> dict:

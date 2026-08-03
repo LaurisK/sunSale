@@ -89,6 +89,97 @@ class BatteryConfig:
     nominal_voltage_v: float = 48.0  # DC bus voltage; used for kW→A conversion on Solis
 
 
+@dataclass(frozen=True)
+class Limit:
+    """One control point's resolved writable bound.
+
+    The platform-neutral answer to "what will the hardware accept here", read
+    live from whatever the platform's actuator advertises (on Solis: a
+    ``number`` entity's ``min``/``max`` attributes, which upstream resolves from
+    BMS mirror registers and may therefore change between cycles).
+
+    ``known=False`` means no bound could be resolved at all — the entity is
+    unmapped or missing from the state machine — which is distinct from a
+    resolved bound that happens to be open on one side (``low``/``high`` of
+    ``None``). Callers must not treat an unresolvable bound as "unconstrained":
+    the write would still be rejected or clamped downstream.
+    """
+    low: float | None
+    high: float | None
+    known: bool
+
+    def clamp(self, value: float) -> float:
+        """Return ``value`` reduced into this bound.
+
+        Args:
+            value: Desired target in the control point's own unit.
+
+        Returns:
+            ``value`` bounded by ``low``/``high``; unchanged when this limit is
+            not ``known`` or advertises no bound on the relevant side.
+        """
+        if not self.known:
+            return value
+        clamped = value
+        if self.low is not None:
+            clamped = max(clamped, self.low)
+        if self.high is not None:
+            clamped = min(clamped, self.high)
+        return clamped
+
+    @property
+    def constrains(self) -> bool:
+        """Return whether this limit actually bounds anything."""
+        return self.known and (self.low is not None or self.high is not None)
+
+
+UNKNOWN_LIMIT = Limit(low=None, high=None, known=False)
+
+
+@dataclass(frozen=True)
+class InverterCapability:
+    """What the inverter will actually accept, resolved live each cycle.
+
+    The platform-neutral projection of the per-control-point :class:`Limit`s
+    into the kW vocabulary the planner speaks, so the DP can plan against the
+    hardware's real envelope instead of the configured one. Powers are
+    magnitudes (always ≥ 0).
+
+    ``None`` on any field means "no bound resolved" — either genuinely
+    unconstrained or unreadable; ``degraded`` names the control points whose
+    bound could not be read, so the panel and the integration check can tell
+    those two apart.
+    """
+    max_battery_charge_kw: float | None
+    max_battery_discharge_kw: float | None
+    max_export_kw: float | None
+    max_grid_discharge_kw: float | None
+    resolved_at: datetime
+    degraded: tuple[str, ...] = ()
+
+    @staticmethod
+    def reduce(configured: float | None, capable: float | None) -> float | None:
+        """Return the binding value of a configured cap and a resolved capability.
+
+        Capability may only *reduce* a configured cap, never raise it: the
+        config expresses operator intent (or a deliberately conservative
+        limit), while capability expresses a hardware ceiling. ``None`` on
+        either side means that side does not constrain.
+
+        Args:
+            configured: The configured/planned cap in kW, or ``None``.
+            capable: The resolved hardware ceiling in kW, or ``None``.
+
+        Returns:
+            The smaller of the two, or whichever one is not ``None``.
+        """
+        if configured is None:
+            return capable
+        if capable is None:
+            return configured
+        return min(configured, capable)
+
+
 @dataclass
 class BatteryState:
     """Current observed battery state."""
@@ -175,6 +266,12 @@ class SchedulePolicy:
             solar instead of planning exports the inverter cannot deliver.
             ``None`` = uncapped (legacy behaviour, and the fallback for a bare
             ``SchedulePolicy()`` in ``ScheduleNode``).
+        ``max_battery_charge_kw`` / ``max_battery_discharge_kw`` — the battery
+            legs' live ceilings from ``InverterCapability``, already reduced
+            against ``BatteryConfig``. ``ScheduleNode`` substitutes them into the
+            config's power limits so the per-slot energy envelope in
+            ``slot_physics`` reflects what the hardware accepts rather than what
+            was configured. ``None`` = leave ``BatteryConfig`` untouched.
     """
     use_standby: bool = True
     allow_grid_charging: bool = True
@@ -185,6 +282,8 @@ class SchedulePolicy:
     terminal_value_discount: float = 0.5
     max_discharge_to_grid_kw: float | None = None  # None → hardware max
     export_limit_kw: float | None = None  # None → uncapped
+    max_battery_charge_kw: float | None = None     # None → use BatteryConfig
+    max_battery_discharge_kw: float | None = None  # None → use BatteryConfig
 
 
 @dataclass(frozen=True)

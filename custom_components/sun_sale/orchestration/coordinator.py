@@ -121,6 +121,7 @@ from ..contract.models import (
     GridImportPowerReading,
     GridImportTodayReading,
     HouseholdConsumptionReading,
+    InverterCapability,
     InverterModeHistory,
     InverterModeReading,
     MonthlyBillResult,
@@ -406,6 +407,10 @@ class SunSaleCoordinator(DataUpdateCoordinator):
         # Deployment export-power cap (W) — set from config in async_setup; the
         # default keeps the panel's power-flow axis sane before setup completes.
         self._export_limit_w: int = DEFAULT_EXPORT_LIMIT_W
+        # Platform control driver, assigned in async_setup. Read back here only
+        # for its live capability projection; dispatch goes through the control
+        # module, which owns its own reference.
+        self._inverter_driver: Any = None
         # Manual override for the dispatched StorageMode. When set, the control
         # module forwards this to the inverter regardless of the scheduler's
         # current-slot choice AND regardless of ``automation_enabled`` —
@@ -729,6 +734,10 @@ class SunSaleCoordinator(DataUpdateCoordinator):
             inverter_max_power_w=inverter_max_power_w,
         )
         self._validate_driver_role_contract(resolved.platform, driver)
+        # Kept so ``_read_schedule_knobs`` can resolve the live control-point
+        # bounds each cycle and reduce the planner's caps to what the hardware
+        # will actually accept (see ``_current_capability``).
+        self._inverter_driver = driver
 
         # Resolve once and cache so the debug view / integration check can see
         # the actual base entities feeding SolarTranslator (device-based
@@ -962,7 +971,16 @@ class SunSaleCoordinator(DataUpdateCoordinator):
         )
 
     def _read_schedule_knobs(self) -> ScheduleKnobs:
-        """Snapshot the user-set schedule knobs for one cycle's policy build."""
+        """Snapshot the user-set schedule knobs for one cycle's policy build.
+
+        The export / discharge-to-grid caps are reduced by the driver's live
+        :meth:`capability` before they reach the DP, so the planner never budgets
+        a transfer rate the dispatcher would have to clamp on the way out. The
+        reduction is one-directional (capability may only lower a configured cap)
+        and resolved per cycle, because the underlying entity bounds move —
+        solis_modbus resolves them from BMS mirror registers at runtime.
+        """
+        capability = self._current_capability()
         return ScheduleKnobs(
             use_standby=self.use_standby,
             allow_grid_charging=self.allow_grid_charging,
@@ -971,9 +989,37 @@ class SunSaleCoordinator(DataUpdateCoordinator):
             mode_change_penalty_eur_per_kwh=self.mode_change_penalty_eur_per_kwh,
             profitability_tilt_alpha=self.profitability_tilt_alpha,
             terminal_value_discount=self.terminal_value_discount,
-            max_discharge_to_grid_kw=self.max_discharge_to_grid_kw,
-            export_limit_kw=self._export_limit_w / 1000.0,
+            max_discharge_to_grid_kw=InverterCapability.reduce(
+                self.max_discharge_to_grid_kw,
+                capability.max_grid_discharge_kw if capability else None,
+            ),
+            export_limit_kw=InverterCapability.reduce(
+                self._export_limit_w / 1000.0,
+                capability.max_export_kw if capability else None,
+            ),
+            # Battery legs are reduced against the configured limits in
+            # ``ScheduleNode._capped_battery``; pass the raw hardware ceilings.
+            max_battery_charge_kw=capability.max_battery_charge_kw if capability else None,
+            max_battery_discharge_kw=(
+                capability.max_battery_discharge_kw if capability else None
+            ),
         )
+
+    def _current_capability(self) -> InverterCapability | None:
+        """Return the driver's live capability, or ``None`` when unavailable.
+
+        Best-effort: a driver that raises while resolving bounds must not take
+        the cycle down with it — the planner then falls back to the configured
+        caps, which is the pre-seam behaviour.
+        """
+        driver = getattr(self, "_inverter_driver", None)
+        if driver is None:
+            return None
+        try:
+            return driver.capability(datetime.now(UTC))
+        except Exception:  # noqa: BLE001 - diagnostic read must never break a cycle
+            _LOGGER.debug("capability() raised — planning on configured caps", exc_info=True)
+            return None
 
     @contextmanager
     def _guarded(self, label: str):

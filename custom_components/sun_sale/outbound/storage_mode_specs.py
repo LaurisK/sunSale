@@ -185,6 +185,12 @@ def decode_mode(
         register 43110 at 1, and ``apply_mode`` writes it the same way. ``None``
         (readback unavailable) falls back to SelfUse.
 
+        An **unreadable** ``discharge_a`` under this bitmask yields ``UNKNOWN``.
+        It is the sole discriminator between StandBy and the two SelfUse
+        variants, so without it the mode genuinely cannot be told apart;
+        defaulting the current to 0 (as this decoder used to) reports a
+        confident StandBy for what may be an actively discharging inverter.
+
     This decoder produces the *observed* label that drives the chart history;
     the control module's *target* mode is the authoritative answer. Hardware
     states that map to no applied mode return ``UNKNOWN``.
@@ -193,8 +199,9 @@ def decode_mode(
         reg_43110_value: Raw readback of the Storage Control word.
         charge_a: Configured charge current. Not a discriminator under the
             current taxonomy; accepted for provenance and signature stability.
-        discharge_a: Configured discharge current; treated as ``0`` when
-            ``None``. ``0`` under bitmask 1 means StandBy.
+        discharge_a: Configured discharge current. ``0`` under bitmask 1 means
+            StandBy; ``None`` (unreadable) under bitmask 1 means the mode cannot
+            be discriminated and yields ``UNKNOWN``.
         rc_setpoint_w: Signed RC active-power setpoint (W); positive = export.
             Separates Discharge from FeedIn under bitmask 64.
         backflow_power_w: Configured export-power cap in watts. ``0`` means
@@ -206,15 +213,14 @@ def decode_mode(
             back to the setpoint sign.
 
     Returns:
-        Best-fit StorageMode; ``UNKNOWN`` when ``reg_43110_value`` is ``None``
-        or the bitmask is not one of the recognised states.
+        Best-fit StorageMode; ``UNKNOWN`` when ``reg_43110_value`` is ``None``,
+        when the bitmask is not one of the recognised states, or when the signal
+        that discriminates within the matched bitmask is unreadable.
     """
     del charge_a  # not a discriminator under the 2-bitmask taxonomy
 
     if reg_43110_value is None:
         return StorageMode.UNKNOWN
-
-    d = discharge_a or 0.0
 
     if reg_43110_value == 33:
         return StorageMode.GridCharge
@@ -223,7 +229,9 @@ def decode_mode(
             return StorageMode.Discharge
         return StorageMode.FeedIn
     if reg_43110_value == 1:
-        if d <= _CURRENT_EPSILON_A:
+        if discharge_a is None:
+            return StorageMode.UNKNOWN
+        if discharge_a <= _CURRENT_EPSILON_A:
             return StorageMode.StandBy
         if backflow_power_w is not None and backflow_power_w <= 0:
             return StorageMode.NoExport

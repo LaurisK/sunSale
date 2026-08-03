@@ -28,7 +28,11 @@ the DAG run. The module does three things in this fixed order:
      force-writes once more and schedules a second verify; if that also
      mismatches, ``verify_state`` becomes ``mismatch`` and is surfaced on
      the diagnostic sensor so the operator can see that the write is not
-     reaching the inverter (Modbus chain issue, mode lock, etc.).
+     reaching the inverter (Modbus chain issue, mode lock, etc.). When the
+     only disagreeing rows are *unreadable* rather than wrong, the verdict is
+     ``unknown`` instead — an upstream entity outage is not a control fault,
+     and no retry is issued because re-writing an invisible register proves
+     nothing.
 
   5. **Reconcile (slow drift recovery).** The verify loop only lives ~60 s.
      Past that, an engaged mode (``verify_state == "ok"``) is re-checked
@@ -156,7 +160,7 @@ class InverterControlModule:
         # loop reads back from solis_modbus a beat later to confirm.
         self._last_commanded_mode: StorageMode | None = None
         self._last_commanded_at: datetime | None = None
-        self._verify_state: str | None = None  # pending / ok / mismatch
+        self._verify_state: str | None = None  # pending / ok / mismatch / unknown
         self._last_verify_at: datetime | None = None
         self._last_verify_observed_reg: int | None = None
         self._verify_cancel = None  # cancel-callback from async_call_later
@@ -374,10 +378,10 @@ class InverterControlModule:
         the driver's control surface (Solis names: ``reg_43110`` plus whichever
         of ``charge_a`` / ``discharge_a`` / ``export_limit_w`` / ``rc_setpoint_w``
         the mode writes). Each row carries ``name``, ``label``, ``desired``,
-        ``observed`` and ``match``. Empty before any mode has been commanded. The panel
-        colours each row from ``match`` plus the overall ``verify_state``
-        (green = matched, amber = still verifying, red = mismatch after the
-        verify window closed).
+        ``observed``, ``match`` and ``status``. Empty before any mode has been
+        commanded. The panel colours each row from ``status`` plus the overall
+        ``verify_state`` (green = matched, amber = still verifying, grey =
+        unreadable, red = mismatch after the verify window closed).
         """
         return [r.as_dict() for r in self._register_status]
 
@@ -459,8 +463,13 @@ class InverterControlModule:
         One of ``pending`` (commanded change issued, verify hasn't run yet
         or is mid-retry), ``ok`` (verify saw the inverter at the commanded
         register value), ``mismatch`` (still wrong after one retry — the
-        write isn't taking; check the inverter / Modbus chain), or ``None``
-        before any command has been issued this run.
+        write isn't taking; check the inverter / Modbus chain), ``unknown``
+        (the control points that did not match could not be read at all, so
+        the mode is unconfirmed either way — check the integration supplying
+        them), or ``None`` before any command has been issued this run.
+
+        ``mismatch`` and ``unknown`` both clear back to ``ok`` only on positive
+        confirmation: every targeted row read back and matching.
         """
         return self._verify_state
 
@@ -594,17 +603,23 @@ class InverterControlModule:
         # sustained register drift after engagement, and an automation
         # re-enable. ``_reconcile_reason`` decides; everything else holds.
         if target == self._last_commanded_mode:
-            drifted = self._registers_drifted()
-            # Self-heal a stale terminal ``mismatch``: the verify loop's
-            # mismatch verdict never re-checks, but if the inverter has since
-            # returned to the commanded spec (operator fixed it, comms
-            # restored) reflect that instead of showing red forever.
-            if self._verify_state == "mismatch" and not drifted:
+            rows = self._build_register_status()
+            drifted = any(r.status == "mismatch" for r in rows)
+            confirmed = bool(rows) and all(r.status == "match" for r in rows)
+            # Self-heal a stale terminal ``mismatch`` / ``unknown``: neither
+            # verdict ever re-checks itself, but if the inverter has since
+            # returned to the commanded spec (operator fixed it, comms restored)
+            # reflect that instead of showing red forever. This requires positive
+            # confirmation — every row read back and matching. "Not drifted" is
+            # not enough, because an unreadable row is also not drifted and would
+            # otherwise flip the badge to green with no evidence behind it.
+            if self._verify_state in ("mismatch", "unknown") and confirmed:
+                previous = self._verify_state
                 self._verify_state = "ok"
                 self._consecutive_drift_cycles = 0
                 _LOGGER.info(
-                    "inverter_control: %s re-converged after mismatch — "
-                    "verify_state back to ok", target.value,
+                    "inverter_control: %s re-converged after %s — "
+                    "verify_state back to ok", target.value, previous,
                 )
                 await self._maybe_refresh_rc(spec)
                 return ("holding", target)
@@ -753,16 +768,21 @@ class InverterControlModule:
     def _registers_drifted(self) -> bool:
         """Return whether the last-commanded mode's registers have drifted.
 
-        Reads the same per-register comparison the panel shows. ``True`` means
-        at least one register the commanded mode writes no longer matches its
-        target (or has become unreadable); ``False`` means every register still
-        matches. An empty status (no mode commanded yet) is "not drifted".
+        Reads the same per-register comparison the panel shows. ``True`` means at
+        least one register the commanded mode writes was *read back* and
+        disagrees with its target.
+
+        An **unreadable** register is not drift. Nothing is known to be wrong, so
+        re-commanding it cannot help — and treating it as drift is actively
+        harmful: it pins this predicate ``True`` for as long as the entity stays
+        unavailable, which both starves the stale-mismatch self-heal in
+        ``_dispatch_current_slot`` and, once engaged, re-commands the mode on a
+        loop. An empty status (no mode commanded yet) is "not drifted".
 
         Returns:
-            ``True`` when any participating register fails to match.
+            ``True`` when any participating register reads back a wrong value.
         """
-        rows = self._build_register_status()
-        return bool(rows) and not all(r.match for r in rows)
+        return any(r.status == "mismatch" for r in self._build_register_status())
 
     async def _force_write_and_verify(
         self,
@@ -989,7 +1009,7 @@ class InverterControlModule:
             self._last_verify_at = now
             self._last_verify_observed_reg = self._driver.observed_raw_state()
 
-            if rows and all(r.match for r in rows):
+            if rows and all(r.status == "match" for r in rows):
                 self._verify_state = "ok"
                 _LOGGER.info(
                     "inverter_control: verify OK — commanded=%s all %d "
@@ -998,7 +1018,8 @@ class InverterControlModule:
                 self._notify_state_change()
                 return
 
-            mismatched = [r.name for r in rows if not r.match]
+            mismatched = [r.name for r in rows if r.status == "mismatch"]
+            unreadable = [r.name for r in rows if r.status == "unknown"]
             window_start = self._verify_window_started_at or now
             elapsed = (now - window_start).total_seconds()
 
@@ -1007,16 +1028,18 @@ class InverterControlModule:
                 # so a normal pending→ok transition stays quiet.
                 _LOGGER.debug(
                     "inverter_control: verify pending — commanded=%s "
-                    "mismatched=%s elapsed=%.0fs; next poll in %ds",
-                    commanded.value, mismatched, elapsed,
+                    "mismatched=%s unreadable=%s elapsed=%.0fs; next poll in %ds",
+                    commanded.value, mismatched, unreadable, elapsed,
                     _VERIFY_POLL_INTERVAL_S,
                 )
                 self._schedule_verify(_VERIFY_POLL_INTERVAL_S)
                 self._notify_state_change()
                 return
 
-            # Window exhausted.
-            if not self._verify_retried:
+            # Window exhausted. A retry is only worth issuing when something was
+            # actually read back wrong — re-writing a register we cannot read
+            # tells us nothing new and would just restart the window.
+            if mismatched and not self._verify_retried:
                 _LOGGER.warning(
                     "inverter_control: verify mismatch after %.0fs — "
                     "commanded=%s mismatched=%s; re-issuing force-write",
@@ -1030,12 +1053,29 @@ class InverterControlModule:
                 self._notify_state_change()
                 return
 
+            if not mismatched:
+                # Every non-matching row is merely unreadable: the commanded mode
+                # may well be in place, we just cannot see it. Report that rather
+                # than accusing the write of failing — an upstream entity outage
+                # is not a control fault, and ``_registers_drifted`` stays False
+                # so the hold is not re-commanded on a loop.
+                self._verify_state = "unknown"
+                _LOGGER.warning(
+                    "inverter_control: verify inconclusive after %.0fs — "
+                    "commanded=%s unreadable=%s. Every disagreeing control point "
+                    "is unreadable, so the mode cannot be confirmed either way; "
+                    "check the integration supplying those entities.",
+                    elapsed, commanded.value, unreadable,
+                )
+                self._notify_state_change()
+                return
+
             self._verify_state = "mismatch"
             _LOGGER.error(
                 "inverter_control: verify mismatch persists after retry "
-                "(%.0fs elapsed in retry window) — commanded=%s mismatched=%s. "
-                "The write is not taking effect; check the Modbus chain and "
-                "inverter.",
-                elapsed, commanded.value, mismatched,
+                "(%.0fs elapsed in retry window) — commanded=%s mismatched=%s "
+                "unreadable=%s. The write is not taking effect; check the Modbus "
+                "chain and inverter.",
+                elapsed, commanded.value, mismatched, unreadable,
             )
             self._notify_state_change()

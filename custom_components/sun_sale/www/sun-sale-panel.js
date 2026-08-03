@@ -527,6 +527,9 @@
           .reg-observed.reg-ok   { color: #66bb6a; }
           .reg-observed.reg-wait { color: #ffa726; }
           .reg-observed.reg-bad  { color: #ef5350; background: rgba(239, 83, 80, 0.12); }
+          /* Unreadable: the integration isn't publishing this register. Grey,
+             not red — we cannot say the write failed. */
+          .reg-observed.reg-unknown { color: #9e9e9e; font-style: italic; }
           .reg-observed.reg-na   { color: var(--secondary-text-color, #888); font-weight: 500; }
 
           /* Verify badge — reused in the Observed column header. */
@@ -548,6 +551,10 @@
           .sched-readout-mode .verify-badge.mismatch {
             background: rgba(239, 83, 80, 0.22);
             color: #ef5350;
+          }
+          .sched-readout-mode .verify-badge.unknown {
+            background: rgba(158, 158, 158, 0.20);
+            color: #9e9e9e;
           }
           /* Pending button: pulsing orange outline while verify is in flight. */
           .sched-select button.selected.pending {
@@ -1348,11 +1355,12 @@
       // (re-rendered in place by _syncScheduleDrawer). One aligned grid:
       //   (caption row)   Intended·<mode>    Observed·<mode> [badge]
       //   per register    <label>  <desired>  <observed>
-      // The observed cell is coloured from its `match` flag + verify phase:
-      //   match=true            → green
-      //   match=false, pending  → amber (verify window still open)
-      //   match=false, settled  → red   (window closed / mismatch verdict)
-      //   match=null            → neutral (mode leaves this register at default)
+      // The observed cell is coloured from its `status` + verify phase:
+      //   match                  → green
+      //   mismatch, pending      → amber (verify window still open)
+      //   mismatch, settled      → red   (window closed / mismatch verdict)
+      //   unknown                → grey italic (register unreadable — not a fault)
+      //   no_target              → neutral (mode leaves this register at default)
       const st = this._hass.states[sid];
       const attrs = st?.attributes || {};
       const labels = spec.option_labels || {};
@@ -1379,15 +1387,24 @@
       if (verify === 'ok')            { badgeCls = 'ok';       badgeText = '✓'; badgeTitle = 'Engaged'; }
       else if (verify === 'pending')  { badgeCls = 'pending';  badgeText = '⏳'; badgeTitle = 'Verifying…'; }
       else if (verify === 'mismatch') { badgeCls = 'mismatch'; badgeText = '⚠'; badgeTitle = 'Mismatch'; }
+      else if (verify === 'unknown')  { badgeCls = 'unknown';  badgeText = '?';
+        badgeTitle = 'Unconfirmed — the control registers could not be read'; }
       const badgeHtml = badgeText
         ? `<span class="verify-badge ${badgeCls}" title="${badgeTitle}">${badgeText}</span>`
         : '';
 
       const rows = Array.isArray(attrs.register_panel) ? attrs.register_panel : [];
       const regCells = rows.map((r) => {
+        // `status` is authoritative (match | mismatch | unknown | no_target);
+        // `match` is the legacy boolean kept for older payloads. An `unknown`
+        // row is grey, never red: the register could not be read, so nothing is
+        // known to be wrong with it.
         let cls = 'reg-na';
-        if (r.match === true) cls = 'reg-ok';
-        else if (r.match === false) cls = (verify === 'mismatch') ? 'reg-bad' : 'reg-wait';
+        const status = r.status || (r.match === true ? 'match'
+          : r.match === false ? 'mismatch' : 'no_target');
+        if (status === 'match') cls = 'reg-ok';
+        else if (status === 'unknown') cls = 'reg-unknown';
+        else if (status === 'mismatch') cls = (verify === 'mismatch') ? 'reg-bad' : 'reg-wait';
         const label = this._REG_SHORT_LABELS[r.name] || r.label || r.name;
         return `<span class="reg-label" title="${r.label || r.name}">${label}</span>` +
           `<span class="reg-intended">${this._fmtReg(r.desired)}</span>` +
