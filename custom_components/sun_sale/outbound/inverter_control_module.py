@@ -35,8 +35,9 @@ the DAG run. The module does three things in this fixed order:
      nothing.
 
   5. **Reconcile (slow drift recovery).** The verify loop only lives ~60 s.
-     Past that, an engaged mode (``verify_state == "ok"``) is re-checked
-     against the inverter every tick; if its registers stay drifted for
+     Past that, a held mode is re-checked against the inverter every tick
+     (from ``ok`` or ``unknown`` — not from the loop's own ``pending`` window,
+     nor from its terminal ``mismatch``); if its registers stay drifted for
      ``_DRIFT_RECONCILE_CYCLES`` consecutive ticks, the unchanged target is
      re-commanded (back through step 4). A False→True ``automation_enabled``
      transition arms the same re-command so re-enabling automation re-asserts
@@ -85,9 +86,10 @@ _VERIFY_INITIAL_DELAY_S = 2
 _VERIFY_POLL_INTERVAL_S = 5
 _VERIFY_WINDOW_S = 30
 
-# Slow drift-reconciliation threshold. Once the verify loop has confirmed a
-# mode (``verify_state == "ok"``), the registers are re-checked every
-# coordinator tick. If they disagree with the commanded spec for this many
+# Slow drift-reconciliation threshold. Once the verify loop has settled (``ok``,
+# or ``unknown`` when some targeted row is unreadable), the registers are
+# re-checked every coordinator tick. If they disagree with the commanded spec
+# for this many
 # *consecutive* ticks, the mode is re-commanded. Two ticks (~5 min cadence →
 # ~10 min) debounces a single transient readback glitch while still catching a
 # real drift — an inverter-screen change or a register that slipped — long
@@ -657,12 +659,16 @@ class InverterControlModule:
           * **Automation re-enabled** — ``_reassert_next`` was armed by a
             False→True ``automation_enabled`` transition. Always wins; the
             flag is consumed by the subsequent ``_force_write_and_verify``.
-          * **Sustained drift** — once ``verify_state == "ok"`` (the steady
-            engaged state), a drifted readback increments the consecutive-cycle
-            counter; at ``_DRIFT_RECONCILE_CYCLES`` it trips. Conditioning on
-            ``ok`` keeps this off the verify loop's own retry window (pending)
-            and respects its terminal ``mismatch`` verdict — a write that
-            demonstrably won't take is not re-spammed every few cycles.
+          * **Sustained drift** — from ``ok`` (the steady engaged state) *or*
+            ``unknown``, a drifted readback increments the consecutive-cycle
+            counter; at ``_DRIFT_RECONCILE_CYCLES`` it trips. ``unknown``
+            counts because it is a verdict about the rows that could *not* be
+            read: a row that was read and disagrees is real drift regardless,
+            and excluding ``unknown`` let one unavailable entity disable drift
+            recovery for every other control point indefinitely. ``pending`` is
+            excluded (the verify loop owns its own retry window) and so is the
+            terminal ``mismatch`` — a write that demonstrably won't take is not
+            re-spammed every few cycles.
 
         Args:
             drifted: Whether the commanded mode's registers currently disagree
@@ -676,7 +682,7 @@ class InverterControlModule:
         """
         if self._reassert_next:
             return "automation re-enabled"
-        if self._verify_state == "ok" and drifted:
+        if self._verify_state in ("ok", "unknown") and drifted:
             self._consecutive_drift_cycles += 1
             if self._consecutive_drift_cycles >= _DRIFT_RECONCILE_CYCLES:
                 return (
@@ -688,21 +694,28 @@ class InverterControlModule:
         return None
 
     async def _maybe_refresh_rc(self, spec: Any) -> None:
-        """Refresh the RC deadman registers while holding an engaged RC-backed mode.
+        """Refresh the RC deadman registers while holding an RC-backed mode.
 
-        The inverter expires the RC function at most 30 min after the last RC
-        write (register 43282), so a held GridCharge / Discharge must be
-        re-asserted every tick — the write-once rule deliberately does not
-        apply to the RAM-only RC registers. Runs only from the steady engaged
-        state: ``pending`` is owned by the verify loop (the initial apply just
-        wrote a full window), and a terminal ``mismatch`` is not re-spammed.
+        The inverter expires the RC function a few minutes after the last
+        engaging write, so a held GridCharge / Discharge must be re-asserted —
+        the write-once rule deliberately does not apply to the RAM-only RC
+        registers. The secondary re-arm at cycle boundaries; the primary is
+        ``_on_rc_keepalive_tick``'s 3-min heartbeat.
+
+        **Deliberately not gated on ``verify_state``.** The deadman must keep
+        running exactly when the loop is *least* sure of itself: ``unknown``
+        means some unrelated control point is unreadable (a solis_modbus
+        register-group outage takes the battery-current entities down while the
+        RC registers keep answering fine), and ``mismatch`` is often the RC
+        selector itself having reverted — the very drop this re-arm exists to
+        repair. Gating on ``ok`` made an unrelated stuck or unreadable row
+        silently disable the keep-alive, which is what let a commanded Discharge
+        expire ~5 min in while every register still read "engaged".
 
         Args:
-            spec: Spec of the held mode; ``refresh_rc`` no-ops unless it
-                carries a non-zero RC setpoint.
+            spec: Spec of the held mode; ``refresh_rc`` no-ops unless the mode
+                needs a keep-alive (Solis: a non-zero RC setpoint).
         """
-        if self._verify_state != "ok":
-            return
         await self._driver.refresh_rc(spec)
 
     def _arm_rc_keepalive(self) -> None:
@@ -743,10 +756,12 @@ class InverterControlModule:
         re-arm write can't interleave with a mode change or a verify retry, and
         re-reads the commanded mode *under* the lock so a heartbeat queued
         behind an in-flight command re-arms the mode that command left in
-        place — never a stale one. Refreshes only from the steady engaged state
-        (``verify_state == "ok"``): the verify loop owns ``pending`` (its
-        initial apply already wrote a full window), and a terminal ``mismatch``
-        is not re-spammed — mirroring ``_maybe_refresh_rc``.
+        place — never a stale one.
+
+        The only condition is that the commanded mode still needs a keep-alive:
+        the heartbeat is a deadman, and ``verify_state`` says nothing about
+        whether the volatile function is about to expire. See
+        ``_maybe_refresh_rc`` for why gating this on ``ok`` was the bug.
 
         Args:
             now: Heartbeat time from HA; unused — the re-arm is stateless.
@@ -757,8 +772,6 @@ class InverterControlModule:
                 return
             spec = self._driver.spec_for(commanded)
             if spec is None or not self._driver.needs_keepalive(spec):
-                return
-            if self._verify_state != "ok":
                 return
             _LOGGER.debug(
                 "inverter_control: RC keep-alive re-arming %s", commanded.value,

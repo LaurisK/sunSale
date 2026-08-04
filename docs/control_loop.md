@@ -32,12 +32,19 @@ Three rules govern dispatch in `InverterControlModule.tick`:
   has closed is recovered by the slow reconciliation path (further below) — not by blind
   re-asserts every cycle.
   *One deliberate exception:* RC-backed modes (non-zero `rc_setpoint_w`, i.e. GridCharge /
-  Discharge) refresh the RAM-only RC registers on every ok-holding tick (`_maybe_refresh_rc` →
-  `InverterController.refresh_rc`), because the inverter expires the RC function at most 30 min
-  after the last RC write (register 43282). The flash-wear rationale doesn't apply to the RC
-  group, and the rolling timeout doubles as a deadman — if sunSale stops dispatching, the
-  inverter falls back to its base 43110 mode within 30 min. The 43110 bitmask itself is still
-  write-once.
+  Discharge) refresh the RAM-only RC registers on a dedicated 3-minute heartbeat
+  (`_on_rc_keepalive_tick` → `InverterController.refresh_rc`, armed by `_force_write_and_verify`)
+  plus every holding tick as a secondary re-arm (`_maybe_refresh_rc`), because the inverter
+  expires the RC function within minutes of the last engaging write (register 43282's 30-min
+  request does not latch on S6 firmware). The flash-wear rationale doesn't apply to the RC group,
+  and the rolling timeout doubles as a deadman — if sunSale stops dispatching, the inverter falls
+  back to its base 43110 mode. The 43110 bitmask itself is still write-once.
+  **The keep-alive is deliberately not gated on `verify_state`.** It must keep running exactly
+  when the loop is least sure of itself: `unknown` means some *unrelated* control point is
+  unreadable (a solis_modbus register-group outage takes the battery-current entities down while
+  the RC registers answer fine), and `mismatch` is often the RC selector itself having reverted —
+  the very drop the re-arm repairs. Gating it on `ok` is what let a commanded Discharge expire a
+  few minutes in while every register still read "engaged".
 - **Override bypasses `automation_enabled`.** When `coordinator.mode_override` is set, the
   dispatcher resolves the override as the target regardless of the automation switch. Operator
   intent always reaches the inverter (once, on the cycle it changes).
@@ -123,10 +130,13 @@ grid for hours without acting. The reconciliation path closes that gap:
   — a debounce against a single transient readback glitch) the unchanged target is re-commanded
   via the same force-write + verify-loop path (`outcome = "reconcile"`). The counter resets the
   moment a tick reads clean, or on any write.
-- **Conditioned on `ok`.** Drift reconciliation only runs from the steady engaged state. It
-  deliberately does **not** fire while `verify_state` is `pending` (the verify loop owns that
-  window) or `mismatch` (the verify loop's terminal "this write won't take — check the Modbus
-  chain" verdict is respected; a stuck inverter is not re-spammed every few cycles).
+- **Conditioned on `ok` or `unknown`.** Drift reconciliation runs from the steady engaged state
+  *and* from `unknown` — that verdict is about the rows that could not be read, so a row that
+  *was* read and disagrees is real drift regardless; excluding it let one unavailable entity
+  disable drift recovery for every other control point indefinitely. It deliberately does **not**
+  fire while `verify_state` is `pending` (the verify loop owns that window) or `mismatch` (the
+  verify loop's terminal "this write won't take — check the Modbus chain" verdict is respected; a
+  stuck inverter is not re-spammed every few cycles).
 - **`mismatch` self-heal.** If a `holding` tick finds `verify_state == "mismatch"` but the
   registers now all match (operator fixed it at the inverter, comms restored), `verify_state`
   flips back to `ok` — the terminal mismatch never re-checks on its own, so the badge would

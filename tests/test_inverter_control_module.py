@@ -868,6 +868,38 @@ async def test_single_drift_cycle_resets_counter_on_recovery(call_later):
 
 
 @pytest.mark.asyncio
+async def test_drift_reconciles_from_unknown_verify_state(call_later):
+    """One unreadable row must not disable drift recovery for the readable ones.
+
+    With the battery-current entities unavailable, ``verify_state`` sticks at
+    ``unknown`` forever. A control point that *is* readable and disagrees is
+    still real drift — conditioning reconciliation on ``ok`` alone left it
+    unrecoverable until the next slot boundary.
+    """
+    inv = _mock_inverter()
+    mod = _module_with_hass(inv)
+    _wire_inverter_to_spec(inv, mod, StorageMode.Discharge)
+    inv.get_charge_current_a = MagicMock(return_value=None)
+    inv.get_discharge_current_a = MagicMock(return_value=None)
+    await mod.tick(
+        now=NOW, schedule=_schedule_with(StorageMode.Discharge),
+        reading=_reading(StorageMode.SelfUse, reg=1),
+        history=InverterModeHistory(samples=()), automation_enabled=True,
+    )
+    await call_later.last_callback(NOW + timedelta(seconds=31))
+    assert mod.verify_state == "unknown"
+    assert inv.apply_mode.await_count == 1
+    # Now the RC selector reverts inverter-side — readable, and wrong.
+    inv.get_rc_adjustment_value = MagicMock(return_value=0)
+    for i in range(1, _DRIFT_RECONCILE_CYCLES):
+        await _hold_tick(mod, StorageMode.Discharge, minutes=5 * i)
+        assert mod.last_dispatch_outcome == "holding"
+    await _hold_tick(mod, StorageMode.Discharge, minutes=5 * _DRIFT_RECONCILE_CYCLES)
+    assert mod.last_dispatch_outcome == "reconcile"
+    assert inv.apply_mode.await_count == 2
+
+
+@pytest.mark.asyncio
 async def test_reconcile_skipped_while_verify_pending(call_later):
     """Drift reconciliation defers to the verify loop while it owns the window."""
     inv = _mock_inverter()
@@ -989,8 +1021,15 @@ async def test_holding_engaged_rc_mode_refreshes_deadman(call_later):
 
 
 @pytest.mark.asyncio
-async def test_no_rc_refresh_while_verify_pending_or_mismatch(call_later):
-    """The keep-alive runs only from the steady engaged state."""
+async def test_rc_refresh_runs_regardless_of_verify_state(call_later):
+    """The deadman keeps running through pending and a terminal mismatch.
+
+    ``verify_state`` says nothing about whether the volatile RC function is
+    about to expire, and a mismatch is often the RC selector itself having
+    reverted — the very drop this re-arm repairs. Gating the keep-alive on
+    ``ok`` let a commanded Discharge expire minutes in while every register
+    still read "engaged".
+    """
     inv = _mock_inverter()
     inv.get_storage_control_word = MagicMock(return_value=0xDEAD)  # never matches
     mod = _module_with_hass(inv)
@@ -1001,13 +1040,13 @@ async def test_no_rc_refresh_while_verify_pending_or_mismatch(call_later):
     )
     assert mod.verify_state == "pending"
     await _hold_tick(mod, StorageMode.Discharge, minutes=5)
-    assert inv.refresh_rc.await_count == 0
-    # Drive to terminal mismatch — still no keep-alive (not re-spammed).
+    assert inv.refresh_rc.await_count == 1
+    # Drive to terminal mismatch — the keep-alive still re-arms.
     await call_later.last_callback(NOW + timedelta(seconds=31))
     await call_later.last_callback(NOW + timedelta(seconds=62))
     assert mod.verify_state == "mismatch"
     await _hold_tick(mod, StorageMode.Discharge, minutes=10)
-    assert inv.refresh_rc.await_count == 0
+    assert inv.refresh_rc.await_count == 2
 
 
 @pytest.mark.asyncio
@@ -1027,19 +1066,51 @@ async def test_rc_keepalive_armed_and_fires_on_engaged_rc_mode(call_later, track
 
 
 @pytest.mark.asyncio
-async def test_rc_keepalive_skips_when_not_engaged(call_later, track_interval):
-    """The heartbeat re-arms only from the steady ``ok`` state, never pending."""
+async def test_rc_keepalive_fires_while_verify_unconfirmed(call_later, track_interval):
+    """The heartbeat re-arms whatever RC mode is commanded, confirmed or not.
+
+    Reproduces the live failure: a solis_modbus register-group outage takes the
+    battery-current entities down, so those rows read back ``unknown`` and
+    ``verify_state`` can never reach ``ok`` — while the RC registers answer
+    fine. The deadman must still fire, or the commanded Discharge expires
+    inverter-side within minutes.
+    """
     inv = _mock_inverter()
-    inv.get_storage_control_word = MagicMock(return_value=0xDEAD)  # never matches
     mod = _module_with_hass(inv)
+    _wire_inverter_to_spec(inv, mod, StorageMode.Discharge)
+    # The two battery-current entities go unavailable → rows read ``unknown``.
+    inv.get_charge_current_a = MagicMock(return_value=None)
+    inv.get_discharge_current_a = MagicMock(return_value=None)
     await mod.tick(
         now=NOW, schedule=_schedule_with(StorageMode.Discharge),
         reading=_reading(StorageMode.SelfUse, reg=1),
         history=InverterModeHistory(samples=()), automation_enabled=True,
     )
-    assert mod.verify_state == "pending"
-    # Heartbeat is armed, but firing it while pending is a no-op.
+    # Verify settles at "unknown": nothing read back wrong, but two targeted
+    # rows are unreadable, so the mode cannot be confirmed.
+    await call_later.last_callback(NOW + timedelta(seconds=31))
+    assert mod.verify_state == "unknown"
     await track_interval.action(NOW + timedelta(seconds=_RC_KEEPALIVE_INTERVAL_S))
+    assert inv.refresh_rc.await_count == 1
+    assert inv.refresh_rc.await_args.args[0] == mod._driver.spec_for(StorageMode.Discharge)
+
+
+@pytest.mark.asyncio
+async def test_rc_keepalive_skips_when_no_rc_mode_commanded(call_later, track_interval):
+    """A heartbeat that fires after the commanded mode went non-RC re-arms nothing.
+
+    The cancel already stops the timer; this pins the second guard — the
+    heartbeat re-reads the commanded mode under the lock, so a beat queued
+    behind the mode change cannot re-arm the RC function sunSale just released.
+    """
+    inv = _mock_inverter()
+    mod = _module_with_hass(inv)
+    await _engage_ok(mod, inv, call_later, mode=StorageMode.Discharge)
+    stale_beat = track_interval.action
+    await _engage_ok(
+        mod, inv, call_later, mode=StorageMode.SelfUse, now=NOW + timedelta(minutes=15),
+    )
+    await stale_beat(NOW + timedelta(minutes=15, seconds=_RC_KEEPALIVE_INTERVAL_S))
     assert inv.refresh_rc.await_count == 0
 
 
