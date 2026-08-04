@@ -10,6 +10,23 @@ Any behavior-affecting change bumps the `version` in
 
 ## [Unreleased]
 
+## [0.4.1] — 2026-08-05
+
+### Fixed
+- **A dispatch-capable install could be pinned to the RC path by a startup
+  race.** `SolisDispatchDriver` support was decided once, at driver
+  construction — but both halves of the gate depend on `solis_modbus` being
+  further along than sunSale, and Home Assistant sets custom integrations up
+  concurrently: the `solis_dispatch` service is registered during *its* setup,
+  and the capability sensor sits on a SLOW poll group. On the reference install
+  register 34502 read `0xAA55` throughout and every dispatch role resolved, yet
+  `control_path` still came up `rc` and would have stayed there until the next
+  restart. Support is now resolved lazily and a negative answer is never cached
+  (it may be "not yet"), while a positive one is latched. The wrapper is always
+  built for Solis; `capability()` — called every cycle — is what picks the
+  change up, and it keeps the RC leg until dispatch is confirmed so the planner
+  never budgets export the fallback cannot deliver.
+
 ## [0.4.0] — 2026-08-05
 
 ### Added
@@ -234,7 +251,8 @@ against real hardware — see the status note in [`README.md`](README.md).
   in the chart, and left out of the series-level statistics and every EMA quality
   bucket.
 
-[Unreleased]: https://github.com/LaurisK/sunSale/compare/v0.4.0...HEAD
+[Unreleased]: https://github.com/LaurisK/sunSale/compare/v0.4.1...HEAD
+[0.4.1]: https://github.com/LaurisK/sunSale/compare/v0.4.0...v0.4.1
 [0.4.0]: https://github.com/LaurisK/sunSale/compare/v0.3.0...v0.4.0
 [0.3.0]: https://github.com/LaurisK/sunSale/compare/v0.2.2...v0.3.0
 [0.2.2]: https://github.com/LaurisK/sunSale/compare/v0.2.1...v0.2.2
