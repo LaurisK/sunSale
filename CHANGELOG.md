@@ -10,6 +10,29 @@ Any behavior-affecting change bumps the `version` in
 
 ## [Unreleased]
 
+## [0.2.1] — 2026-08-04
+
+### Fixed
+- **A commanded Discharge / GridCharge fell back to the base mode after a few
+  minutes.** The RC deadman keep-alive (both the 3-min heartbeat and the
+  per-tick refresh) only ran while `verify_state == "ok"`, i.e. only when
+  *every* control point the mode targets read back matching. Any unrelated row
+  that was stuck or unreadable therefore disabled the keep-alive entirely, and
+  the inverter expired the RAM-only RC function within minutes while registers
+  43110 / 43128 / 43132 all still read "engaged" — so the panel showed the mode
+  engaged with nothing happening. Seen live in both shapes: pre-0.2.0 the
+  battery-current rows were a permanent `mismatch` (the 200 A clamp), and from
+  2026-08-03 a solis_modbus register-group outage left those same entities
+  unavailable, pinning `verify_state` at `unknown`. The keep-alive is now
+  conditioned only on the commanded mode needing one — `verify_state` says
+  nothing about whether the volatile function is about to expire, and a
+  mismatch is often the RC selector itself having reverted.
+- **One unreadable control point disabled drift reconciliation.** The slow
+  drift path required `verify_state == "ok"`, which is unreachable while any
+  targeted entity is unavailable, so a genuine drift on a *readable* register
+  (e.g. the RC selector reverting) was never re-commanded. Reconciliation now
+  also runs from `unknown`; `pending` and the terminal `mismatch` stay excluded.
+
 ## [0.2.0] — 2026-08-03
 
 ### Fixed
@@ -126,5 +149,7 @@ against real hardware — see the status note in [`README.md`](README.md).
   in the chart, and left out of the series-level statistics and every EMA quality
   bucket.
 
-[Unreleased]: https://github.com/LaurisK/sunSale/compare/v0.1.0...HEAD
+[Unreleased]: https://github.com/LaurisK/sunSale/compare/v0.2.1...HEAD
+[0.2.1]: https://github.com/LaurisK/sunSale/compare/v0.2.0...v0.2.1
+[0.2.0]: https://github.com/LaurisK/sunSale/compare/v0.1.0...v0.2.0
 [0.1.0]: https://github.com/LaurisK/sunSale/releases/tag/v0.1.0
