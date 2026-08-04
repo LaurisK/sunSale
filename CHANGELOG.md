@@ -10,6 +10,91 @@ Any behavior-affecting change bumps the `version` in
 
 ## [Unreleased]
 
+## [0.4.0] — 2026-08-05
+
+### Added
+- **Solis Remote Dispatch driver** for the two forced modes. Where the install
+  supports it — `solis_modbus` exposes `solis_dispatch` *and* the inverter
+  advertises the capability on input register 34502 (`0xAA55`) — Discharge and
+  GridCharge are commanded through the Remote Dispatch block (44100–44112)
+  instead of the Remote-Control registers, as `grid_export` / `grid_import`
+  meter-side power targets. Three things this fixes that the RC path could not:
+  the deadman is **sunSale's to size** (`failsafe_minutes`, refreshed by the
+  ordinary holding tick, instead of racing a ~5-minute firmware expiry that
+  43282 cannot extend without register 43135); the writes are **raw registers**,
+  so neither the `number` entity's same-value short-circuit nor its declared
+  ±10 kW ceiling applies; and mode + power + failsafe land as **two atomic block
+  writes** rather than a sequence any one of which can be dropped. Because the
+  ±10 kW is an entity bound rather than a physical one, `capability()` drops the
+  RC leg on this path — **planned peak export rises accordingly**, bounded now by
+  battery current and the export cap alone.
+  Passive modes keep the register path unchanged, and the driver wraps rather
+  than replaces `SolisDriver`, so every read delegates. Selection is gated, so an
+  older `solis_modbus` or a non-dispatch inverter silently keeps the RC path;
+  `sensor.sunsale_observed_inverter_mode` reports which is live as `control_path`.
+  **The 44100 block is a single-writer resource** — SolisCloud's EMS drives the
+  same registers. sunSale releases dispatch when a passive mode is commanded, and
+  a foreign write during a held forced mode surfaces as drift and is
+  re-commanded.
+- **Upstream contract guard** (`tests/test_solis_modbus_contract.py`) plus a CI
+  job running it against `solis_modbus` at both its latest release and `master`.
+  sunSale calls another integration's services and resolves its entities by
+  unique-id slug; neither is a versioned API, and a rename there fails *silently*
+  at runtime because the write path logs and swallows a rejected call. The guard
+  parses upstream's own `services.yaml` and `const.py` and asserts every service
+  name, field, dispatch mode name, capability register and readback slug sunSale
+  depends on still exists — including the `number` same-value short-circuit that
+  `set_number(renew=True)` exists to defeat. It skips without a checkout, so a
+  fresh clone still has a green suite.
+- `control_path` on `sensor.sunsale_observed_inverter_mode` and in the debug API
+  payload, reporting which write path the driver picked (`dispatch` / `rc`).
+  Selection happens once at setup, so without it a support capture gives no way
+  to tell which control path produced it.
+
+## [0.3.0] — 2026-08-05
+
+### Changed
+- **Liveness is now a driver concern.** `needs_keepalive` and `refresh_rc` are
+  gone from the `InverterDriver` / `InverterControlDriver` protocols — both were
+  Solis vocabulary (`refresh_rc` is named after a Solis register group) leaking
+  into the platform-neutral seam, and they forced `InverterControlModule` to own
+  a keep-alive timer whose correct cadence only the platform knows. The protocol
+  now says `hold(mode, spec)` — "this is still the target" — plus `shutdown()`,
+  and each driver decides what holding costs. `SolisDriver` owns its 3-minute RC
+  heartbeat, phased to each `apply_mode` and stopped when a passive mode is
+  commanded; `EntityControlDriver` owns the equivalent for `keepalive` plans.
+  The shared timer plumbing is `outbound/heartbeat.py`, deliberately separate
+  from `outbound/driver.py` so the contract module stays free of Home Assistant
+  imports. No behaviour change on any platform — the same writes happen at the
+  same cadence, from a different owner. Groundwork for a Remote Dispatch driver
+  whose inverter-side failsafe needs no heartbeat at all.
+
+## [0.2.2] — 2026-08-04
+
+### Fixed
+- **Every RC deadman re-arm was a silent no-op.** `refresh_rc` re-wrote the RC
+  timeout (43282) and setpoint (43128) with `force=True`, but `force` only
+  bypasses *sunSale's* own readback comparison — one layer down,
+  solis_modbus's `SolisNumberEntity.set_native_value` returns early when the
+  value equals what the entity already holds, and "value unchanged" is exactly
+  the steady state a keep-alive exists to hold. Only the 43132 selector write
+  (whose `on_value` branch writes unconditionally) ever reached the wire. Number
+  writes now take a `renew` flag that first writes an in-range neighbouring
+  value, so the target write is a genuine change the integration forwards.
+  This also re-reads the 2026-06-15 capture that concluded "setpoint rewrites
+  don't re-arm the function": those rewrites had never been sent.
+  A 2026-08-04 capture measured a held Discharge collapsing at exactly 5 min 08 s
+  while 43110 / 43128 / 43132 all still read "engaged".
+- **A command issued during an integration restart was never retried.** When the
+  verify window closed with *every* targeted control point unreadable, the loop
+  settled on `unknown` and stopped. But `EntityActuator` logs and swallows a
+  service call against an unavailable entity, so a mode commanded seconds after
+  an HA restart vanishes silently — and a total readback blackout is exactly the
+  case where "unreadable" also implies "the write was lost". The verify loop now
+  issues its one retry on a full blackout as well as on a mismatch. A partial
+  outage (some rows matching) still does not retry: the write demonstrably
+  reached the inverter.
+
 ## [0.2.1] — 2026-08-04
 
 ### Fixed
@@ -149,7 +234,10 @@ against real hardware — see the status note in [`README.md`](README.md).
   in the chart, and left out of the series-level statistics and every EMA quality
   bucket.
 
-[Unreleased]: https://github.com/LaurisK/sunSale/compare/v0.2.1...HEAD
+[Unreleased]: https://github.com/LaurisK/sunSale/compare/v0.4.0...HEAD
+[0.4.0]: https://github.com/LaurisK/sunSale/compare/v0.3.0...v0.4.0
+[0.3.0]: https://github.com/LaurisK/sunSale/compare/v0.2.2...v0.3.0
+[0.2.2]: https://github.com/LaurisK/sunSale/compare/v0.2.1...v0.2.2
 [0.2.1]: https://github.com/LaurisK/sunSale/compare/v0.2.0...v0.2.1
 [0.2.0]: https://github.com/LaurisK/sunSale/compare/v0.1.0...v0.2.0
 [0.1.0]: https://github.com/LaurisK/sunSale/releases/tag/v0.1.0
