@@ -115,16 +115,45 @@ class SolisDispatchDriver:
         # What the last dispatch commanded, so ``control_surface`` can compare
         # the readback against it. ``None`` while no forced mode is held.
         self._commanded: tuple[int, int] | None = None
+        # Resolved support, latched only once positive. ``None`` = not yet
+        # determined. See :meth:`_supported`.
+        self._support: bool | None = None
 
     @property
     def control_path(self) -> str:
-        """Return which write path drives the forced modes — a panel diagnostic.
+        """Return which write path is driving the forced modes — a panel diagnostic.
 
-        Selection happens once at setup and is otherwise invisible, so an
-        operator debugging a discharge needs to be able to see whether their
-        install picked Remote Dispatch or fell back to the RC registers.
+        Reflects the *resolved* answer, so an operator debugging a discharge can
+        see whether this install is actually using Remote Dispatch or has fallen
+        back to the RC registers.
         """
-        return "dispatch"
+        return "dispatch" if self._supported() else "rc"
+
+    def _supported(self) -> bool:
+        """Return whether Remote Dispatch can be used, resolving lazily.
+
+        **Not answered at construction.** Both halves of the gate depend on
+        another integration being further along than sunSale: Home Assistant
+        sets custom integrations up concurrently, so ``solis_modbus`` may not
+        have registered ``solis_dispatch`` yet when sunSale's config entry
+        loads, and the capability sensor sits on a SLOW poll group that has not
+        necessarily produced a value. Deciding once at setup therefore loses the
+        race on a cold boot and pins the install to the RC path until the next
+        restart — which is exactly what happened on the reference install
+        (2026-08-04: register 34502 read ``0xAA55`` throughout, every dispatch
+        role resolved, and ``control_path`` still came up ``rc``).
+
+        A negative answer is therefore **never cached** — it may simply be
+        "not yet" — while a positive one is latched, both to avoid re-probing
+        every cycle and to keep ``control_path`` from flapping.
+
+        Returns:
+            ``True`` when the dispatch path may be used.
+        """
+        if self._support:
+            return True
+        self._support = dispatch_supported(self._hass, self._entity_ids)
+        return self._support
 
     # --- Delegated surface ---------------------------------------------- #
 
@@ -141,20 +170,28 @@ class SolisDispatchDriver:
         return self._base.effective_spec(mode)
 
     def capability(self, now: datetime) -> InverterCapability:
-        """Return the hardware envelope, with the RC leg lifted.
+        """Return the hardware envelope, with the RC leg lifted while dispatching.
 
         The RC active-power setpoint's ±10 kW is an *entity* bound that the
-        dispatch service does not go through, so it no longer constrains what
-        can be commanded. The battery-current and export-cap legs still do.
+        dispatch service does not go through, so on that path it no longer
+        constrains what can be commanded; the battery-current and export-cap
+        legs still do. While the gate is unresolved the RC leg still applies —
+        reporting an envelope the RC fallback cannot deliver would have the
+        planner budget export the dispatcher then clamps.
+
+        This is also the call that resolves the gate in practice: the
+        coordinator invokes it every cycle, so support is picked up as soon as
+        ``solis_modbus`` finishes starting, without waiting for a forced mode.
 
         Args:
             now: Cycle timestamp recorded as ``resolved_at``.
 
         Returns:
-            The base capability with the RC-derived grid-discharge leg replaced
-            by the remaining binding legs.
+            The resolved :class:`InverterCapability`.
         """
-        return self._base.capability_without_rc_leg(now)
+        if self._supported():
+            return self._base.capability_without_rc_leg(now)
+        return self._base.capability(now)
 
     def decode_observed(self) -> StorageMode:
         """Decode the live StorageMode (delegated)."""
@@ -192,7 +229,7 @@ class SolisDispatchDriver:
             force: Forwarded to the register path; dispatch writes are always
                 unconditional at the register level.
         """
-        dispatch_mode = _DISPATCH_MODES.get(mode)
+        dispatch_mode = _DISPATCH_MODES.get(mode) if self._supported() else None
         if dispatch_mode is None:
             await self._release()
             await self._base.apply_mode(mode, spec, force=force)
@@ -226,7 +263,7 @@ class SolisDispatchDriver:
             mode: The mode still being held.
             spec: Effective register spec for ``mode``.
         """
-        if mode not in _DISPATCH_MODES:
+        if mode not in _DISPATCH_MODES or not self._supported():
             await self._base.hold(mode, spec)
             return
         await self.apply_mode(mode, spec, force=False)
@@ -257,6 +294,9 @@ class SolisDispatchDriver:
         Returns:
             Canonical rows in write order, dispatch rows last.
         """
+        if commanded is not None and not self._supported():
+            # Fallback path: the surface is purely the register driver's.
+            return list(self._base.control_surface(commanded))
         if commanded in _DISPATCH_MODES:
             # Compare against what was actually written: the RC-free spec.
             # Using the mode's own spec would report the stood-down RC rows as a

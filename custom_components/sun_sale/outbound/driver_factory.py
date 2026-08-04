@@ -13,15 +13,12 @@ the (untested-against-hardware) entity-driven platform modules, and vice versa.
 from __future__ import annotations
 
 import importlib
-import logging
 
 from ..contract.models import BatteryConfig
 from .driver import InverterControlDriver
 from .entity_control import InverterContext
 from .inverter import InverterController, InverterPlatform
 from .solis_driver import SolisDriver
-
-_LOGGER = logging.getLogger(__name__)
 
 # Platform → (relative module, factory function name) for the entity-driven
 # drivers. Looked up lazily (see ``make_inverter_driver``) so selecting one
@@ -86,15 +83,11 @@ def make_inverter_driver(
         return base
     # Remote Dispatch is strictly better for the forced modes (inverter-side
     # failsafe instead of a ~5-min RC expiry, raw register writes instead of
-    # bounded entity writes) — but only where both halves are present. Gating
-    # rather than assuming keeps older solis_modbus installs and non-dispatch
-    # inverters on the path that already works for them.
-    from .solis_dispatch_driver import SolisDispatchDriver, dispatch_supported
+    # bounded entity writes), but not every install has it. The wrapper is
+    # therefore always built and resolves support **lazily** — deciding here
+    # would race ``solis_modbus``'s own startup (services are registered during
+    # its setup, which HA may run after ours) and pin a capable install to the
+    # RC path until the next restart. See ``SolisDispatchDriver._supported``.
+    from .solis_dispatch_driver import SolisDispatchDriver
 
-    if dispatch_supported(context.hass, dict(context.entity_ids)):
-        _LOGGER.info(
-            "Solis Remote Dispatch available — forced modes will use the "
-            "44100 block (inverter-side failsafe) instead of the RC path",
-        )
-        return SolisDispatchDriver(base, context.hass, dict(context.entity_ids))
-    return base
+    return SolisDispatchDriver(base, context.hass, dict(context.entity_ids))

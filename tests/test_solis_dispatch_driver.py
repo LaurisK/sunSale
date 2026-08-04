@@ -71,10 +71,21 @@ def _inverter() -> MagicMock:
     return inv
 
 
+def _capable(states: dict[str, _State] | None = None) -> dict[str, _State]:
+    """Return ``states`` with the capability sensor advertising dispatch.
+
+    Support is resolved lazily against live state, so every test that exercises
+    the dispatch path has to look like an install that actually has it.
+    """
+    merged = {_ROLES["dispatch_capability"]: _State(str(DISPATCH_CAPABLE_MAGIC))}
+    merged.update(states or {})
+    return merged
+
+
 def _driver(states: dict[str, _State] | None = None):
     """Return (dispatch driver, wrapped inverter mock, hass stub)."""
     inv = _inverter()
-    hass = _hass(states)
+    hass = _hass(_capable(states))
     base = SolisDriver(inv, default_battery_config(), 10_000, 10_000)
     return SolisDispatchDriver(base, hass, dict(_ROLES)), inv, hass
 
@@ -144,7 +155,7 @@ async def test_dispatch_magnitude_ignores_the_rc_entity_ceiling() -> None:
 
     inv = _inverter()
     inv.limit_for = MagicMock(return_value=Limit(low=-10_000, high=10_000, known=True))
-    hass = _hass()
+    hass = _hass(_capable())
     base = SolisDriver(inv, default_battery_config(), 20_000, 15_000)
     drv = SolisDispatchDriver(base, hass, dict(_ROLES))
     await drv.apply_mode(
@@ -290,7 +301,7 @@ def test_capability_drops_the_rc_leg() -> None:
     }
     inv = _inverter()
     inv.limit_for = MagicMock(side_effect=lambda role: limits[role])
-    hass = _hass()
+    hass = _hass(_capable())
     base = SolisDriver(inv, default_battery_config(), 20_000, 15_000)
     drv = SolisDispatchDriver(base, hass, dict(_ROLES))
     assert base.capability(NOW).max_grid_discharge_kw == 10.0
@@ -356,7 +367,7 @@ async def test_rc_rows_are_compared_against_what_was_written() -> None:
     inv = _inverter()
     inv.get_rc_setpoint_w = MagicMock(return_value=0)
     inv.get_rc_adjustment_value = MagicMock(return_value=0)
-    hass = _hass()
+    hass = _hass(_capable())
     base = SolisDriver(inv, default_battery_config(), 10_000, 10_000)
     drv = SolisDispatchDriver(base, hass, dict(_ROLES))
     await drv.apply_mode(
@@ -367,3 +378,68 @@ async def test_rc_rows_are_compared_against_what_was_written() -> None:
     # The selector row only exists for an RC-backed spec; standing RC down
     # removes it from the surface entirely.
     assert "rc_enable" not in rows
+
+
+# --- Lazy support resolution (the cold-boot race) --------------------------- #
+
+
+@pytest.mark.asyncio
+async def test_support_is_resolved_lazily_not_at_construction() -> None:
+    """A capable install must not be pinned to RC by losing a startup race.
+
+    HA sets custom integrations up concurrently, so ``solis_modbus`` may not
+    have registered ``solis_dispatch`` when sunSale's entry loads. Deciding once
+    at construction produced exactly this on the reference install (2026-08-04):
+    register 34502 read 0xAA55 throughout, every dispatch role resolved, and
+    ``control_path`` still came up ``rc`` until the next restart.
+    """
+    inv = _inverter()
+    hass = _hass(_capable())
+    hass.services.has_service = MagicMock(return_value=False)  # not up yet
+    base = SolisDriver(inv, default_battery_config(), 10_000, 10_000)
+    drv = SolisDispatchDriver(base, hass, dict(_ROLES))
+    assert drv.control_path == "rc"
+
+    # solis_modbus finishes starting.
+    hass.services.has_service = MagicMock(return_value=True)
+    assert drv.control_path == "dispatch"
+    await drv.apply_mode(
+        StorageMode.Discharge, drv.spec_for(StorageMode.Discharge),
+    )
+    assert [s for s, _ in _dispatch_calls(hass)] == [SERVICE_DISPATCH]
+
+
+@pytest.mark.asyncio
+async def test_unsupported_install_falls_back_to_the_rc_path() -> None:
+    """No dispatch → the forced mode is driven by the register path, RC intact."""
+    inv = _inverter()
+    hass = _hass()  # no capability sensor state
+    base = SolisDriver(inv, default_battery_config(), 10_000, 10_000)
+    drv = SolisDispatchDriver(base, hass, dict(_ROLES))
+    spec = drv.spec_for(StorageMode.Discharge)
+    await drv.apply_mode(StorageMode.Discharge, spec)
+    assert _dispatch_calls(hass) == []
+    # The RC setpoint must NOT be stood down here — it is what drives the mode.
+    assert inv.apply_mode.await_args.args[1].rc_setpoint_w == spec.rc_setpoint_w
+    assert drv.control_path == "rc"
+    # And the surface is the register driver's, with no dispatch rows.
+    names = {r.name for r in drv.control_surface(StorageMode.Discharge)}
+    assert not any(n.startswith("dispatch_") for n in names)
+
+
+def test_capability_keeps_the_rc_leg_until_dispatch_is_confirmed() -> None:
+    """Reporting a lifted envelope the RC fallback cannot deliver would over-plan."""
+    from custom_components.sun_sale.contract.models import Limit
+
+    limits = {
+        "battery_max_charge_current": Limit(low=0, high=400, known=True),
+        "battery_max_discharge_current": Limit(low=0, high=400, known=True),
+        "backflow_power": Limit(low=0, high=20_000, known=True),
+        "rc_setpoint": Limit(low=-10_000, high=10_000, known=True),
+    }
+    inv = _inverter()
+    inv.limit_for = MagicMock(side_effect=lambda role: limits[role])
+    hass = _hass()  # unsupported
+    base = SolisDriver(inv, default_battery_config(), 20_000, 15_000)
+    drv = SolisDispatchDriver(base, hass, dict(_ROLES))
+    assert drv.capability(NOW).max_grid_discharge_kw == 10.0
