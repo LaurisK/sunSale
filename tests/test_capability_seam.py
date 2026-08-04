@@ -473,8 +473,8 @@ def test_both_drivers_satisfy_the_extended_control_driver_protocol() -> None:
 
     required = (
         "spec_for", "declared_spec", "effective_spec", "capability",
-        "needs_keepalive", "control_surface", "decode_observed", "observe",
-        "observed_raw_state", "apply_mode", "refresh_rc", "get_grid_power",
+        "control_surface", "decode_observed", "observe",
+        "observed_raw_state", "apply_mode", "hold", "shutdown", "get_grid_power",
     )
     for cls in (SolisDriver, EntityControlDriver):
         missing = [m for m in required if not hasattr(cls, m)]

@@ -156,8 +156,29 @@ _SENSOR_SUFFIXES: dict[str, tuple[str, str]] = {
         "rc_inverter_ac_grid_active_power",
     ),
     # RC deadman timeout in minutes (register 43282, 1..30). Refreshed every
-    # tick while an RC-backed mode is held — see InverterController.refresh_rc.
+    # beat while an RC-backed mode is held — see InverterController.refresh_rc.
     "rc_timeout":                  ("solis_modbus_inverter_rc_timeout", "rc_timeout"),
+    # Remote Dispatch (holding 44100-44112) read-back view, plus the capability
+    # gate at input 34502. Read-only sensors: the block itself is written by
+    # ``solis_modbus``'s dispatch services, so these are purely what the verify
+    # loop compares against — see ``outbound/solis_dispatch_driver.py``.
+    "dispatch_capability":         (
+        "solis_modbus_inverter_remote_dispatch_capability",
+        "remote_dispatch_capability",
+    ),
+    "dispatch_active":             (
+        "solis_modbus_inverter_dispatch_active", "dispatch_active",
+    ),
+    "dispatch_control_mode":       (
+        "solis_modbus_inverter_dispatch_control_mode", "dispatch_control_mode",
+    ),
+    "dispatch_power_target":       (
+        "solis_modbus_inverter_dispatch_power_target", "dispatch_power_target",
+    ),
+    "dispatch_failsafe_interval":  (
+        "solis_modbus_inverter_dispatch_failsafe_interval",
+        "dispatch_failsafe_interval",
+    ),
     # Export-side numbers (regs 43073/43074 area).
     "backflow_power":              ("solis_modbus_inverter_backflow_power", "backflow_power"),
     "peak_max_usable_grid_power":  ("solis_modbus_inverter_peak_max_usable_grid_power", "peak_max_usable_grid_power"),
@@ -245,6 +266,15 @@ _OPTIONAL_ROLES: frozenset[str] = frozenset({
     # logs a WARNING at dispatch time, which is the actionable signal.
     "rc_timeout",
     _RC_ADJUSTMENT_SELECT_ROLE,
+    # Remote Dispatch read-backs exist only on solis_modbus versions that
+    # expose the 44100 block, and only matter on inverters that advertise the
+    # capability. Their absence simply keeps the driver on the RC path —
+    # ``solis_dispatch_driver.dispatch_supported`` gates on exactly this.
+    "dispatch_capability",
+    "dispatch_active",
+    "dispatch_control_mode",
+    "dispatch_power_target",
+    "dispatch_failsafe_interval",
 })
 
 

@@ -13,12 +13,15 @@ the (untested-against-hardware) entity-driven platform modules, and vice versa.
 from __future__ import annotations
 
 import importlib
+import logging
 
 from ..contract.models import BatteryConfig
 from .driver import InverterControlDriver
 from .entity_control import InverterContext
 from .inverter import InverterController, InverterPlatform
 from .solis_driver import SolisDriver
+
+_LOGGER = logging.getLogger(__name__)
 
 # Platform → (relative module, factory function name) for the entity-driven
 # drivers. Looked up lazily (see ``make_inverter_driver``) so selecting one
@@ -75,6 +78,23 @@ def make_inverter_driver(
         make = getattr(importlib.import_module(module_name, __package__), func_name)
         return make(context, battery_config, export_limit_w, inverter_max_power_w)
     # Solis (register-level) and every notes-only / telemetry-only platform.
-    return SolisDriver(
+    base = SolisDriver(
         inverter, battery_config, export_limit_w, inverter_max_power_w,
+        hass=context.hass,
     )
+    if platform is not InverterPlatform.SOLIS:
+        return base
+    # Remote Dispatch is strictly better for the forced modes (inverter-side
+    # failsafe instead of a ~5-min RC expiry, raw register writes instead of
+    # bounded entity writes) — but only where both halves are present. Gating
+    # rather than assuming keeps older solis_modbus installs and non-dispatch
+    # inverters on the path that already works for them.
+    from .solis_dispatch_driver import SolisDispatchDriver, dispatch_supported
+
+    if dispatch_supported(context.hass, dict(context.entity_ids)):
+        _LOGGER.info(
+            "Solis Remote Dispatch available — forced modes will use the "
+            "44100 block (inverter-side failsafe) instead of the RC path",
+        )
+        return SolisDispatchDriver(base, context.hass, dict(context.entity_ids))
+    return base

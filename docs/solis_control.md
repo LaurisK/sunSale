@@ -41,6 +41,55 @@ state is a *composition* of writes across these — never one register alone.
 | **D. Remote-Control AC active power setpoint** | **43128** (S16 signed, ×10 W) + 43132 function selector + 43282 timeout | `number.namai_inv_rc_inverter_ac_grid_active_power_2`<br>`select.rc_grid_adjustment`<br>`number.namai_inv_rc_timeout_2` | Real-time setpoint; RAM-only, no flash wear. *(43141 is Time-Charging Charge Current — an earlier revision of this doc mislabelled it as the RC setpoint.)* |
 | **E. Force charge/discharge** (alternative to D) | 43135 mode + 43136 rate | not currently exposed in this build | Discrete force mode |
 | **F. Inverter on/off (standby)** | 43006 / 43007 | not exposed; closest is self-use + RC=0 + currents=0 | Hard standby |
+| **G. Remote Dispatch** (preferred over D where supported) | **44100–44112** block; capability gate at input **34502** = `0xAA55` | `sensor.*_dispatch_active` / `_control_mode` / `_power_target` / `_failsafe_interval` (read-only)<br>written via `solis_modbus.solis_dispatch` | Goal-seeking power target with an **inverter-side failsafe** |
+
+### G. Remote Dispatch (44100–44112)
+
+The control path sunSale prefers for its two forced modes (Discharge,
+GridCharge) — see
+[`solis_dispatch_driver.py`](../custom_components/sun_sale/outbound/solis_dispatch_driver.py).
+It exists because group **D** has a defect that cannot be worked around from
+outside the inverter: **43282's timeout does not latch** unless the force
+charge/discharge enable (**43135**, group E) is written first
+(Pho3niX90/solis_modbus#352). Without that, the firmware ignores the requested
+window and uses its own ~5-minute default — measured on this deployment at
+exactly **5 min 08 s** into a held discharge on 2026-08-04, while 43110 / 43128 /
+43132 all still read "engaged" and the registers themselves only reverted ~10 min
+in. The registers mask the stall, so every readback-based check says the mode is
+fine while the inverter is idle.
+
+| Register | Meaning |
+|---|---|
+| 44100 | Dispatch master — 1 = active |
+| 44101 | **Failsafe interval (minutes)** — inverter reverts on its own if not refreshed |
+| 44102–44104 | System import/export limit switches + values |
+| 44105 | Control mode — 1 hold, 2 battery power, **3 PCC (meter) target**, 4 grid-port target, 5 self-consumption, 6 feed-in priority |
+| 44106/44107 | Power target, S32 ×10 W. Modes 3/4: **+ export, − import** |
+| 44108 | Function bits (PV shutdown / allow grid charge / disable discharge) |
+| 44109/44110 | SOC window |
+
+Three properties matter for control:
+
+1. **The deadman is the caller's to size.** 44101 is written as part of the same
+   block, so sunSale sets its own blast radius (20 min) and refreshes it on the
+   ordinary 5-minute holding tick — no heartbeat racing a firmware timeout.
+2. **The writes are raw.** `solis_modbus` drives the block with
+   `async_write_holding_register(s)` from its service, so neither the `number`
+   entity's same-value short-circuit nor its advertised min/max applies. The RC
+   setpoint's declared **±10 kW is an entity bound, not a hardware one**, and it
+   stops constraining the commanded magnitude on this path.
+3. **It is atomic.** Mode, power, function and SOC window land as two contiguous
+   FC16 block writes in the firmware-required order (global block first), rather
+   than a sequence of independent writes any one of which can be dropped.
+
+RC (group D) is explicitly **stood down** whenever dispatch drives — sunSale
+zeroes the RC setpoint and releases the 43132 selector — because two mechanisms
+holding power at once is exactly the failure the switch is meant to end.
+
+> **Single-writer resource.** SolisCloud's EMS drives the same 44100 block. Do
+> not run both controllers over the same slot: sunSale releases dispatch when a
+> passive mode is commanded, but a foreign write during a held forced mode
+> surfaces as register drift and gets re-commanded.
 
 ### Bits of register 43110
 

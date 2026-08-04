@@ -37,10 +37,11 @@ diverging.
 """
 from __future__ import annotations
 
+import asyncio
 import logging
 from collections.abc import Callable, Mapping
 from dataclasses import dataclass, field, replace
-from datetime import datetime
+from datetime import datetime, timedelta
 from typing import Any, Literal
 
 from homeassistant.core import HomeAssistant
@@ -54,9 +55,16 @@ from ..contract.models import (
 )
 from ..ha_state import available_state, read_float_state
 from .driver import ControlRow, ControlStatus
+from .heartbeat import Heartbeat
 from .inverter import InverterPlatform
 
 _LOGGER = logging.getLogger(__name__)
+
+# Re-assert cadence for ``keepalive`` plans — a timed forcible charge/discharge
+# that the inverter drops if not renewed. Kept under the shortest such timeout
+# these platforms are documented to use, and well under the 5-min coordinator
+# cycle. Platform detail: it appears nowhere in the neutral driver protocol.
+_KEEPALIVE_INTERVAL = timedelta(seconds=180)
 
 # Absolute tolerance (in a number entity's own unit) under which a write is a
 # no-op. Mirrors ``inverter._NUMBER_WRITE_EPSILON`` but expressed per-write so a
@@ -173,14 +181,15 @@ class ControlPlan:
     Cross-platform analogue of Solis's ``StorageModeSpec``: an ordered set of
     entity writes plus optional service calls that, applied together, drive the
     inverter into one :class:`StorageMode`. The generic driver hands this token
-    back to ``apply_mode`` / ``refresh_rc`` / ``needs_keepalive`` without the
+    back to ``apply_mode`` / ``hold`` without the
     control module ever inspecting it.
 
     Attributes:
         writes: Entity writes in apply order. Order matters where one setting
             gates another (mode select before its dependent setpoints).
         services: Service calls issued after the entity writes on every
-            ``apply_mode`` (and on ``refresh_rc`` when ``keepalive`` is set).
+            ``apply_mode`` (and re-issued on ``hold`` / the driver's
+            heartbeat when ``keepalive`` is set).
         keepalive: Whether holding this mode needs a periodic re-issue (a
             volatile/timed command). ``False`` for the persistent-setting modes
             that make up most non-Solis platforms.
@@ -280,6 +289,7 @@ class EntityActuator:
         target_value: float,
         tolerance: float = _DEFAULT_NUMBER_TOLERANCE,
         force: bool = False,
+        renew: bool = False,
     ) -> None:
         """Write a ``number`` entity only when its readback differs beyond tolerance.
 
@@ -293,6 +303,11 @@ class EntityActuator:
             tolerance: Absolute slack under which an in-range readback skips the write.
             force: When ``True``, skip the readback comparison and always issue
                 the underlying ``number.set_value`` call.
+            renew: When ``True``, guarantee the write reaches the *device* even
+                when the entity already holds the target — see
+                :meth:`_renew_nudge`. Implies ``force``. Only meaningful for a
+                deadman re-arm, where the write itself (not the resulting value)
+                is the point.
         """
         entity_id = self._entity_ids.get(role, "")
         if not entity_id:
@@ -308,6 +323,7 @@ class EntityActuator:
         current = self.read_float(role)
         if (
             not force
+            and not renew
             and current is not None
             and abs(current - target_value) <= tolerance
         ):
@@ -316,6 +332,19 @@ class EntityActuator:
                 self._log_prefix, role, current, target_value, tolerance, entity_id,
             )
             return
+        if renew and current is not None and current == float(target_value):
+            nudge = self._renew_nudge(role, entity_id, target_value)
+            if nudge is not None:
+                _LOGGER.debug(
+                    "%s: number(%s) renew — nudging via %g so the unchanged "
+                    "target=%g still reaches the device (entity=%s)",
+                    self._log_prefix, role, nudge, target_value, entity_id,
+                )
+                await self._call_service(
+                    "number", "set_value",
+                    {"entity_id": entity_id, "value": float(nudge)},
+                    what=f"number({role}) renew-nudge",
+                )
         _LOGGER.debug(
             "%s: number(%s) write — cached=%s target=%g entity=%s force=%s",
             self._log_prefix, role, current, target_value, entity_id, force,
@@ -325,6 +354,55 @@ class EntityActuator:
             {"entity_id": entity_id, "value": float(target_value)},
             what=f"number({role})",
         )
+
+    def _renew_nudge(
+        self, role: str, entity_id: str, target_value: float
+    ) -> float | None:
+        """Return an in-range value differing from ``target_value``, or ``None``.
+
+        Exists because ``number.set_value`` is not guaranteed to reach the
+        hardware: an integration may short-circuit a write whose value equals
+        what the entity already holds. solis_modbus does exactly this
+        (``SolisNumberEntity.set_native_value`` returns early on an unchanged
+        value), so sunSale's ``force`` — which only bypasses *sunSale's* own
+        readback comparison — was silently dropped one layer down. For an
+        ordinary setpoint that is correct and desirable; for a **deadman re-arm**
+        it is fatal, because the write is the keep-alive signal and the value
+        being unchanged is precisely the steady state. Writing a neighbouring
+        value first makes the following target write a genuine change.
+
+        The nudge moves one step toward zero (falling back to away-from-zero),
+        so it stays inside the advertised bound that ``target_value`` already
+        satisfies. A transient one-step excursion is harmless on the control
+        points this is used for (an RC power setpoint and a timeout in minutes).
+
+        Args:
+            role: Role key, used to resolve the advertised bound.
+            entity_id: Resolved target entity id, for the step attribute.
+            target_value: The already-clamped target.
+
+        Returns:
+            A value inside the entity's bounds that differs from
+            ``target_value``, or ``None`` when no such value exists (a
+            pinned single-value range) — the caller then writes the target
+            alone and accepts that the integration may drop it.
+        """
+        state = self._hass.states.get(entity_id)
+        step = 1.0
+        if state is not None:
+            try:
+                raw_step = state.attributes.get("step")
+                if raw_step is not None and float(raw_step) > 0:
+                    step = float(raw_step)
+            except (TypeError, ValueError):
+                pass
+        limit = self.limit_for(role)
+        toward_zero = -step if target_value > 0 else step
+        for candidate in (target_value + toward_zero, target_value - toward_zero):
+            if limit.known and limit.clamp(candidate) != candidate:
+                continue
+            return candidate
+        return None
 
     def limit_for(self, role: str) -> Limit:
         """Return the live writable bound a ``number`` role advertises.
@@ -550,6 +628,7 @@ class EntityControlDriver:
         mode_label: str = "Operating mode",
         sub_decode_role: str | None = None,
         sub_decode_map: Mapping[str, StorageMode] | None = None,
+        hass: HomeAssistant | None = None,
     ) -> None:
         """Wire the generic driver to one platform's data.
 
@@ -572,6 +651,9 @@ class EntityControlDriver:
             sub_decode_map: Maps the sub-state entity's string → StorageMode.
                 Consulted only when the primary decode is ``UNKNOWN`` (see
                 :meth:`decode_observed`).
+            hass: Home Assistant instance, used only to run this driver's
+                keep-alive heartbeat for ``keepalive`` plans. ``None`` leaves
+                the driver dependent on ``hold`` at the cycle boundary.
         """
         self._platform = platform
         self._actuator = actuator
@@ -582,6 +664,14 @@ class EntityControlDriver:
         self._mode_label = mode_label
         self._sub_decode_role = sub_decode_role
         self._sub_decode_map = dict(sub_decode_map or {})
+        # Serialises this driver's writes against its own heartbeat, which
+        # fires outside the control module's dispatch lock.
+        self._write_lock = asyncio.Lock()
+        self._held_plan: ControlPlan | None = None
+        self._keepalive = Heartbeat(
+            hass, _KEEPALIVE_INTERVAL, self._on_keepalive_beat,
+            f"{platform.value} forced-mode",
+        )
 
     @classmethod
     def from_context(
@@ -625,6 +715,7 @@ class EntityControlDriver:
             mode_label=mode_label,
             sub_decode_role=sub_decode_role,
             sub_decode_map=sub_decode_map,
+            hass=context.hass,
         )
 
     # --- Role contract -------------------------------------------------- #
@@ -704,9 +795,17 @@ class EntityControlDriver:
             return write
         return replace(write, value=clamped)
 
-    def needs_keepalive(self, spec: ControlPlan) -> bool:
-        """Return whether holding ``spec`` needs a periodic re-issue."""
-        return spec.keepalive
+    def shutdown(self) -> None:
+        """Stop the keep-alive heartbeat so no re-issue survives an unload."""
+        self._keepalive.stop()
+
+    async def _on_keepalive_beat(self) -> None:
+        """Re-issue the held plan's actuation on the heartbeat."""
+        async with self._write_lock:
+            plan = self._held_plan
+            if plan is None or not plan.keepalive:
+                return
+            await self._reissue(plan)
 
     def capability(self, now: datetime) -> InverterCapability:
         """Return an unconstrained capability — entity platforms don't map roles to legs yet.
@@ -755,13 +854,21 @@ class EntityControlDriver:
             "entity_control[%s]: apply_mode(%s, force=%s) — %d writes, %d services",
             self._platform.value, mode.value, force, len(spec.writes), len(spec.services),
         )
-        for write in spec.writes:
-            await self._actuator.apply_write(write, force=force)
-        for action in spec.services:
-            await self._actuator.call_service(action)
+        async with self._write_lock:
+            for write in spec.writes:
+                await self._actuator.apply_write(write, force=force)
+            for action in spec.services:
+                await self._actuator.call_service(action)
+            self._held_plan = spec
+            # Phase the heartbeat to this write; a persistent plan stops one a
+            # prior timed mode left running.
+            if spec.keepalive:
+                self._keepalive.start()
+            else:
+                self._keepalive.stop()
 
-    async def refresh_rc(self, spec: ControlPlan) -> None:
-        """Re-issue a volatile/timed mode's actuation; no-op for persistent modes.
+    async def hold(self, mode: StorageMode, spec: ControlPlan) -> None:
+        """Re-issue a timed mode's actuation at the cycle boundary; no-op otherwise.
 
         Only plans flagged ``keepalive`` re-run — their service calls (and
         forced entity writes) are reissued to re-arm a timed command before it
@@ -769,13 +876,24 @@ class EntityControlDriver:
         config and need nothing here.
 
         Args:
+            mode: The mode still being held (logging only).
             spec: The held plan.
         """
-        if not spec.keepalive:
-            return
-        for write in spec.writes:
+        async with self._write_lock:
+            self._held_plan = spec
+            if not spec.keepalive:
+                return
+            await self._reissue(spec)
+
+    async def _reissue(self, plan: ControlPlan) -> None:
+        """Force-apply every write and service call in ``plan``.
+
+        The re-arm body shared by ``hold`` and the heartbeat. Callers hold
+        ``_write_lock``.
+        """
+        for write in plan.writes:
             await self._actuator.apply_write(write, force=True)
-        for action in spec.services:
+        for action in plan.services:
             await self._actuator.call_service(action)
 
     def get_grid_power(self) -> float:

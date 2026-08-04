@@ -6,6 +6,26 @@ register-level details of the Solis writes themselves live in
 [`solis_control.md`](solis_control.md); the surrounding pipeline is in
 [`ARCHITECTURE.md`](ARCHITECTURE.md) and [`MODULES.md`](MODULES.md).
 
+> **Remote Dispatch (v0.4.0, Solis).** Where the install supports it —
+> `solis_modbus` exposes `solis_dispatch` *and* input register 34502 reads
+> `0xAA55` — the two forced modes (Discharge, GridCharge) are driven through the
+> inverter's Remote Dispatch block (44100–44112) instead of the Remote-Control
+> registers. The deadman moves into the inverter (`failsafe_minutes`, refreshed
+> by the ordinary holding tick) rather than a driver heartbeat racing a ~5-minute
+> firmware expiry, the writes are raw registers so neither the `number` entity's
+> same-value short-circuit nor its ±10 kW declared bound applies, and mode +
+> power + failsafe land as two atomic block writes. Passive modes keep the
+> register path unchanged. `sensor.sunsale_observed_inverter_mode` reports which
+> path is live as `control_path` (`dispatch` / `rc`). See
+> [`solis_dispatch_driver.py`](../custom_components/sun_sale/outbound/solis_dispatch_driver.py).
+>
+> **Warning: the 44100 block is a single-writer resource.** SolisCloud's EMS
+> drives the same registers. sunSale releases dispatch whenever a passive mode is
+> commanded, so the cloud can hold the fallback while sunSale is idle — but a
+> foreign write during a held forced mode surfaces as register drift and is
+> re-commanded by the reconcile path. Do not run both controllers over the same
+> slot.
+
 > **Capability seam (v0.2.0).** `driver.spec_for(mode)` returns an *effective*
 > spec — every target already reduced to what the hardware advertises it will
 > accept — so the value written and the value verified are the same number. Rows
@@ -31,20 +51,20 @@ Three rules govern dispatch in `InverterControlModule.tick`:
   write is recovered by the verify loop (below). A *drift* that appears after the verify window
   has closed is recovered by the slow reconciliation path (further below) — not by blind
   re-asserts every cycle.
-  *One deliberate exception:* RC-backed modes (non-zero `rc_setpoint_w`, i.e. GridCharge /
-  Discharge) refresh the RAM-only RC registers on a dedicated 3-minute heartbeat
-  (`_on_rc_keepalive_tick` → `InverterController.refresh_rc`, armed by `_force_write_and_verify`)
-  plus every holding tick as a secondary re-arm (`_maybe_refresh_rc`), because the inverter
-  expires the RC function within minutes of the last engaging write (register 43282's 30-min
-  request does not latch on S6 firmware). The flash-wear rationale doesn't apply to the RC group,
-  and the rolling timeout doubles as a deadman — if sunSale stops dispatching, the inverter falls
-  back to its base 43110 mode. The 43110 bitmask itself is still write-once.
-  **The keep-alive is deliberately not gated on `verify_state`.** It must keep running exactly
-  when the loop is least sure of itself: `unknown` means some *unrelated* control point is
-  unreadable (a solis_modbus register-group outage takes the battery-current entities down while
-  the RC registers answer fine), and `mismatch` is often the RC selector itself having reverted —
-  the very drop the re-arm repairs. Gating it on `ok` is what let a commanded Discharge expire a
-  few minutes in while every register still read "engaged".
+  *One deliberate exception:* every holding tick calls `driver.hold(target, spec)` — the
+  module's entire statement about liveness. **What holding costs is the driver's business.**
+  A platform whose mode is a written setting no-ops; Solis re-asserts the RAM-only RC registers
+  and, because the ~5-min RC expiry is faster than the 5-min cycle, runs its own 3-minute
+  `Heartbeat` (`outbound/heartbeat.py`) phased to each `apply_mode`. No keep-alive cadence or
+  flag appears in the neutral protocol; `InverterControlModule` holds no timer of its own beyond
+  the verify loop. The 43110 bitmask itself is still write-once.
+  **A driver's re-assert is deliberately not gated on `verify_state`** — the module does not even
+  pass it. A deadman must keep running exactly when the loop is least sure of itself: `unknown`
+  means some *unrelated* control point is unreadable (a solis_modbus register-group outage takes
+  the battery-current entities down while the RC registers answer fine), and `mismatch` is often
+  the RC selector itself having reverted — the very drop the re-arm repairs. Gating it on `ok` is
+  what let a commanded Discharge expire a few minutes in while every register still read
+  "engaged".
 - **Override bypasses `automation_enabled`.** When `coordinator.mode_override` is set, the
   dispatcher resolves the override as the target regardless of the automation switch. Operator
   intent always reaches the inverter (once, on the cycle it changes).
@@ -108,6 +128,12 @@ cycle where the resolved target differs from this stored value:
    window → keep polling. Mismatch past the window (first time) → log warning, force-rewrite,
    reset the window, resume polling. Mismatch past the second window → `verify_state =
    "mismatch"`, log error, stop. Worst-case time to verdict ≈ 60 s.
+   A **total readback blackout** (no row readable at all — an integration restart or reload)
+   takes the same one retry: `EntityActuator` swallows a service call against an unavailable
+   entity, so a command issued into that window is lost silently, and with nothing readable a
+   re-write is the only way to find out. A *partial* outage (some rows matching, others
+   unreadable) does not retry — the write demonstrably reached the inverter — and settles on
+   `unknown`.
 
 A new commanded change always supersedes any pending verify (cancel + reschedule).
 `sensor.sunsale_observed_inverter_mode` exposes `last_commanded_mode`, `last_commanded_at`,

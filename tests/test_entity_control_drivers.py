@@ -129,49 +129,42 @@ _PERSISTENT_MODES = [
 
 
 @pytest.mark.parametrize("name", list(_FACTORIES))
-def test_persistent_modes_never_need_keepalive(name: str) -> None:
+@pytest.mark.asyncio
+async def test_persistent_modes_hold_without_re_issuing(name: str) -> None:
     # SelfUse / FeedIn / NoExport / StandBy hold in non-volatile config on every
-    # platform — they must never request a periodic re-issue.
-    drv, _ = _driver(name)
+    # platform — holding one must cost nothing on the wire.
+    drv, hass = _driver(name)
     for mode in _PERSISTENT_MODES:
         spec = drv.spec_for(mode)
         assert spec is not None
-        assert drv.needs_keepalive(spec) is False
+        assert spec.keepalive is False
+        await drv.hold(mode, spec)
+    assert hass.services.async_call.await_count == 0
 
 
 @pytest.mark.parametrize("mode", [StorageMode.GridCharge, StorageMode.Discharge])
-def test_huawei_forced_modes_need_keepalive(mode: StorageMode) -> None:
-    # Huawei's forcible_charge/discharge are timed commands that lapse — they
-    # must be kept alive so a slot longer than the duration never stops forcing.
+def test_huawei_forced_modes_are_flagged_keepalive(mode: StorageMode) -> None:
+    # Huawei's forcible_charge/discharge are timed commands that lapse — the
+    # plan must be flagged so the driver re-arms it on hold and on its beat.
     drv, _ = _driver("huawei")
     spec = drv.spec_for(mode)
     assert spec is not None
-    assert drv.needs_keepalive(spec) is True
+    assert spec.keepalive is True
 
 
 @pytest.mark.asyncio
-async def test_huawei_refresh_rc_reissues_forcible_service() -> None:
-    # The keep-alive tick routes through refresh_rc; for a kept-alive plan it
-    # must re-issue the forcible service (the volatile command being re-armed).
+async def test_huawei_hold_reissues_forcible_service() -> None:
+    # Holding a timed mode re-issues the forcible service (the volatile command
+    # being re-armed) — the cycle-boundary half of the driver's liveness.
     drv, hass = _driver("huawei")
     spec = drv.spec_for(StorageMode.GridCharge)
     assert spec is not None
-    await drv.refresh_rc(spec)
+    await drv.hold(StorageMode.GridCharge, spec)
     calls = [c.args for c in hass.services.async_call.await_args_list]
     assert any(
         domain == "huawei_solar" and service == "forcible_charge"
         for domain, service, *_ in calls
     )
-
-
-@pytest.mark.asyncio
-async def test_entity_driver_persistent_refresh_rc_is_noop() -> None:
-    # A persistent (non-keepalive) plan must not re-issue anything on refresh.
-    drv, hass = _driver("solax")
-    spec = drv.spec_for(StorageMode.SelfUse)
-    assert spec is not None and drv.needs_keepalive(spec) is False
-    await drv.refresh_rc(spec)
-    assert hass.services.async_call.await_count == 0
 
 
 @pytest.mark.parametrize("name", list(_FACTORIES))

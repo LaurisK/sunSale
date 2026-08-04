@@ -100,6 +100,12 @@ def _coordinator_to_dict(entry_id: str, coordinator: Any) -> dict:
         "entry_id": entry_id,
         "timestamp": datetime.now(UTC).isoformat(),
         "automation_enabled": coordinator.automation_enabled,
+        # Which write path the driver picked for the forced modes (Solis:
+        # ``dispatch`` = Remote Dispatch block, ``rc`` = Remote-Control
+        # registers). Chosen once at setup from what the install supports, so
+        # without this a support question has no way to tell which control path
+        # a capture came from.
+        "control_path": getattr(coordinator, "control_path", None),
         "mode_override": (
             coordinator.mode_override.value
             if coordinator.mode_override is not None

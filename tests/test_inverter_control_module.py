@@ -18,7 +18,6 @@ from custom_components.sun_sale.contract.models import (
 from custom_components.sun_sale.outbound.inverter import RC_ADJUSTMENT_AC_PORT_VALUE
 from custom_components.sun_sale.outbound.inverter_control_module import (
     _DRIFT_RECONCILE_CYCLES,
-    _RC_KEEPALIVE_INTERVAL_S,
     _VERIFY_WINDOW_S,
     InverterControlModule,
 )
@@ -542,47 +541,6 @@ def call_later(monkeypatch):
     return sched
 
 
-class _TrackedInterval:
-    """Captures ``async_track_time_interval`` for RC keep-alive tests.
-
-    Records each registration's ``(interval, action)`` and counts cancels, so a
-    test can assert the heartbeat was armed at the right cadence, fire its
-    captured callback manually, and confirm it was cancelled.
-    """
-
-    def __init__(self) -> None:
-        self.calls: list[tuple[timedelta, object]] = []
-        self.cancels: int = 0
-
-    def __call__(self, _hass, action, interval, *args, **kwargs):
-        self.calls.append((interval, action))
-
-        def _cancel() -> None:
-            self.cancels += 1
-
-        return _cancel
-
-    @property
-    def interval(self):
-        return self.calls[-1][0] if self.calls else None
-
-    @property
-    def action(self):
-        return self.calls[-1][1] if self.calls else None
-
-
-@pytest.fixture
-def track_interval(monkeypatch):
-    """Patch ``async_track_time_interval`` in the control module for keep-alive tests."""
-    tracked = _TrackedInterval()
-    monkeypatch.setattr(
-        "custom_components.sun_sale.outbound.inverter_control_module."
-        "async_track_time_interval",
-        tracked,
-    )
-    return tracked
-
-
 @pytest.mark.asyncio
 async def test_commanded_change_force_writes_and_schedules_verify(call_later):
     inv = _mock_inverter()
@@ -868,6 +826,50 @@ async def test_single_drift_cycle_resets_counter_on_recovery(call_later):
 
 
 @pytest.mark.asyncio
+async def test_total_readback_blackout_retries_the_write(call_later):
+    """A command issued into an integration restart is re-written once.
+
+    Every row unreadable means the write itself probably never landed —
+    ``EntityActuator`` logs and swallows a service call against an unavailable
+    entity — so one re-write is the only way to find out. Seen live: a mode
+    commanded 10 s after an HA restart vanished silently and was never retried.
+    """
+    inv = _mock_inverter()  # every readback None → total blackout
+    mod = _module_with_hass(inv)
+    await mod.tick(
+        now=NOW, schedule=_schedule_with(StorageMode.Discharge),
+        reading=_reading(StorageMode.SelfUse, reg=1),
+        history=InverterModeHistory(samples=()), automation_enabled=True,
+    )
+    assert inv.apply_mode.await_count == 1
+    await call_later.last_callback(NOW + timedelta(seconds=31))
+    assert inv.apply_mode.await_count == 2  # blackout → one retry
+    assert mod.verify_state == "pending"
+    # Entities come back, matching the command → the retry confirms.
+    _wire_inverter_to_spec(inv, mod, StorageMode.Discharge)
+    await call_later.last_callback(NOW + timedelta(seconds=33))
+    assert mod.verify_state == "ok"
+
+
+@pytest.mark.asyncio
+async def test_partial_outage_does_not_retry(call_later):
+    """Some rows matching proves the write landed — no retry, verdict ``unknown``."""
+    inv = _mock_inverter()
+    mod = _module_with_hass(inv)
+    _wire_inverter_to_spec(inv, mod, StorageMode.Discharge)
+    inv.get_charge_current_a = MagicMock(return_value=None)
+    inv.get_discharge_current_a = MagicMock(return_value=None)
+    await mod.tick(
+        now=NOW, schedule=_schedule_with(StorageMode.Discharge),
+        reading=_reading(StorageMode.SelfUse, reg=1),
+        history=InverterModeHistory(samples=()), automation_enabled=True,
+    )
+    await call_later.last_callback(NOW + timedelta(seconds=31))
+    assert mod.verify_state == "unknown"
+    assert inv.apply_mode.await_count == 1
+
+
+@pytest.mark.asyncio
 async def test_drift_reconciles_from_unknown_verify_state(call_later):
     """One unreadable row must not disable drift recovery for the readable ones.
 
@@ -1047,96 +1049,6 @@ async def test_rc_refresh_runs_regardless_of_verify_state(call_later):
     assert mod.verify_state == "mismatch"
     await _hold_tick(mod, StorageMode.Discharge, minutes=10)
     assert inv.refresh_rc.await_count == 2
-
-
-@pytest.mark.asyncio
-async def test_rc_keepalive_armed_and_fires_on_engaged_rc_mode(call_later, track_interval):
-    """Engaging an RC mode arms a 3-min heartbeat that re-arms the RC function."""
-    inv = _mock_inverter()
-    mod = _module_with_hass(inv)
-    await _engage_ok(mod, inv, call_later)  # Discharge — RC-backed, verify ok
-    # Heartbeat armed at the documented cadence; no refresh yet (the initial
-    # apply already wrote a full RC window).
-    assert track_interval.interval == timedelta(seconds=_RC_KEEPALIVE_INTERVAL_S)
-    assert inv.refresh_rc.await_count == 0
-    # Fire the heartbeat → full re-arm of the held mode's RC registers.
-    await track_interval.action(NOW + timedelta(seconds=_RC_KEEPALIVE_INTERVAL_S))
-    assert inv.refresh_rc.await_count == 1
-    assert inv.refresh_rc.await_args.args[0] == mod._driver.spec_for(StorageMode.Discharge)
-
-
-@pytest.mark.asyncio
-async def test_rc_keepalive_fires_while_verify_unconfirmed(call_later, track_interval):
-    """The heartbeat re-arms whatever RC mode is commanded, confirmed or not.
-
-    Reproduces the live failure: a solis_modbus register-group outage takes the
-    battery-current entities down, so those rows read back ``unknown`` and
-    ``verify_state`` can never reach ``ok`` — while the RC registers answer
-    fine. The deadman must still fire, or the commanded Discharge expires
-    inverter-side within minutes.
-    """
-    inv = _mock_inverter()
-    mod = _module_with_hass(inv)
-    _wire_inverter_to_spec(inv, mod, StorageMode.Discharge)
-    # The two battery-current entities go unavailable → rows read ``unknown``.
-    inv.get_charge_current_a = MagicMock(return_value=None)
-    inv.get_discharge_current_a = MagicMock(return_value=None)
-    await mod.tick(
-        now=NOW, schedule=_schedule_with(StorageMode.Discharge),
-        reading=_reading(StorageMode.SelfUse, reg=1),
-        history=InverterModeHistory(samples=()), automation_enabled=True,
-    )
-    # Verify settles at "unknown": nothing read back wrong, but two targeted
-    # rows are unreadable, so the mode cannot be confirmed.
-    await call_later.last_callback(NOW + timedelta(seconds=31))
-    assert mod.verify_state == "unknown"
-    await track_interval.action(NOW + timedelta(seconds=_RC_KEEPALIVE_INTERVAL_S))
-    assert inv.refresh_rc.await_count == 1
-    assert inv.refresh_rc.await_args.args[0] == mod._driver.spec_for(StorageMode.Discharge)
-
-
-@pytest.mark.asyncio
-async def test_rc_keepalive_skips_when_no_rc_mode_commanded(call_later, track_interval):
-    """A heartbeat that fires after the commanded mode went non-RC re-arms nothing.
-
-    The cancel already stops the timer; this pins the second guard — the
-    heartbeat re-reads the commanded mode under the lock, so a beat queued
-    behind the mode change cannot re-arm the RC function sunSale just released.
-    """
-    inv = _mock_inverter()
-    mod = _module_with_hass(inv)
-    await _engage_ok(mod, inv, call_later, mode=StorageMode.Discharge)
-    stale_beat = track_interval.action
-    await _engage_ok(
-        mod, inv, call_later, mode=StorageMode.SelfUse, now=NOW + timedelta(minutes=15),
-    )
-    await stale_beat(NOW + timedelta(minutes=15, seconds=_RC_KEEPALIVE_INTERVAL_S))
-    assert inv.refresh_rc.await_count == 0
-
-
-@pytest.mark.asyncio
-async def test_rc_keepalive_cancelled_when_non_rc_mode_commanded(call_later, track_interval):
-    """Commanding a non-RC mode cancels the heartbeat left by an RC mode."""
-    inv = _mock_inverter()
-    mod = _module_with_hass(inv)
-    await _engage_ok(mod, inv, call_later, mode=StorageMode.Discharge)
-    assert track_interval.cancels == 0  # first arm: nothing to cancel yet
-    # Command SelfUse (rc_setpoint_w == 0) → keep-alive cancelled.
-    await _engage_ok(
-        mod, inv, call_later, mode=StorageMode.SelfUse, now=NOW + timedelta(minutes=15),
-    )
-    assert track_interval.cancels == 1
-
-
-@pytest.mark.asyncio
-async def test_shutdown_cancels_rc_keepalive(call_later, track_interval):
-    """Shutdown stops the heartbeat so no re-arm write fires post-unload."""
-    inv = _mock_inverter()
-    mod = _module_with_hass(inv)
-    await _engage_ok(mod, inv, call_later, mode=StorageMode.Discharge)
-    assert track_interval.cancels == 0
-    mod.shutdown()
-    assert track_interval.cancels == 1
 
 
 @pytest.mark.asyncio

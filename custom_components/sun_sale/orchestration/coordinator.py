@@ -425,6 +425,11 @@ class SunSaleCoordinator(DataUpdateCoordinator):
         # of outcome (no_target, no_spec, automation_disabled, ok, reconcile,
         # holding).
         self.last_dispatch_outcome: str | None = None
+        # Which write path the driver picked for the forced modes (Solis:
+        # ``dispatch`` vs ``rc``). Chosen once at setup from what the install
+        # actually supports, so it is otherwise invisible to an operator
+        # debugging a discharge.
+        self.control_path: str | None = None
         self.last_dispatch_target: str | None = None
         self.last_dispatch_tick_at: datetime | None = None
         self.automation_enabled_at_dispatch: bool | None = None
@@ -512,6 +517,7 @@ class SunSaleCoordinator(DataUpdateCoordinator):
         if module is None:
             return
         self.last_dispatch_outcome = module.last_dispatch_outcome
+        self.control_path = getattr(module.driver, "control_path", None)
         module_target = module.last_dispatch_target
         self.last_dispatch_target = (
             module_target.value if module_target is not None else None

@@ -15,14 +15,23 @@ the *adapter* layer knows about registers. The concrete driver today is
 The interface is split in two:
 
   * :class:`InverterDriver` — the minimal, fully platform-neutral surface: drive
-    a mode (``apply_mode``), keep a volatile mode alive (``refresh_rc``), and
-    read grid power. Nothing Solis-specific. ``InverterController`` (the Solis
-    register reader/writer) conforms structurally.
+    a mode (``apply_mode``), keep holding it (``hold``), release driver-owned
+    resources (``shutdown``), and read grid power. Nothing Solis-specific.
+    ``InverterController`` (the Solis register reader/writer) conforms
+    structurally.
   * :class:`InverterControlDriver` — adds the mode-composition + decoding the
-    control module orchestrates against: ``spec_for`` / ``needs_keepalive`` /
+    control module orchestrates against: ``spec_for`` /
     ``control_surface`` / ``decode_observed`` / ``observe`` /
     ``observed_raw_state``. All per-platform register knowledge lives behind
     these; the control module's verify/reconcile loop never names a register.
+
+**Liveness is a driver concern.** Platforms differ in whether a commanded mode
+persists at all: a written setting holds indefinitely, a Solis RC function
+expires in ~5 minutes, a Remote Dispatch failsafe in whatever it was told. The
+protocol therefore says only ``hold`` — "this is still the target" — and each
+driver decides what that costs, running its own :class:`..outbound.heartbeat.Heartbeat` when its
+hardware deadman is faster than the coordinator cycle. No keep-alive cadence,
+flag, or vocabulary appears in the neutral surface.
 
 Both interfaces deliberately exclude **battery telemetry** (SoC, battery power,
 charge/discharge energy) — that lives in
@@ -126,9 +135,9 @@ class InverterDriver(Protocol):
 
     ``spec`` is an **opaque** per-platform token (typed ``Any``): the generic
     layer obtains one from :meth:`InverterControlDriver.spec_for` and hands it
-    straight back to ``apply_mode`` / ``refresh_rc`` / ``needs_keepalive``
-    without inspecting it. Its concrete shape (Solis: a register tuple) lives in
-    the driver's own module, never in ``contract/``.
+    straight back to ``apply_mode`` / ``hold`` without inspecting it. Its
+    concrete shape (Solis: a register tuple) lives in the driver's own module,
+    never in ``contract/``.
     """
 
     # --- Write side ----------------------------------------------------- #
@@ -146,15 +155,33 @@ class InverterDriver(Protocol):
         """
         ...
 
-    async def refresh_rc(self, spec: Any) -> None:
-        """Re-arm any volatile keep-alive the held mode needs (no-op if none).
+    async def hold(self, mode: StorageMode, spec: Any) -> None:
+        """Signal that ``mode`` is still the target; re-assert if the platform needs it.
 
-        On Solis this re-issues the Remote-Control function before its deadman
-        timeout expires; platforms without a volatile setpoint implement this
-        as a no-op.
+        Called once per cycle on a holding tick — the control module's only
+        statement about liveness, and deliberately its last word on the subject.
+        **Whether holding costs anything is the platform's business:** a driver
+        whose mode is a written setting no-ops here; one whose hold is volatile
+        re-asserts, and if the cycle is too slow to beat its hardware deadman it
+        runs its own :class:`..outbound.heartbeat.Heartbeat` at whatever
+        cadence that deadman demands. Neither the cadence nor the existence of a keep-alive appears
+        in this protocol.
+
+        Must be safe to call on every cycle, including immediately after
+        ``apply_mode``.
 
         Args:
-            spec: Opaque per-platform spec of the currently held mode.
+            mode: The mode still being held.
+            spec: Opaque per-platform spec for ``mode``.
+        """
+        ...
+
+    def shutdown(self) -> None:
+        """Release any driver-owned resources (timers, tasks). Idempotent.
+
+        Called when the config entry unloads. A driver holding a
+        :class:`..outbound.heartbeat.Heartbeat` stops it here so no re-assert
+        write fires against a torn-down entry.
         """
         ...
 
@@ -180,8 +207,8 @@ class InverterControlDriver(InverterDriver, Protocol):
     def spec_for(self, mode: StorageMode) -> Any | None:
         """Return the opaque per-platform *effective* spec for ``mode``, or ``None``.
 
-        The returned token is passed back to ``apply_mode`` / ``refresh_rc`` /
-        ``needs_keepalive`` uninspected by the generic layer.
+        The returned token is passed back to ``apply_mode`` / ``hold``
+        uninspected by the generic layer.
 
         **Effective is part of the contract.** Every target in the returned spec
         must already be reduced to what the hardware advertises it will accept,
@@ -199,18 +226,6 @@ class InverterControlDriver(InverterDriver, Protocol):
         Diagnostic counterpart to ``spec_for``: comparing the two shows where the
         hardware's advertised bounds fall short of what the planner asked for.
         Never handed to ``apply_mode``.
-        """
-        ...
-
-    def needs_keepalive(self, spec: Any) -> bool:
-        """Return whether holding ``spec`` requires a periodic volatile keep-alive.
-
-        Lets the control module gate its keep-alive timer without inspecting any
-        platform-specific spec field. Solis returns ``True`` for RC-backed modes;
-        platforms with no volatile state return ``False``.
-
-        Args:
-            spec: Opaque per-platform spec (from ``spec_for``).
         """
         ...
 

@@ -59,7 +59,7 @@ from datetime import datetime, timedelta
 from typing import Any
 
 from homeassistant.core import HomeAssistant, callback
-from homeassistant.helpers.event import async_call_later, async_track_time_interval
+from homeassistant.helpers.event import async_call_later
 
 from ..contract.models import (
     InverterModeChange,
@@ -89,22 +89,11 @@ _VERIFY_WINDOW_S = 30
 # Slow drift-reconciliation threshold. Once the verify loop has settled (``ok``,
 # or ``unknown`` when some targeted row is unreadable), the registers are
 # re-checked every coordinator tick. If they disagree with the commanded spec
-# for this many
-# *consecutive* ticks, the mode is re-commanded. Two ticks (~5 min cadence →
-# ~10 min) debounces a single transient readback glitch while still catching a
+# for this many *consecutive* ticks, the mode is re-commanded. Two ticks
+# (~5 min cadence → ~10 min) debounces a single transient readback glitch while still catching a
 # real drift — an inverter-screen change or a register that slipped — long
 # after the verify loop's ~60 s window has closed.
 _DRIFT_RECONCILE_CYCLES = 2
-
-# RC keep-alive cadence (seconds). The Solis RC active-power function expires
-# ~5 min after the last *engaging* write — register 43282's 30-min request
-# does not latch on S6 firmware (Pho3niX90/solis_modbus#352), so the inverter
-# uses its ~5-min default. A 2026-06-15 production capture measured grid export
-# collapsing ~4–5 min into a held discharge, which the 5-min coordinator tick
-# is too slow to beat. A dedicated heartbeat re-arms the function (full
-# selector→timeout→setpoint rewrite via ``refresh_rc``) every 3 min — ~2 min of
-# margin under the ~5-min expiry — independent of the tick cadence.
-_RC_KEEPALIVE_INTERVAL_S = 180
 
 
 class InverterControlModule:
@@ -192,29 +181,19 @@ class InverterControlModule:
         # across each path's full plan→act→verify-arm body makes the last write
         # win and keeps the commanded mode and its verify in lockstep.
         self._dispatch_lock = asyncio.Lock()
-        # RC keep-alive heartbeat. A dedicated timer re-arms the inverter-side
-        # RC function every ``_RC_KEEPALIVE_INTERVAL_S`` while an RC-backed mode
-        # is the commanded target — armed in ``_force_write_and_verify`` when
-        # the commanded spec carries an RC setpoint, cancelled when a non-RC
-        # mode is commanded or on shutdown. It supersedes the 5-min tick's
-        # ``_maybe_refresh_rc`` for liveness (the tick is too slow to beat the
-        # ~5-min RC expiry); the tick refresh is kept as a secondary re-arm at
-        # cycle boundaries. Holds ``_rc_keepalive_cancel``, the unsubscribe
-        # from ``async_track_time_interval``.
-        self._rc_keepalive_cancel: Callable[[], None] | None = None
 
     @callback
     def shutdown(self) -> None:
         """Tear down the module so no callbacks survive a config-entry unload.
 
-        Cancels any pending ``async_call_later`` verify-tick and drops the
+        Cancels any pending ``async_call_later`` verify-tick, tears the driver
+        down (which stops whatever liveness timer it owns), and drops the
         ``on_state_change`` callback. Without this, a verify-tick scheduled
         before unload would still fire afterwards and its retry path would
-        issue real switch/number service calls against the (still-valid)
-        solis_modbus entities — ghost Modbus writes from a torn-down entry —
-        while ``_notify_state_change`` would push into a coordinator that has
-        already been removed from ``hass.data``. Idempotent: safe to call
-        more than once.
+        issue real service calls against the (still-valid) upstream entities —
+        ghost writes from a torn-down entry — while ``_notify_state_change``
+        would push into a coordinator that has already been removed from
+        ``hass.data``. Idempotent: safe to call more than once.
         """
         if self._verify_cancel is not None:
             try:
@@ -225,7 +204,9 @@ class InverterControlModule:
                     exc_info=True,
                 )
             self._verify_cancel = None
-        self._cancel_rc_keepalive()
+        # The driver may hold its own liveness timer (a volatile-hold platform's
+        # heartbeat). Only it knows whether there is one to stop.
+        self._driver.shutdown()
         self._on_state_change = None
 
     async def tick(
@@ -356,6 +337,16 @@ class InverterControlModule:
             self._last_dispatch_outcome = outcome
             self._last_dispatch_target = target
             self._register_status = self._build_register_status()
+
+    @property
+    def driver(self) -> InverterControlDriver:
+        """Return the platform control driver this module dispatches through.
+
+        Exposed for diagnostics only (the coordinator mirrors driver-reported
+        labels onto its sensor attributes); the control flow itself never
+        reaches around the module to touch the driver.
+        """
+        return self._driver
 
     @property
     def last_dispatch_outcome(self) -> str | None:
@@ -623,7 +614,7 @@ class InverterControlModule:
                     "inverter_control: %s re-converged after %s — "
                     "verify_state back to ok", target.value, previous,
                 )
-                await self._maybe_refresh_rc(spec)
+                await self._driver.hold(target, spec)
                 return ("holding", target)
             reason = self._reconcile_reason(drifted)
             if reason is None:
@@ -632,7 +623,7 @@ class InverterControlModule:
                     "change — observe + verify only)",
                     target.value, source,
                 )
-                await self._maybe_refresh_rc(spec)
+                await self._driver.hold(target, spec)
                 return ("holding", target)
             _LOGGER.warning(
                 "inverter_control: reconciling %s (source=%s, %s) — "
@@ -693,91 +684,6 @@ class InverterControlModule:
         self._consecutive_drift_cycles = 0
         return None
 
-    async def _maybe_refresh_rc(self, spec: Any) -> None:
-        """Refresh the RC deadman registers while holding an RC-backed mode.
-
-        The inverter expires the RC function a few minutes after the last
-        engaging write, so a held GridCharge / Discharge must be re-asserted —
-        the write-once rule deliberately does not apply to the RAM-only RC
-        registers. The secondary re-arm at cycle boundaries; the primary is
-        ``_on_rc_keepalive_tick``'s 3-min heartbeat.
-
-        **Deliberately not gated on ``verify_state``.** The deadman must keep
-        running exactly when the loop is *least* sure of itself: ``unknown``
-        means some unrelated control point is unreadable (a solis_modbus
-        register-group outage takes the battery-current entities down while the
-        RC registers keep answering fine), and ``mismatch`` is often the RC
-        selector itself having reverted — the very drop this re-arm exists to
-        repair. Gating on ``ok`` made an unrelated stuck or unreadable row
-        silently disable the keep-alive, which is what let a commanded Discharge
-        expire ~5 min in while every register still read "engaged".
-
-        Args:
-            spec: Spec of the held mode; ``refresh_rc`` no-ops unless the mode
-                needs a keep-alive (Solis: a non-zero RC setpoint).
-        """
-        await self._driver.refresh_rc(spec)
-
-    def _arm_rc_keepalive(self) -> None:
-        """(Re)start the RC keep-alive heartbeat for the commanded RC mode.
-
-        Cancels any running heartbeat and schedules a fresh
-        ``async_track_time_interval`` at ``_RC_KEEPALIVE_INTERVAL_S`` so the
-        timer is anchored to the most recent full RC write. No-op when ``hass``
-        is ``None`` (unit-test wiring without a real event loop) — the module
-        then degrades to the 5-min tick's ``_maybe_refresh_rc`` only.
-        """
-        self._cancel_rc_keepalive()
-        if self._hass is None:
-            return
-        self._rc_keepalive_cancel = async_track_time_interval(
-            self._hass,
-            self._on_rc_keepalive_tick,
-            timedelta(seconds=_RC_KEEPALIVE_INTERVAL_S),
-        )
-
-    def _cancel_rc_keepalive(self) -> None:
-        """Cancel the RC keep-alive heartbeat if one is running. Idempotent."""
-        if self._rc_keepalive_cancel is not None:
-            try:
-                self._rc_keepalive_cancel()
-            except Exception:  # noqa: BLE001 — cancel must never raise
-                _LOGGER.debug(
-                    "inverter_control: RC keep-alive cancel raised — ignoring",
-                    exc_info=True,
-                )
-            self._rc_keepalive_cancel = None
-
-    async def _on_rc_keepalive_tick(self, now: datetime) -> None:
-        """Re-arm the inverter-side RC function on the keep-alive heartbeat.
-
-        Fired by ``async_track_time_interval`` every ``_RC_KEEPALIVE_INTERVAL_S``
-        while an RC-backed mode is commanded. Holds the dispatch lock so the
-        re-arm write can't interleave with a mode change or a verify retry, and
-        re-reads the commanded mode *under* the lock so a heartbeat queued
-        behind an in-flight command re-arms the mode that command left in
-        place — never a stale one.
-
-        The only condition is that the commanded mode still needs a keep-alive:
-        the heartbeat is a deadman, and ``verify_state`` says nothing about
-        whether the volatile function is about to expire. See
-        ``_maybe_refresh_rc`` for why gating this on ``ok`` was the bug.
-
-        Args:
-            now: Heartbeat time from HA; unused — the re-arm is stateless.
-        """
-        async with self._dispatch_lock:
-            commanded = self._last_commanded_mode
-            if commanded is None:
-                return
-            spec = self._driver.spec_for(commanded)
-            if spec is None or not self._driver.needs_keepalive(spec):
-                return
-            _LOGGER.debug(
-                "inverter_control: RC keep-alive re-arming %s", commanded.value,
-            )
-            await self._driver.refresh_rc(spec)
-
     def _registers_drifted(self) -> bool:
         """Return whether the last-commanded mode's registers have drifted.
 
@@ -831,13 +737,6 @@ class InverterControlModule:
         self._reassert_next = False
         self._consecutive_drift_cycles = 0
         self._last_applied_mode = target
-        # Anchor the RC keep-alive to this full write: an RC-backed target gets
-        # a fresh 3-min heartbeat; a non-RC target stops any heartbeat left
-        # running by a prior RC mode (the function is released by apply_mode).
-        if self._driver.needs_keepalive(spec):
-            self._arm_rc_keepalive()
-        else:
-            self._cancel_rc_keepalive()
         _LOGGER.info(
             "inverter_control: dispatched %s (source=%s, force-write, "
             "first verify in %ds, polling every %ds up to %ds)",
@@ -1049,13 +948,23 @@ class InverterControlModule:
                 self._notify_state_change()
                 return
 
-            # Window exhausted. A retry is only worth issuing when something was
-            # actually read back wrong — re-writing a register we cannot read
-            # tells us nothing new and would just restart the window.
-            if mismatched and not self._verify_retried:
+            # Window exhausted. Retry when something was actually read back
+            # wrong — or when *nothing at all* could be read. The latter is a
+            # total readback blackout (an integration restart or reload), and it
+            # is the one case where "unreadable" also implies the write itself
+            # was probably lost: ``EntityActuator`` logs and swallows a service
+            # call against an unavailable entity, so a command issued into that
+            # window vanishes silently. With no row confirming anything, one
+            # re-write is the only way to find out. A partial outage — some rows
+            # matching, others unreadable — proves the write reached the
+            # inverter, so re-issuing it there would tell us nothing new.
+            blackout = not any(r.status == "match" for r in rows)
+            if (mismatched or blackout) and not self._verify_retried:
                 _LOGGER.warning(
-                    "inverter_control: verify mismatch after %.0fs — "
+                    "inverter_control: verify %s after %.0fs — "
                     "commanded=%s mismatched=%s; re-issuing force-write",
+                    "readback blackout" if blackout and not mismatched
+                    else "mismatch",
                     elapsed, commanded.value, mismatched,
                 )
                 self._verify_retried = True

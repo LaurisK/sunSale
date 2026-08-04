@@ -40,7 +40,7 @@ Known gaps / weak spots
   * **Keepalive (handled).** ``forcible_charge`` / ``forcible_discharge`` take a
     duration and stop when it lapses. GridCharge / Discharge therefore carry
     ``keepalive=True``: the control module re-issues the service from
-    ``refresh_rc`` every RC keep-alive tick while the mode is held, so a slot
+    ``hold`` — and the driver's own heartbeat — while the mode is held, so a slot
     longer than the duration never silently stops forcing. The requested
     duration is deliberately short (a deadman — see ``_FORCIBLE_DURATION_MIN``)
     so the inverter reverts on its own if sunSale stops dispatching. The one
@@ -72,7 +72,7 @@ _WM_FULLY_FED = "Fully fed to grid"
 
 # Duration requested for a forcible charge/discharge. This is a *deadman*, not a
 # slot length: the GridCharge / Discharge plans carry ``keepalive=True``, so the
-# control module re-issues the service every RC keep-alive tick (~3 min) while
+# driver re-issues the service on its own heartbeat (~3 min) while
 # the mode is held — the command never lapses mid-slot. Keeping the duration
 # short (well above the re-issue cadence, far below a slot) bounds how long the
 # inverter keeps forcing if sunSale stops dispatching entirely (crash / restart),

@@ -63,8 +63,11 @@ HA_IMPORT_ALLOWLIST = {
     "inbound/platform_profiles.py",
     "inbound/solis_entity_resolver.py",
     "outbound/entity_control.py",
+    "outbound/heartbeat.py",
     "outbound/inverter_control_module.py",
     "outbound/inverter.py",
+    "outbound/solis_dispatch_driver.py",
+    "outbound/solis_driver.py",
 }
 
 

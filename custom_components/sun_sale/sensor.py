@@ -585,6 +585,7 @@ class ObservedInverterModeSensor(_BaseSensor):
             "last_dispatched_action": target,
             "last_dispatched_at": dispatched_at.isoformat() if dispatched_at else None,
             "mode_override": override.value if override is not None else None,
+            "control_path": self.coordinator.control_path,
             "last_dispatch_outcome": self.coordinator.last_dispatch_outcome,
             "last_dispatch_target": self.coordinator.last_dispatch_target,
             "last_dispatch_tick_at": tick_at.isoformat() if tick_at else None,

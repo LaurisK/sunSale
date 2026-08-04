@@ -125,3 +125,40 @@ jobs:
           # so the brands check would fail. Temporary, documented exception —
           # remove once the domain is submitted upstream.
           ignore: brands
+
+  upstream-contract:
+    name: solis_modbus contract
+    runs-on: ubuntu-latest
+    # sunSale's Remote Dispatch path calls another integration's services and
+    # resolves its entities by unique-id slug. Neither is a versioned API, and a
+    # rename there fails *silently* at runtime (the service call is rejected and
+    # swallowed by the "log, don't propagate" write rule) — so it is checked
+    # here instead, against both the latest release and master. `master` is
+    # allowed to fail: it is an early warning about an unreleased change, not a
+    # reason to block a sunSale PR.
+    strategy:
+      fail-fast: false
+      matrix:
+        ref: [latest-release, master]
+    continue-on-error: ${{ matrix.ref == 'master' }}
+    steps:
+      - uses: actions/checkout@v4
+      - uses: actions/setup-python@v5
+        with:
+          python-version: "3.12"
+      - name: Install test dependencies
+        run: pip install pytest pytest-asyncio pyyaml
+      - name: Check out solis_modbus
+        run: |
+          git clone --quiet https://github.com/Pho3niX90/solis_modbus.git upstream-solis
+          cd upstream-solis
+          if [ "${{ matrix.ref }}" = "latest-release" ]; then
+            tag="$(git describe --tags "$(git rev-list --tags --max-count=1)")"
+            echo "Checking out latest release tag: $tag"
+            git checkout --quiet "$tag"
+          fi
+          git log -1 --oneline
+      - name: Run the contract guard
+        env:
+          SOLIS_MODBUS_PATH: ${{ github.workspace }}/upstream-solis
+        run: pytest -q tests/test_solis_modbus_contract.py -p no:cacheprovider

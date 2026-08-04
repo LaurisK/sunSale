@@ -54,12 +54,14 @@ class _Hass:
 _ROLES = {
     "battery_max_charge_current": "number.solis_battery_max_charge_current",
     "rc_setpoint": "number.solis_rc_active_power",
+    "rc_timeout": "number.solis_rc_timeout",
     "mode_select": "select.solis_rc_grid_adjustment",
     "self_use_switch": "switch.solis_self_use_mode",
 }
 
 _CHARGE_ENTITY = _ROLES["battery_max_charge_current"]
 _RC_ENTITY = _ROLES["rc_setpoint"]
+_TIMEOUT_ENTITY = _ROLES["rc_timeout"]
 
 
 def _actuator(states: dict[str, _State] | None = None) -> tuple[EntityActuator, _Hass]:
@@ -159,6 +161,55 @@ async def test_back_in_range_target_rearms_the_warning(
         await act.set_number("battery_max_charge_current", 100.0, force=True)
         await act.set_number("battery_max_charge_current", 292.96875, force=True)
     assert len([r for r in caplog.records if r.levelno == logging.WARNING]) == 2
+
+
+# --- Renew (deadman re-arm must reach the device) ---------------------------- #
+
+
+@pytest.mark.asyncio
+async def test_renew_nudges_when_the_register_already_holds_the_target() -> None:
+    """An unchanged value is dropped one layer down, so write a neighbour first.
+
+    ``SolisNumberEntity.set_native_value`` returns early when the value equals
+    what the entity already holds, so sunSale's ``force`` — which only bypasses
+    sunSale's own readback comparison — never reached the inverter. For an RC
+    keep-alive the write *is* the signal, and "value unchanged" is exactly the
+    steady state being kept alive.
+    """
+    act, hass = _actuator({_RC_ENTITY: _State("10000", min=-10000, max=10000, step=10)})
+    await act.set_number("rc_setpoint", 10000.0, force=True, renew=True)
+    # One step toward zero, then the real target.
+    assert _number_writes(hass) == [(_RC_ENTITY, 9990.0), (_RC_ENTITY, 10000.0)]
+
+
+@pytest.mark.asyncio
+async def test_renew_does_not_nudge_when_the_value_actually_changes() -> None:
+    act, hass = _actuator({_RC_ENTITY: _State("0", min=-10000, max=10000, step=10)})
+    await act.set_number("rc_setpoint", 10000.0, force=True, renew=True)
+    assert _number_writes(hass) == [(_RC_ENTITY, 10000.0)]
+
+
+@pytest.mark.asyncio
+async def test_renew_nudge_stays_inside_the_advertised_bounds() -> None:
+    """A target pinned at the floor nudges upward, never below ``min``."""
+    act, hass = _actuator({_RC_ENTITY: _State("-10000", min=-10000, max=10000, step=10)})
+    await act.set_number("rc_setpoint", -10000.0, force=True, renew=True)
+    assert _number_writes(hass) == [(_RC_ENTITY, -9990.0), (_RC_ENTITY, -10000.0)]
+
+
+@pytest.mark.asyncio
+async def test_renew_on_a_pinned_single_value_range_writes_target_only() -> None:
+    """No in-range neighbour exists — write the target and accept the drop."""
+    act, hass = _actuator({_TIMEOUT_ENTITY: _State("30", min=30, max=30, step=1)})
+    await act.set_number("rc_timeout", 30.0, force=True, renew=True)
+    assert _number_writes(hass) == [(_TIMEOUT_ENTITY, 30.0)]
+
+
+@pytest.mark.asyncio
+async def test_renew_without_bounds_uses_the_step_attribute() -> None:
+    act, hass = _actuator({_TIMEOUT_ENTITY: _State("30", step=1)})
+    await act.set_number("rc_timeout", 30.0, force=True, renew=True)
+    assert _number_writes(hass) == [(_TIMEOUT_ENTITY, 29.0), (_TIMEOUT_ENTITY, 30.0)]
 
 
 # --- Failure isolation ------------------------------------------------------ #

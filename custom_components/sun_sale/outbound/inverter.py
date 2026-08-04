@@ -435,12 +435,14 @@ class InverterController:
                 RC_TIMEOUT_MINUTES,
                 tolerance_a=_NUMBER_WRITE_EPSILON,
                 force=force,
+                renew=force,
             )
             await self._set_number(
                 "rc_setpoint",
                 float(spec.rc_setpoint_w),
                 tolerance_a=_NUMBER_WRITE_EPSILON,
                 force=force,
+                renew=force,
             )
         else:
             # Zero the setpoint while the function is still engaged, then
@@ -459,17 +461,23 @@ class InverterController:
         """Re-arm the inverter-side RC function while an RC-backed mode is held.
 
         The RC active-power function expires ~5 min after the last *engaging*
-        write: register 43282's 30-min request does not latch on S6 firmware
-        (Pho3niX90/solis_modbus#352), so the inverter falls back to its ~5-min
-        default. Crucially, a setpoint-only rewrite does **not** restart an
-        already-expired function — only re-issuing the selector (43132) re-arms
-        it. A 2026-06-15 production capture confirmed this: periodic
-        setpoint+timeout rewrites that skipped the selector left grid export
-        collapsed ~4 min into a held discharge while every register still read
-        "engaged". So this rewrites the full engage sequence (selector →
-        timeout → setpoint, all forced) on every keep-alive, exactly like
-        ``apply_mode``'s RC block. The RC registers are RAM-only, so the
-        repeated writes cause no flash wear.
+        write: register 43282's 30-min request does not latch unless the RC
+        force-charge/discharge enable (43135) is written first
+        (Pho3niX90/solis_modbus#352), and sunSale drives the AC-grid-port
+        setpoint path instead — so the inverter falls back to its ~5-min
+        default. A 2026-08-04 production capture measured export collapsing at
+        exactly 5 min 08 s into a held discharge while 43110 / 43128 / 43132 all
+        still read "engaged"; the registers themselves only reverted ~10 min in.
+
+        So this rewrites the full engage sequence (selector → timeout →
+        setpoint) on every keep-alive, exactly like ``apply_mode``'s RC block,
+        with ``renew=True`` on the numbers: solis_modbus drops a ``number``
+        write whose value equals the register's current one, which made every
+        "forced" setpoint/timeout re-arm a silent no-op and left the selector
+        write as the only one reaching the wire. That is also what the
+        2026-06-15 capture actually showed — the setpoint rewrites it recorded
+        as ineffective had never been sent. The RC registers are RAM-only, so
+        the repeated writes cause no flash wear.
 
         Args:
             spec: Spec of the currently held mode; no-op unless it carries a
@@ -491,12 +499,14 @@ class InverterController:
             RC_TIMEOUT_MINUTES,
             tolerance_a=_NUMBER_WRITE_EPSILON,
             force=True,
+            renew=True,
         )
         await self._set_number(
             "rc_setpoint",
             float(spec.rc_setpoint_w),
             tolerance_a=_NUMBER_WRITE_EPSILON,
             force=True,
+            renew=True,
         )
 
     # ------------------------------------------------------------------ #
@@ -556,6 +566,7 @@ class InverterController:
         target_value: float,
         tolerance_a: float,
         force: bool = False,
+        renew: bool = False,
     ) -> None:
         """Write a number entity only when its readback differs by more than tolerance.
 
@@ -565,9 +576,13 @@ class InverterController:
             tolerance_a: Absolute tolerance under which the write is skipped.
             force: When ``True``, skip the readback comparison and always
                 issue the underlying ``number.set_value`` service call.
+            renew: When ``True``, make the write reach the inverter even when
+                the register already holds the target — solis_modbus drops a
+                same-value ``number`` write, which silently voided every RC
+                deadman re-arm. See ``EntityActuator._renew_nudge``.
         """
         await self._actuator.set_number(
-            role, target_value, tolerance=tolerance_a, force=force,
+            role, target_value, tolerance=tolerance_a, force=force, renew=renew,
         )
 
     async def _set_select(

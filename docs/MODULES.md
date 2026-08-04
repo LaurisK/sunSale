@@ -120,6 +120,8 @@ flowchart TB
         O_fac["driver_factory.py<br/>make_inverter_driver (dispatch)"]:::out
         O_icm["inverter_control_module.py<br/>observe→plan→act→verify→reconcile"]:::out
         O_solisdrv["solis_driver.py<br/>SolisDriver (register-level)"]:::out
+        O_disp["solis_dispatch_driver.py<br/>SolisDispatchDriver (44100 block)"]:::out
+        O_hb["heartbeat.py<br/>driver-owned liveness timer"]:::out
         O_spec["storage_mode_specs.py<br/>build_specs / decode_mode"]:::out
         O_inv["inverter.py<br/>InverterController (Solis read/write)"]:::out
         O_entity["entity_control.py<br/>EntityControlDriver"]:::out
@@ -391,16 +393,29 @@ Builds a per-price-slot cost series for the live window `[yday_start, now)` and 
 HA-write + actuation. Platform-specific control lives behind the `InverterControlDriver` seam (`driver.py`); only `inverter.py` and the entity-driven drivers call HA services. `inverter_control_module.py` is the driver-neutral post-DAG observer/dispatcher.
 
 ### `outbound/driver.py`
-The platform-neutral control seam. `InverterDriver` — minimal surface (`apply_mode`, `refresh_rc`, read grid power); `InverterControlDriver` — adds what the control module orchestrates against (`spec_for` / `needs_keepalive` / `control_surface` / `decode_observed` / `observe`). `ControlRow` is the neutral intended-vs-observed panel row. No register/entity knowledge — both concrete drivers conform structurally. Battery telemetry is deliberately excluded (lives in `inbound/battery_source.py`).
+The platform-neutral control seam. `InverterDriver` — minimal surface (`apply_mode`, `hold`, `shutdown`, read grid power); `InverterControlDriver` — adds what the control module orchestrates against (`spec_for` / `control_surface` / `decode_observed` / `observe` / `capability`). `ControlRow` is the neutral intended-vs-observed panel row. No register/entity knowledge — both concrete drivers conform structurally. Battery telemetry is deliberately excluded (lives in `inbound/battery_source.py`). **Liveness is a driver concern:** the protocol says only `hold` ("still the target"); no keep-alive cadence or flag appears here, and the timer machinery lives in `heartbeat.py` so this contract module stays free of HA imports.
 - **Exposes:** `InverterDriver`, `InverterControlDriver`, `ControlRow`.
 - **Depends on:** `contract.models`.
 - **Tests:** exercised via `tests/test_solis_driver.py`, `tests/test_entity_control_drivers.py`, `tests/test_inverter_control_module.py`.
 
 ### `outbound/driver_factory.py`
-`make_inverter_driver(...)` — the single platform dispatch point. Solis → `SolisDriver`; Huawei / SolaX / Sungrow / GoodWe / Deye → `EntityControlDriver` (lazy-imported per platform); notes-only / unknown → telemetry-only `SolisDriver` wrapper (no-op `apply_mode`). Adding a platform is a new row here plus its `*_driver.py`.
+`make_inverter_driver(...)` — the single platform dispatch point. Solis → `SolisDispatchDriver` when the install supports Remote Dispatch, else `SolisDriver`; Huawei / SolaX / Sungrow / GoodWe / Deye → `EntityControlDriver` (lazy-imported per platform); notes-only / unknown → telemetry-only `SolisDriver` wrapper (no-op `apply_mode`). Adding a platform is a new row here plus its `*_driver.py`.
 - **Exposes:** `make_inverter_driver`.
 - **Depends on:** `outbound.{driver, entity_control, inverter, solis_driver}`, the vendor `*_driver` modules (lazy), `contract.models`.
 - **Tests:** `tests/test_solis_driver.py`, `tests/test_entity_control_drivers.py`.
+
+### `outbound/heartbeat.py`
+`Heartbeat` — the repeating timer a driver instantiates when its hardware deadman is faster than the coordinator cycle (Solis RC: ~5 min expiry vs a 5-min tick). Deliberately *not* in `driver.py`: that module is the neutral contract and stays HA-import-free, while this is concrete machinery only some drivers need. A failed beat is logged, never fatal — the timer survives to retry.
+- **Exposes:** `Heartbeat`.
+- **Depends on:** `homeassistant.helpers.event`.
+- **Tests:** exercised via `tests/test_solis_driver.py`.
+
+### `outbound/solis_dispatch_driver.py`
+`SolisDispatchDriver` — wraps `SolisDriver` and routes the two **forced** modes (Discharge → `grid_export`, GridCharge → `grid_import`) through the inverter's Remote Dispatch block (44100–44112) via `solis_modbus`'s `solis_dispatch` service. Why: the deadman becomes sunSale's to size (`failsafe_minutes`, refreshed by the ordinary holding tick) instead of racing a ~5-min RC expiry that 43282 cannot extend; the writes are raw registers, so neither the `number` entity's same-value short-circuit nor its declared ±10 kW applies; and mode + power + failsafe land atomically. RC is stood down (`rc_setpoint_w=0`) whenever dispatch drives — two mechanisms must never hold power at once. Passive modes and every read delegate to the wrapped driver. Selection is gated by `dispatch_supported()` (service present **and** register 34502 = `0xAA55`), so unsupported installs keep the RC path silently.
+- **Exposes:** `SolisDispatchDriver`, `dispatch_supported`, `SERVICE_DISPATCH`, `DISPATCH_CAPABLE_MAGIC`.
+- **Depends on:** `outbound.{driver, solis_driver, storage_mode_specs}`, `contract.models`, HA services.
+- **Tests:** `tests/test_solis_dispatch_driver.py`; the upstream service/entity contract is guarded by `tests/test_solis_modbus_contract.py`.
+- **Caveat:** the 44100 block is a **single-writer resource** — SolisCloud's EMS drives the same registers.
 
 ### `outbound/inverter.py`
 `InverterController` + `InverterPlatform` enum. Reads live SoC / battery power / grid power (via the telemetry reader / codec it owns), and — **for Solis** — writes the register 43110 storage-mode bitmask, charge/discharge currents, export limit, and RC setpoint. Used by `SolisDriver` for the actual register I/O. Also exports `normalize_power_to_kw`.
