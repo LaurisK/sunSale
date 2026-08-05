@@ -10,6 +10,26 @@ Any behavior-affecting change bumps the `version` in
 
 ## [Unreleased]
 
+## [0.4.2] — 2026-08-05
+
+### Fixed
+- **Remote Dispatch exported past the configured export cap.** The dispatch
+  power target was composed from the *declared* spec — the inverter rating —
+  to escape the RC `number` entity's declared ±10 kW, which bounds a register
+  the dispatch path never writes. But that also escaped the **export cap**,
+  which is a real configured limit, and the cap does not save the write
+  inverter-side either: `solis_dispatch` writes `0xFFFF` ("no system caps") to
+  the dispatch block's own import/export limit registers (44103/44104), so a PCC
+  power target *overrides* register 43074 rather than being clipped by it. The
+  reference install exported **13.7 kW against a configured 10 kW cap** while
+  every control row — including `export_limit_w` reading 10000 — reported
+  `match`. The magnitude is now `min(inverter rating, configured export cap)`,
+  applied only when discharging: the cap governs grid export, so it says nothing
+  about GridCharge's import, whose magnitude is already the battery's own charge
+  limit. The battery discharge leg is deliberately still not applied —
+  commanding above what the battery can deliver is harmless, exceeding an export
+  cap is a compliance question.
+
 ## [0.4.1] — 2026-08-05
 
 ### Fixed
@@ -251,7 +271,8 @@ against real hardware — see the status note in [`README.md`](README.md).
   in the chart, and left out of the series-level statistics and every EMA quality
   bucket.
 
-[Unreleased]: https://github.com/LaurisK/sunSale/compare/v0.4.1...HEAD
+[Unreleased]: https://github.com/LaurisK/sunSale/compare/v0.4.2...HEAD
+[0.4.2]: https://github.com/LaurisK/sunSale/compare/v0.4.1...v0.4.2
 [0.4.1]: https://github.com/LaurisK/sunSale/compare/v0.4.0...v0.4.1
 [0.4.0]: https://github.com/LaurisK/sunSale/compare/v0.3.0...v0.4.0
 [0.3.0]: https://github.com/LaurisK/sunSale/compare/v0.2.2...v0.3.0
