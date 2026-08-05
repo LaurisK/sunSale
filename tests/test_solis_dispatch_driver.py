@@ -144,25 +144,84 @@ async def test_forced_mode_still_applies_the_register_composition() -> None:
     inv.apply_mode.assert_awaited_once()
 
 
+def _driver_with_limits(limits: dict, export_w: int, rating_w: int):
+    """Build a dispatch driver over role-specific advertised bounds."""
+    inv = _inverter()
+    inv.limit_for = MagicMock(side_effect=lambda role: limits[role])
+    hass = _hass(_capable())
+    base = SolisDriver(inv, default_battery_config(), export_w, rating_w)
+    return SolisDispatchDriver(base, hass, dict(_ROLES)), inv, hass
+
+
 @pytest.mark.asyncio
 async def test_dispatch_magnitude_ignores_the_rc_entity_ceiling() -> None:
     """The ±10 kW RC bound is an entity bound; dispatch does not go through it.
 
     Reducing the commanded magnitude by it would under-drive the inverter for
     no physical reason — the exact ceiling the dispatch path exists to escape.
+    Every *other* leg is left generous here so the RC one is isolated.
     """
     from custom_components.sun_sale.contract.models import Limit
 
-    inv = _inverter()
-    inv.limit_for = MagicMock(return_value=Limit(low=-10_000, high=10_000, known=True))
-    hass = _hass(_capable())
-    base = SolisDriver(inv, default_battery_config(), 20_000, 15_000)
-    drv = SolisDispatchDriver(base, hass, dict(_ROLES))
+    limits = {
+        "battery_max_charge_current": Limit(low=0, high=400, known=True),
+        "battery_max_discharge_current": Limit(low=0, high=400, known=True),
+        "backflow_power": Limit(low=0, high=30_000, known=True),
+        "rc_setpoint": Limit(low=-10_000, high=10_000, known=True),
+    }
+    drv, _, hass = _driver_with_limits(limits, export_w=20_000, rating_w=15_000)
     await drv.apply_mode(
         StorageMode.Discharge, drv.spec_for(StorageMode.Discharge),
     )
     _, payload = _dispatch_calls(hass)[0]
-    assert payload["power_watts"] == 15_000  # declared, not the 10 kW clamp
+    assert payload["power_watts"] == 15_000  # declared, not the 10 kW RC clamp
+
+
+@pytest.mark.asyncio
+async def test_dispatch_magnitude_respects_the_configured_export_cap() -> None:
+    """The export cap is a real limit and dispatch bypasses it inverter-side.
+
+    ``solis_dispatch`` writes 0xFFFF ("no system caps") to 44103/44104, so a PCC
+    power target overrides register 43074 rather than being clipped by it — the
+    cap has to be applied when composing the target. Live consequence of not
+    doing so: 13.7 kW exported against a configured 10 kW cap while every
+    register row still read ``match`` (2026-08-05).
+    """
+    from custom_components.sun_sale.contract.models import Limit
+
+    limits = {
+        "battery_max_charge_current": Limit(low=0, high=400, known=True),
+        "battery_max_discharge_current": Limit(low=0, high=400, known=True),
+        "backflow_power": Limit(low=0, high=20_000, known=True),
+        "rc_setpoint": Limit(low=-10_000, high=10_000, known=True),
+    }
+    # Configured: 15 kW inverter, 10 kW export cap.
+    drv, _, hass = _driver_with_limits(limits, export_w=10_000, rating_w=15_000)
+    await drv.apply_mode(
+        StorageMode.Discharge, drv.spec_for(StorageMode.Discharge),
+    )
+    _, payload = _dispatch_calls(hass)[0]
+    assert payload["power_watts"] == 10_000
+
+
+@pytest.mark.asyncio
+async def test_export_cap_does_not_bound_grid_charge_import() -> None:
+    """GridCharge's spec caps export at 0 — that must not zero its import."""
+    from custom_components.sun_sale.contract.models import Limit
+
+    limits = {
+        "battery_max_charge_current": Limit(low=0, high=400, known=True),
+        "battery_max_discharge_current": Limit(low=0, high=400, known=True),
+        "backflow_power": Limit(low=0, high=20_000, known=True),
+        "rc_setpoint": Limit(low=-10_000, high=10_000, known=True),
+    }
+    drv, _, hass = _driver_with_limits(limits, export_w=10_000, rating_w=15_000)
+    await drv.apply_mode(
+        StorageMode.GridCharge, drv.spec_for(StorageMode.GridCharge),
+    )
+    _, payload = _dispatch_calls(hass)[0]
+    assert payload["mode"] == "grid_import"
+    assert payload["power_watts"] > 0
 
 
 # --- Passive modes + release ------------------------------------------------ #

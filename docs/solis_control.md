@@ -82,6 +82,14 @@ Three properties matter for control:
    FC16 block writes in the firmware-required order (global block first), rather
    than a sequence of independent writes any one of which can be dropped.
 
+**Dispatch overrides the backflow cap — sunSale must clamp its own target.**
+`solis_dispatch` writes `0xFFFF` ("no system caps") to the block's import/export
+limit registers (44103/44104), so a PCC power target is *not* clipped by the
+group-B export limit at 43074: that register keeps reading its configured value
+and verifies clean while the inverter exports past it. Measured 2026-08-05:
+13.7 kW against a configured 10 kW cap. The commanded magnitude is therefore
+`min(inverter rating, configured export cap)`, composed in the driver.
+
 RC (group D) is explicitly **stood down** whenever dispatch drives — sunSale
 zeroes the RC setpoint and releases the 43132 selector — because two mechanisms
 holding power at once is exactly the failure the switch is meant to end.

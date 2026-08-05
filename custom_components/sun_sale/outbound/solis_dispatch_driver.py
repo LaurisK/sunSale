@@ -359,11 +359,28 @@ class SolisDispatchDriver:
     def _dispatch_watts(self, mode: StorageMode) -> int:
         """Return the magnitude in watts to command for ``mode``.
 
-        Taken from the **declared** spec, not the effective one: the effective
-        spec is reduced through the RC ``number`` entity's advertised ±10 kW,
-        and escaping that entity bound is one of the reasons for dispatching at
-        all. The remaining physical legs (battery current, export cap) are
-        already reflected in the planner's caps via :meth:`capability`.
+        The magnitude escapes exactly **one** ceiling and no others: the RC
+        ``number`` entity's declared ±10 kW, which bounds a register this path
+        does not write. Everything else that limits the install is still a real
+        limit, so the base is the *declared* spec (the inverter rating) reduced
+        by the configured export cap.
+
+        **The export cap must be applied here, by us.** On the RC path register
+        43074 constrained export, and it still reads back correct — but
+        ``solis_dispatch`` writes ``0xFFFF`` ("no system caps") to the dispatch
+        block's own import/export limit registers (44103/44104), so a PCC power
+        target *overrides* 43074 rather than being clipped by it. Taking the
+        declared magnitude alone therefore exported 13.7 kW against a
+        configured 10 kW cap on the reference install (2026-08-05 02:45), with
+        every register row still reporting ``match``.
+
+        Only the export leg is applied, and only when discharging: it is a cap
+        on grid *export*, so it says nothing about GridCharge's import, whose
+        magnitude is already the battery's own charge limit. The battery
+        discharge leg is deliberately not applied — commanding above what the
+        battery can deliver is harmless (the inverter simply delivers less, and
+        the planner already plans against ``capability()``), whereas exceeding
+        an export cap is a grid-compliance question.
 
         Args:
             mode: A forced mode present in ``_DISPATCH_MODES``.
@@ -371,8 +388,17 @@ class SolisDispatchDriver:
         Returns:
             Non-negative power in watts; ``0`` when the mode has no spec.
         """
-        spec = self._base.declared_spec(mode)
-        return abs(int(spec.rc_setpoint_w)) if spec is not None else 0
+        declared = self._base.declared_spec(mode)
+        if declared is None:
+            return 0
+        watts = abs(int(declared.rc_setpoint_w))
+        if mode is not StorageMode.Discharge:
+            return watts
+        effective = self._base.effective_spec(mode)
+        cap = effective.export_limit_w if effective is not None else None
+        if cap is None:
+            return watts
+        return min(watts, int(cap))
 
     async def _release(self) -> None:
         """Stop Remote Dispatch, handing control back to the register path."""
