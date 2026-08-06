@@ -22,7 +22,10 @@ except ImportError:    # pragma: no cover — Python < 3.9 fallback
 
 from homeassistant.config_entries import ConfigEntry
 from homeassistant.core import Event, HomeAssistant, callback
-from homeassistant.helpers.event import async_track_state_change_event
+from homeassistant.helpers.event import (
+    async_track_state_change_event,
+    async_track_utc_time_change,
+)
 from homeassistant.helpers.update_coordinator import DataUpdateCoordinator, UpdateFailed
 
 from ..contract.const import (
@@ -82,6 +85,7 @@ from ..contract.const import (
     DOMAIN,
     GRID_POWER_HISTORY_RETENTION_DAYS,
     PRICE_HISTORY_RETENTION_DAYS,
+    SCHEDULE_SLOT_MINUTES,
     STORAGE_KEY_BAKED_OBSERVED,
     STORAGE_KEY_CAPACITY,
     STORAGE_KEY_CONSUMPTION_DAILY,
@@ -351,11 +355,17 @@ class SunSaleCoordinator(DataUpdateCoordinator):
             hass: Home Assistant instance.
             config_entry: HA config entry containing user configuration.
         """
+        # No ``update_interval``: the base class's timer free-runs from whenever
+        # the last refresh happened, so its phase relative to the wall clock is
+        # set by HA's start time and the cycle that activates a new schedule slot
+        # lands a constant 0–5 min *after* the slot began. Cycles are driven
+        # instead by a wall-clock-aligned tick (``_start_aligned_tick``) that
+        # always fires exactly on the slot boundaries.
         super().__init__(
             hass,
             _LOGGER,
             name=DOMAIN,
-            update_interval=timedelta(minutes=UPDATE_INTERVAL_MINUTES),
+            update_interval=None,
         )
         self._entry = config_entry
         self._config: dict = {}
@@ -456,6 +466,13 @@ class SunSaleCoordinator(DataUpdateCoordinator):
         # ``async_setup``): pushes a fresh observed-mode/register readout to the
         # panel whenever a decoded inverter register changes, between ticks.
         self._unsub_mode_registers: Callable[[], None] | None = None
+        # Unsubscribe for the wall-clock-aligned cycle tick (set in
+        # ``async_setup``), and its re-entrancy guard — unlike the base class's
+        # interval, which only re-arms once a refresh has finished, the aligned
+        # tick fires on absolute times and would otherwise stack a second cycle
+        # on top of one that overran its interval.
+        self._unsub_aligned_tick: Callable[[], None] | None = None
+        self._cycle_in_flight: bool = False
 
     @property
     def battery_config(self) -> BatteryConfig | None:
@@ -550,6 +567,61 @@ class SunSaleCoordinator(DataUpdateCoordinator):
         self._mirror_control_module_state()
         self.async_update_listeners()
 
+    @staticmethod
+    def _aligned_tick_minutes() -> list[int]:
+        """Return the minutes-past-the-hour the cycle tick fires on.
+
+        The regular ``UPDATE_INTERVAL_MINUTES`` grid, unioned with every
+        schedule-slot boundary. With the shipped values (5 / 15) the boundaries
+        are already on the grid and the union is a no-op; it is taken anyway so
+        that changing either constant to values that do not divide evenly still
+        guarantees a cycle at the instant each slot activates.
+
+        Returns:
+            Sorted minute values in ``[0, 60)``.
+        """
+        return sorted(
+            set(range(0, 60, UPDATE_INTERVAL_MINUTES))
+            | set(range(0, 60, SCHEDULE_SLOT_MINUTES))
+        )
+
+    def _start_aligned_tick(self) -> None:
+        """Drive cycles from a wall-clock-aligned tick instead of a free-running timer.
+
+        Fires at ``second=0`` of each minute in :meth:`_aligned_tick_minutes`,
+        UTC — the same grid the DAG's slots are laid out on — so the cycle that
+        activates a new slot runs *at* the boundary rather than up to one
+        interval later. The unsubscribe is stored for teardown in
+        ``async_shutdown``.
+        """
+        self._unsub_aligned_tick = async_track_utc_time_change(
+            self.hass,
+            self._on_aligned_tick,
+            minute=self._aligned_tick_minutes(),
+            second=0,
+        )
+
+    async def _on_aligned_tick(self, _now: datetime) -> None:
+        """Run one cycle on the aligned tick, skipping if the previous one is still running.
+
+        Uses ``async_refresh`` rather than ``async_request_refresh``: the latter
+        goes through the base class's debouncer, which would defer the cycle by
+        its cooldown and give back the boundary lag this tick exists to remove.
+
+        Args:
+            _now: Tick time (unused — the cycle reads its own ``now``).
+        """
+        if self._cycle_in_flight:
+            _LOGGER.warning(
+                "sunSale cycle still running at the next aligned tick — skipping this one",
+            )
+            return
+        self._cycle_in_flight = True
+        try:
+            await self.async_refresh()
+        finally:
+            self._cycle_in_flight = False
+
     def _subscribe_mode_register_changes(self) -> None:
         """Subscribe to the inverter registers that decode the observed mode.
 
@@ -598,11 +670,15 @@ class SunSaleCoordinator(DataUpdateCoordinator):
     async def async_shutdown(self) -> None:
         """Tear down the coordinator and its control module on entry unload.
 
-        Extends ``DataUpdateCoordinator.async_shutdown`` (which cancels the
-        scheduled refresh) by also shutting down the control module, so its
-        pending verify-tick cannot fire after unload and issue ghost Modbus
-        writes against the still-valid solis_modbus entities.
+        Cancels the aligned cycle tick (the base class only knows about its own
+        ``update_interval`` timer, which this coordinator does not use) and
+        shuts down the control module, so neither a cycle nor its pending
+        verify-tick can fire after unload and issue ghost Modbus writes against
+        the still-valid solis_modbus entities.
         """
+        if self._unsub_aligned_tick is not None:
+            self._unsub_aligned_tick()
+            self._unsub_aligned_tick = None
         if self._unsub_mode_registers is not None:
             self._unsub_mode_registers()
             self._unsub_mode_registers = None
@@ -975,6 +1051,10 @@ class SunSaleCoordinator(DataUpdateCoordinator):
             ),
             SchedulePolicyStep(self._read_schedule_knobs),
         )
+
+        # Last: everything a cycle touches now exists, so the first aligned tick
+        # can safely land at any moment.
+        self._start_aligned_tick()
 
     def _read_schedule_knobs(self) -> ScheduleKnobs:
         """Snapshot the user-set schedule knobs for one cycle's policy build.

@@ -87,6 +87,12 @@ class _DataUpdateCoordinatorStub:
     def __init__(self, *args, **kwargs):
         if args:
             self.hass = args[0]
+        # Real HA stores this and drives its polling timer off it; sunSale sets
+        # it to None and ticks on the wall clock instead, which is asserted.
+        self.update_interval = kwargs.get("update_interval")
+
+    async def async_shutdown(self):
+        """Match the real base class's teardown hook (the override calls super)."""
 
 
 class _CoordinatorEntityStub:

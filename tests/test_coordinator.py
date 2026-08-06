@@ -2,15 +2,20 @@
 from __future__ import annotations
 
 from datetime import UTC, datetime, timedelta
-from unittest.mock import MagicMock
+from unittest.mock import AsyncMock, MagicMock
+
+import pytest
 
 from custom_components.sun_sale.contract.const import (
     CONF_NORDPOOL_ENTITY,
     CONF_SOLAR_FORECAST_ENTITY,
+    SCHEDULE_SLOT_MINUTES,
+    UPDATE_INTERVAL_MINUTES,
 )
 from custom_components.sun_sale.contract.models import BatteryReading
 from custom_components.sun_sale.inbound.pricing import NordpoolTranslator
 from custom_components.sun_sale.inbound.telemetry import GenericCodec, SolisCodec
+from custom_components.sun_sale.orchestration import coordinator as coordinator_module
 from custom_components.sun_sale.orchestration.coordinator import SunSaleCoordinator
 from custom_components.sun_sale.outbound.inverter import InverterPlatform
 
@@ -476,3 +481,87 @@ def test_live_flow_sources_none_when_unmapped():
     """No mapped power entity → None, so the panel falls back to live_flows."""
     coord = _coord_for_flow_sources(InverterPlatform.SOLIS, ids={})
     assert coord._build_live_flow_sources() is None
+
+
+# --- Wall-clock-aligned cycle tick ---
+
+
+def test_no_free_running_update_interval():
+    """The base class's phase-drifting interval timer is disabled."""
+    coord, _ = _make_coordinator()
+    assert coord.update_interval is None
+
+
+def test_aligned_tick_minutes_hit_every_slot_boundary():
+    """Every schedule-slot boundary is a tick minute, so no slot activates late."""
+    minutes = SunSaleCoordinator._aligned_tick_minutes()
+    assert set(range(0, 60, SCHEDULE_SLOT_MINUTES)) <= set(minutes)
+    assert set(range(0, 60, UPDATE_INTERVAL_MINUTES)) <= set(minutes)
+    assert minutes == sorted(set(minutes))
+    assert all(0 <= m < 60 for m in minutes)
+
+
+def test_start_aligned_tick_subscribes_on_the_utc_minute(monkeypatch):
+    """The tick is registered against UTC wall-clock minutes at second 0."""
+    captured = {}
+
+    def _fake_track(hass, action, minute=None, second=None):
+        captured.update(hass=hass, action=action, minute=minute, second=second)
+        return lambda: None
+
+    monkeypatch.setattr(coordinator_module, "async_track_utc_time_change", _fake_track)
+    coord, hass = _make_coordinator()
+    coord._start_aligned_tick()
+
+    assert captured["hass"] is hass
+    assert captured["action"] == coord._on_aligned_tick
+    assert captured["second"] == 0
+    assert captured["minute"] == SunSaleCoordinator._aligned_tick_minutes()
+    assert coord._unsub_aligned_tick is not None
+
+
+async def test_aligned_tick_refreshes_without_the_debouncer():
+    """The tick refreshes immediately — a debounced request would re-add lag."""
+    coord, _ = _make_coordinator()
+    coord.async_refresh = AsyncMock()
+    coord.async_request_refresh = AsyncMock()
+
+    await coord._on_aligned_tick(BASE)
+
+    coord.async_refresh.assert_awaited_once()
+    coord.async_request_refresh.assert_not_awaited()
+    assert coord._cycle_in_flight is False
+
+
+async def test_aligned_tick_skipped_while_a_cycle_is_in_flight():
+    """A cycle that overran its interval is not stacked on by the next tick."""
+    coord, _ = _make_coordinator()
+    coord.async_refresh = AsyncMock()
+    coord._cycle_in_flight = True
+
+    await coord._on_aligned_tick(BASE)
+
+    coord.async_refresh.assert_not_awaited()
+
+
+async def test_aligned_tick_guard_clears_after_a_failed_cycle():
+    """A raising refresh still releases the guard, so ticking resumes."""
+    coord, _ = _make_coordinator()
+    coord.async_refresh = AsyncMock(side_effect=RuntimeError("boom"))
+
+    with pytest.raises(RuntimeError):
+        await coord._on_aligned_tick(BASE)
+
+    assert coord._cycle_in_flight is False
+
+
+async def test_shutdown_cancels_the_aligned_tick():
+    """Unload stops the tick — the base class only knows its own timer."""
+    coord, _ = _make_coordinator()
+    cancelled = []
+    coord._unsub_aligned_tick = lambda: cancelled.append(True)
+
+    await coord.async_shutdown()
+
+    assert cancelled == [True]
+    assert coord._unsub_aligned_tick is None

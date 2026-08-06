@@ -107,6 +107,26 @@ automation toggle.
 can confirm whether a UI mode change actually reached `apply_mode` or fell through one of the
 gates.
 
+## Cycle timing
+
+`tick` runs once per coordinator cycle, and "write once, on change" means a slot's mode reaches
+the inverter on the **first cycle inside that slot** — so when cycles run decides how much of a
+slot is spent executing the previous slot's decision. The coordinator therefore does *not* use
+`DataUpdateCoordinator.update_interval`, whose timer re-arms relative to the end of the last
+refresh: its phase against the wall clock is set by whenever HA last started, never
+self-corrects, and — because the 15-minute slot grid is a multiple of the 5-minute interval —
+applies the *same* offset to every boundary. An install that happened to settle on `hh:02:48`
+activated every slot 2 min 48 s late, permanently.
+
+Cycles are instead driven by `SunSaleCoordinator._start_aligned_tick` — a UTC
+`async_track_utc_time_change` on `second=0` of the `UPDATE_INTERVAL_MINUTES` grid, unioned with
+the `SCHEDULE_SLOT_MINUTES` grid so a slot boundary is a tick even if the two constants stop
+dividing evenly. It refreshes directly rather than through the base class's debouncer (whose
+cooldown would give the lag back), and skips a tick — with a warning — if the previous cycle is
+still running, since an absolute-time tick has no "wait for the last one to finish" built in the
+way an interval does. Residual lag is the cycle's own work: translators, the recorder resample,
+and the DAG all run before `_dispatch_inverter_mode`.
+
 ## Commanded-mode tracking + verify loop
 
 The control module keeps its own truth of what the inverter was last asked to do —

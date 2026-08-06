@@ -265,8 +265,16 @@ CONSUMPTION_DAILY_MIN_HOUR_COMPLETENESS = 0.8
 # Rolling price-history retention (days) for profitability scoring.
 PRICE_HISTORY_RETENTION_DAYS = 90
 
-# Update interval (minutes)
+# Update interval (minutes). The coordinator does not free-run on this period —
+# it ticks on the wall-clock minutes that are multiples of it (:00, :05, …), so
+# a cycle always lands *on* a schedule-slot boundary rather than up to one
+# interval after it. See SunSaleCoordinator._aligned_tick_minutes.
 UPDATE_INTERVAL_MINUTES = 5
+
+# Length of one schedule/price slot (minutes). Slot boundaries are the instants
+# a newly-activated slot's StorageMode must reach the inverter, so the
+# coordinator's aligned tick always includes them.
+SCHEDULE_SLOT_MINUTES = 15
 
 # Capacity estimator: discard observations with SoC delta below this threshold
 # (the estimator's own per-sample reliability floor).
