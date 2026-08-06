@@ -10,6 +10,25 @@ Any behavior-affecting change bumps the `version` in
 
 ## [Unreleased]
 
+## [0.4.3] — 2026-08-05
+
+### Fixed
+- **Slot activation lagged the slot boundary by a constant 0–5 minutes.** The
+  coordinator polled on `DataUpdateCoordinator`'s `update_interval`, which
+  re-arms relative to the *end of the previous refresh*, so its phase against
+  the wall clock is set by whenever Home Assistant last started and never
+  self-corrects. Because the 15-minute slot grid is a multiple of the 5-minute
+  interval, that phase offset applies identically to **every** boundary: the
+  reference install was cycling at `hh:mm:48` with `mm ≡ 2 (mod 5)`, so each
+  new slot's `StorageMode` reached the inverter 2 min 48 s into a 15-minute
+  slot — 19 % of every slot spent executing the previous slot's decision, at
+  exactly the moments (price steps) the schedule was built around. Cycles are
+  now driven by a UTC wall-clock-aligned tick on the `:00/:05/:10/…` grid, which
+  by construction includes every slot boundary, so a slot's mode is dispatched
+  at the instant it activates. The tick is skipped (with a warning) if the
+  previous cycle is still running, and refreshes directly rather than through
+  the debouncer, whose cooldown would give part of the lag back.
+
 ## [0.4.2] — 2026-08-05
 
 ### Fixed
@@ -271,7 +290,8 @@ against real hardware — see the status note in [`README.md`](README.md).
   in the chart, and left out of the series-level statistics and every EMA quality
   bucket.
 
-[Unreleased]: https://github.com/LaurisK/sunSale/compare/v0.4.2...HEAD
+[Unreleased]: https://github.com/LaurisK/sunSale/compare/v0.4.3...HEAD
+[0.4.3]: https://github.com/LaurisK/sunSale/compare/v0.4.2...v0.4.3
 [0.4.2]: https://github.com/LaurisK/sunSale/compare/v0.4.1...v0.4.2
 [0.4.1]: https://github.com/LaurisK/sunSale/compare/v0.4.0...v0.4.1
 [0.4.0]: https://github.com/LaurisK/sunSale/compare/v0.3.0...v0.4.0
