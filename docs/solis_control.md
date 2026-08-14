@@ -78,9 +78,43 @@ Three properties matter for control:
    entity's same-value short-circuit nor its advertised min/max applies. The RC
    setpoint's declared **±10 kW is an entity bound, not a hardware one**, and it
    stops constraining the commanded magnitude on this path.
-3. **It is atomic.** Mode, power, function and SOC window land as two contiguous
-   FC16 block writes in the firmware-required order (global block first), rather
-   than a sequence of independent writes any one of which can be dropped.
+3. **It is atomic *per block*.** Mode, power, function and SOC window land as two
+   contiguous FC16 block writes in the firmware-required order (global block
+   first), rather than a sequence of independent writes any one of which can be
+   dropped. The two blocks are not atomic with respect to each other, though —
+   see the enable-edge race below.
+
+**The enable edge eats the first mode+target write.** The two block writes are
+`44100/44101` (enable + failsafe) then `44105/44106` (control mode + power
+target) — and the first one is what puts the inverter *into* the dispatch state.
+Entering that state initialises 44105/44106 to the firmware's defaults (`1` /
+`0`), so the second write is racing an initialisation the first write triggered.
+When it loses, dispatch reads back **running with a zero target** and the
+inverter does nothing. Measured on this deployment across 2026-08-07…13: 12 of
+30 commanded discharges engaged 305–350 s late (the other 18 in 6–52 s), each
+recovering only when the next 5-minute holding tick re-pushed the block. Caught
+directly on 2026-08-12 05:03:18, where a SLOW-group poll landed between the
+write and the recovery:
+
+```
+05:00:02  sunSale write     active=1  failsafe=20  mode=3  target=10000
+05:03:18  real readback     active=1  failsafe=20  mode=1  target=0     ← running_status 0→2
+05:05:02  holding re-push   mode=3  target=10000
+05:05:09  battery +6154 W
+```
+
+sunSale therefore **re-sends a commanded dispatch once, 10 s later**
+(`_RECONFIRM_DELAY_S`). A second write with dispatch already running has no
+enable edge under it and has always stuck. Routine holds do not arm it — they
+are that safe case by construction.
+
+> **The dispatch readbacks cannot detect this.** `sensor.*_dispatch_*` are
+> `solis_modbus`'s **write-through cache**: they take the commanded value within
+> a second of the write, and the register's real value only surfaces on the
+> ~10-minute SLOW poll. sunSale's verify loop reads its own optimistic echo and
+> reports `ok` while the inverter delivers 0 kW, which is why the repair is a
+> blind re-write rather than a comparison. Treat a green dispatch row inside the
+> poll window as "what we asked for", never as "what the inverter has".
 
 **Dispatch overrides the backflow cap — sunSale must clamp its own target.**
 `solis_dispatch` writes `0xFFFF` ("no system caps") to the block's import/export

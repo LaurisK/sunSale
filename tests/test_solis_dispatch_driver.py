@@ -23,6 +23,9 @@ import pytest
 from custom_components.sun_sale.contract.models import UNKNOWN_LIMIT, StorageMode
 from custom_components.sun_sale.outbound.driver import InverterControlDriver
 from custom_components.sun_sale.outbound.solis_dispatch_driver import (
+    _RECONFIRM_DELAY_S as RECONFIRM_DELAY_S,
+)
+from custom_components.sun_sale.outbound.solis_dispatch_driver import (
     DISPATCH_CAPABLE_MAGIC,
     SERVICE_DISPATCH,
     SERVICE_DISPATCH_STOP,
@@ -88,6 +91,39 @@ def _driver(states: dict[str, _State] | None = None):
     hass = _hass(_capable(states))
     base = SolisDriver(inv, default_battery_config(), 10_000, 10_000)
     return SolisDispatchDriver(base, hass, dict(_ROLES)), inv, hass
+
+
+class _ScheduledReconfirm:
+    """Stands in for ``async_call_later`` so the re-confirm can be fired by hand."""
+
+    def __init__(self) -> None:
+        self.calls: list[tuple[float, object]] = []
+        self.cancels: int = 0
+
+    def __call__(self, _hass, delay, callback):
+        self.calls.append((delay, callback))
+
+        def _cancel() -> None:
+            self.cancels += 1
+
+        return _cancel
+
+    async def fire(self) -> None:
+        """Run the most recently scheduled callback, if any."""
+        if self.calls:
+            await self.calls[-1][1](NOW)
+
+
+@pytest.fixture
+def reconfirm(monkeypatch):
+    """Patch ``async_call_later`` in the dispatch driver for re-confirm tests."""
+    sched = _ScheduledReconfirm()
+    monkeypatch.setattr(
+        "custom_components.sun_sale.outbound.solis_dispatch_driver."
+        "async_call_later",
+        sched,
+    )
+    return sched
 
 
 def _dispatch_calls(hass: MagicMock) -> list[tuple[str, dict]]:
@@ -264,6 +300,79 @@ async def test_hold_on_a_passive_mode_delegates_to_the_register_driver() -> None
     await drv.hold(StorageMode.SelfUse, spec)
     assert _dispatch_calls(hass) == []
     inv.refresh_rc.assert_awaited_once()
+
+
+# --- Re-confirm (enable-edge race) ------------------------------------------ #
+
+
+@pytest.mark.asyncio
+async def test_commanded_dispatch_arms_a_reconfirm(reconfirm) -> None:
+    """The enable edge can eat the mode+target write; a second one must follow."""
+    drv, _, hass = _driver()
+    await drv.apply_mode(
+        StorageMode.Discharge, drv.spec_for(StorageMode.Discharge), force=True,
+    )
+    assert [s for s, _ in _dispatch_calls(hass)] == [SERVICE_DISPATCH]
+    delay, _ = reconfirm.calls[-1]
+    assert delay == RECONFIRM_DELAY_S
+    await reconfirm.fire()
+    services = [s for s, _ in _dispatch_calls(hass)]
+    assert services == [SERVICE_DISPATCH] * 2
+    # Byte-identical: the repair is the *same* command landing without an
+    # enable edge under it, not a different one.
+    assert _dispatch_calls(hass)[0][1] == _dispatch_calls(hass)[1][1]
+
+
+@pytest.mark.asyncio
+async def test_a_routine_hold_arms_no_reconfirm(reconfirm) -> None:
+    """A hold re-pushes an already-running dispatch — no edge, nothing to race."""
+    drv, _, _ = _driver()
+    spec = drv.spec_for(StorageMode.Discharge)
+    await drv.apply_mode(StorageMode.Discharge, spec, force=True)
+    reconfirm.calls.clear()
+    await drv.hold(StorageMode.Discharge, spec)
+    assert reconfirm.calls == []
+
+
+@pytest.mark.asyncio
+async def test_a_newer_command_supersedes_the_pending_reconfirm(reconfirm) -> None:
+    drv, _, hass = _driver()
+    await drv.apply_mode(
+        StorageMode.Discharge, drv.spec_for(StorageMode.Discharge), force=True,
+    )
+    await drv.apply_mode(
+        StorageMode.GridCharge, drv.spec_for(StorageMode.GridCharge), force=True,
+    )
+    assert reconfirm.cancels == 1
+    await reconfirm.fire()
+    # The re-confirm carries the mode commanded last, never the superseded one.
+    assert _dispatch_calls(hass)[-1][1]["mode"] == "grid_import"
+
+
+@pytest.mark.asyncio
+async def test_reconfirm_is_dropped_when_dispatch_was_released(reconfirm) -> None:
+    """Re-arming a stood-down mode is the ghost write ``_release`` prevents."""
+    drv, _, hass = _driver()
+    await drv.apply_mode(
+        StorageMode.Discharge, drv.spec_for(StorageMode.Discharge), force=True,
+    )
+    await drv.apply_mode(StorageMode.SelfUse, drv.spec_for(StorageMode.SelfUse))
+    assert reconfirm.cancels == 1
+    await reconfirm.fire()
+    assert [s for s, _ in _dispatch_calls(hass)] == [
+        SERVICE_DISPATCH, SERVICE_DISPATCH_STOP,
+    ]
+
+
+@pytest.mark.asyncio
+async def test_shutdown_cancels_a_pending_reconfirm(reconfirm) -> None:
+    """A re-confirm firing after unload would write against a torn-down entry."""
+    drv, _, _ = _driver()
+    await drv.apply_mode(
+        StorageMode.Discharge, drv.spec_for(StorageMode.Discharge), force=True,
+    )
+    drv.shutdown()
+    assert reconfirm.cancels == 1
 
 
 @pytest.mark.asyncio

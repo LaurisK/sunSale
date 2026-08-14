@@ -40,11 +40,13 @@ register drift and is re-commanded by the control module's reconcile path.
 from __future__ import annotations
 
 import logging
+from collections.abc import Callable
 from dataclasses import replace
 from datetime import datetime
 from typing import Any
 
 from homeassistant.core import HomeAssistant
+from homeassistant.helpers.event import async_call_later
 
 from ..contract.models import InverterCapability, InverterModeReading, StorageMode
 from .driver import ControlRow, ControlStatus
@@ -66,6 +68,15 @@ DISPATCH_CAPABLE_MAGIC = 0xAA55
 # (~5 min) re-pushes the block, giving 4× headroom — no driver-side heartbeat is
 # needed, which is the whole point of moving off RC's ~5-min expiry.
 _FAILSAFE_MINUTES = 20
+
+# Delay before a freshly-commanded dispatch is written a second time. The
+# inverter initialises the block's control mode / power target to its defaults
+# (1 / 0) as it *enters* the dispatch state, which the enable write itself
+# triggers: a mode+target write that arrives before the firmware has finished
+# entering is silently discarded, leaving dispatch "running" with a zero
+# setpoint. Long enough to be past that transition, short enough that a slot
+# loses seconds rather than a whole cycle. See :meth:`SolisDispatchDriver._schedule_reconfirm`.
+_RECONFIRM_DELAY_S = 10
 
 # Control-mode codes read back from 44105. 3 = PCC (meter) power target, the
 # grid-side goal both forced modes use: the planner prices energy at the meter,
@@ -115,6 +126,11 @@ class SolisDispatchDriver:
         # What the last dispatch commanded, so ``control_surface`` can compare
         # the readback against it. ``None`` while no forced mode is held.
         self._commanded: tuple[int, int] | None = None
+        # One-shot re-write of a freshly-commanded dispatch (see
+        # ``_schedule_reconfirm``): its cancel-callback and the payload to
+        # re-send. At most one is ever pending.
+        self._reconfirm_cancel: Callable[[], None] | None = None
+        self._reconfirm_payload: dict[str, Any] | None = None
         # Resolved support, latched only once positive. ``None`` = not yet
         # determined. See :meth:`_supported`.
         self._support: bool | None = None
@@ -227,7 +243,9 @@ class SolisDispatchDriver:
                 dispatch magnitude comes from the *declared* spec so the RC
                 entity's ±10 kW ceiling does not clip it).
             force: Forwarded to the register path; dispatch writes are always
-                unconditional at the register level.
+                unconditional at the register level. Also selects whether this
+                write is *commanded* (mode change, reconcile, verify retry) and
+                so gets the one-shot re-confirm, as opposed to a routine hold.
         """
         dispatch_mode = _DISPATCH_MODES.get(mode) if self._supported() else None
         if dispatch_mode is None:
@@ -235,14 +253,14 @@ class SolisDispatchDriver:
             await self._base.apply_mode(mode, spec, force=force)
             return
         watts = self._dispatch_watts(mode)
-        await self._call(
-            SERVICE_DISPATCH,
-            {
-                "mode": dispatch_mode,
-                "power_watts": watts,
-                "failsafe_minutes": _FAILSAFE_MINUTES,
-            },
-        )
+        payload = {
+            "mode": dispatch_mode,
+            "power_watts": watts,
+            "failsafe_minutes": _FAILSAFE_MINUTES,
+        }
+        await self._call(SERVICE_DISPATCH, payload)
+        if force:
+            self._schedule_reconfirm(payload)
         # 44106 is signed per the block's own convention: + export, − import.
         signed = watts if mode is StorageMode.Discharge else -watts
         self._commanded = (_MODE_PCC_TARGET, signed)
@@ -269,12 +287,15 @@ class SolisDispatchDriver:
         await self.apply_mode(mode, spec, force=False)
 
     def shutdown(self) -> None:
-        """Tear down the wrapped driver.
+        """Tear down the wrapped driver and drop any pending re-confirm.
 
         Dispatch itself is deliberately **not** released here: an unload is not
         an instruction to change what the inverter is doing, and the failsafe
-        already bounds how long a forgotten dispatch can persist.
+        already bounds how long a forgotten dispatch can persist. The pending
+        re-confirm *is* cancelled — it would otherwise fire against a
+        torn-down entry and issue a ghost write.
         """
+        self._cancel_reconfirm()
         self._base.shutdown()
 
     # --- Control surface ------------------------------------------------- #
@@ -400,8 +421,75 @@ class SolisDispatchDriver:
             return watts
         return min(watts, int(cap))
 
+    def _schedule_reconfirm(self, payload: dict[str, Any]) -> None:
+        """Arm a single re-write of ``payload`` ``_RECONFIRM_DELAY_S`` from now.
+
+        **The first mode+target write after an enable edge is not reliable.**
+        Writing 44100=1 puts the inverter into the dispatch state, and entering
+        that state initialises 44105/44106 to ``1``/``0``; ``solis_dispatch``
+        sends mode+target as a second register write immediately after the
+        enable, so whether it survives is a race against the firmware's own
+        initialisation. On the reference install roughly 40 % of commanded
+        discharges lost it: dispatch read back *running* with a zero power
+        target, exporting nothing, until the next holding tick happened to
+        re-push the same block 5 minutes later (measured 2026-08-07…13; caught
+        directly on 2026-08-12 05:03, where a poll landed between the two and
+        read ``active=1, mode=1, target=0``).
+
+        A second write once dispatch is already running has no enable edge to
+        race and has always stuck, so this re-confirm — not a readback check —
+        is the repair. The readback cannot detect the loss anyway: the dispatch
+        sensors are ``solis_modbus``'s write-through cache, so they echo what was
+        commanded and the verify loop reads its own optimistic write back as
+        ``match`` (the real value only surfaces on the ~10-min poll).
+
+        Only *commanded* writes arm it (``force=True`` — mode change, reconcile,
+        verify retry). A routine hold re-pushes an already-running dispatch,
+        which is the safe case by construction.
+
+        Args:
+            payload: The same ``solis_dispatch`` payload that was just sent.
+        """
+        self._cancel_reconfirm()
+        self._reconfirm_payload = dict(payload)
+        self._reconfirm_cancel = async_call_later(
+            self._hass, _RECONFIRM_DELAY_S, self._on_reconfirm,
+        )
+
+    async def _on_reconfirm(self, _now: datetime) -> None:
+        """Re-send the pending dispatch payload once.
+
+        No-op when dispatch was released in the meantime — re-arming a mode
+        sunSale has since stood down is precisely the stale write ``_release``
+        exists to prevent.
+
+        Args:
+            _now: Fire time (unused).
+        """
+        self._reconfirm_cancel = None
+        payload = self._reconfirm_payload
+        self._reconfirm_payload = None
+        if payload is None or self._commanded is None:
+            return
+        _LOGGER.debug("solis_dispatch: re-confirming %s", payload)
+        await self._call(SERVICE_DISPATCH, payload)
+
+    def _cancel_reconfirm(self) -> None:
+        """Drop any pending re-confirm, so at most one is ever in flight."""
+        if self._reconfirm_cancel is not None:
+            try:
+                self._reconfirm_cancel()
+            except Exception:  # noqa: BLE001 — cancel must never raise
+                _LOGGER.debug(
+                    "solis_dispatch: re-confirm cancel raised — ignoring",
+                    exc_info=True,
+                )
+            self._reconfirm_cancel = None
+        self._reconfirm_payload = None
+
     async def _release(self) -> None:
         """Stop Remote Dispatch, handing control back to the register path."""
+        self._cancel_reconfirm()
         if self._commanded is None:
             return
         self._commanded = None
