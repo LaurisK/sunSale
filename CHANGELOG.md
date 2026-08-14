@@ -10,6 +10,35 @@ Any behavior-affecting change bumps the `version` in
 
 ## [Unreleased]
 
+## [0.4.4] — 2026-08-13
+
+### Fixed
+- **A commanded discharge could start a full cycle (5 min) late, ~40 % of the
+  time.** `solis_dispatch` writes the Remote Dispatch block as two register
+  writes — `44100/44101` (enable + failsafe), then `44105/44106` (control mode +
+  power target) — but writing the enable is what puts the inverter *into* the
+  dispatch state, and entering that state initialises mode/target to its own
+  defaults (`1`/`0`). Whether the second write survives is therefore a race
+  against the firmware's initialisation: when it loses, dispatch reads back
+  **running with a zero power target** and the inverter exports nothing until
+  the next holding tick re-pushes the same block 5 minutes later. On the
+  reference install 12 of 30 discharge starts between 2026-08-07 and 08-13 were
+  delayed by 305–350 s (the rest engaged in 6–52 s), costing a third of each
+  affected 15-minute slot at exactly the priced peaks; the loss was caught
+  directly on 2026-08-12 05:03, where a poll landed between the two writes and
+  read `active=1, mode=1, target=0`. A **commanded** dispatch (mode change,
+  reconcile, verify retry — not a routine hold, which has no enable edge under
+  it) is now re-sent once, unconditionally, 10 s later; a second write with
+  dispatch already running has no edge to race and has always stuck. Worst-case
+  lag drops from ~5 min to ~10 s.
+
+  The verify loop could not have caught this and was not extended to try: the
+  `sensor.*_dispatch_*` readbacks are `solis_modbus`'s **write-through cache**,
+  so they echo the commanded value within a second of the write and the real
+  register value only surfaces on the ~10-minute poll. Verify read its own
+  optimistic echo and reported `ok` while the inverter delivered 0 kW — which is
+  why the repair is a blind re-write rather than a comparison.
+
 ## [0.4.3] — 2026-08-05
 
 ### Fixed
