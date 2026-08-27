@@ -45,6 +45,7 @@ from ..contract.const import (
 from ..contract.models import (
     AcPortPowerReading,
     BackupPowerReading,
+    ArrayCalibration,
     BakedObservedHistory,
     BatteryReading,
     CapacityObservation,
@@ -453,6 +454,7 @@ class StoredPrimariesStep(CycleStep):
         monthly_bill_store: PersistentStore,
         price_history_store: PersistentStore,
         forecast_quality_store: PersistentStore,
+        array_calibration_store: PersistentStore,
         mode_history_store: PersistentStore,
         read_sun_times: Callable[[datetime], SunTimes],
     ) -> None:
@@ -461,11 +463,12 @@ class StoredPrimariesStep(CycleStep):
         self._monthly_bill_store = monthly_bill_store
         self._price_history_store = price_history_store
         self._forecast_quality_store = forecast_quality_store
+        self._array_calibration_store = array_calibration_store
         self._mode_history_store = mode_history_store
         self._read_sun_times = read_sun_times
 
     def seed(self, primary: dict, now: datetime, scratch: CycleScratch) -> None:
-        """Inject baked/bill/price/quality/mode histories, sun times."""
+        """Inject baked/bill/price/quality/calibration/mode histories, sun times."""
         primary[BakedObservedHistory] = (
             self._baked_store.value if self._baked_store else None
         ) or BakedObservedHistory(records=())
@@ -478,6 +481,13 @@ class StoredPrimariesStep(CycleStep):
         primary[ForecastQualityStore] = (
             self._forecast_quality_store.value if self._forecast_quality_store else None
         ) or ForecastQualityStore()
+        # Injected raw: ``None`` is meaningful and must stay distinguishable
+        # from a zero-capacity fit, which would make every clear-sky index
+        # infinite. It also lets ArrayCalibrationNode reuse yesterday's fit
+        # instead of re-running the grid search every cycle.
+        primary[ArrayCalibration] = (
+            self._array_calibration_store.value if self._array_calibration_store else None
+        )
         primary[SunTimes] = self._read_sun_times(now)
         primary[InverterModeHistory] = (
             self._mode_history_store.value if self._mode_history_store else None

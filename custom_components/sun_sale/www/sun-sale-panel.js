@@ -75,9 +75,10 @@
       this._entryEntityIds = null;   // Set of this entry's entity_ids, or null = no scoping
       this._eidByKey       = null;   // logical key (sunsale_<key>) → scoped entity_id
       this._chart        = null;
-      this._g1Chart      = null;
-      this._g2Chart      = null;
-      this._g3Chart      = null;
+      this._csiChart     = null;
+      this._elevChart    = null;
+      this._azimChart    = null;
+      this._horizonChart = null;
       this._qualityCharts = [];   // [{chart, el, title, labels, metrics}] for resize
       this._resizeObs    = null;
       this._resizeRaf    = 0;
@@ -140,10 +141,10 @@
     disconnectedCallback() {
       if (this._resizeObs) { this._resizeObs.disconnect(); this._resizeObs = null; }
       if (this._resizeRaf) { cancelAnimationFrame(this._resizeRaf); this._resizeRaf = 0; }
-      if (this._chart)   { this._chart.dispose();   this._chart   = null; }
-      if (this._g1Chart) { this._g1Chart.dispose(); this._g1Chart = null; }
-      if (this._g2Chart) { this._g2Chart.dispose(); this._g2Chart = null; }
-      if (this._g3Chart) { this._g3Chart.dispose(); this._g3Chart = null; }
+      if (this._chart) { this._chart.dispose(); this._chart = null; }
+      for (const key of ['_csiChart', '_elevChart', '_azimChart', '_horizonChart']) {
+        if (this[key]) { this[key].dispose(); this[key] = null; }
+      }
       this._qualityCharts = [];
     }
 
@@ -2577,7 +2578,11 @@
       this._renderBillSummary();
 
       const dashAttrsForQuality = this._hass.states[this._dashboardEid]?.attributes;
-      this._renderAccuracySection(dashAttrsForQuality?.forecast_quality ?? null);
+      this._renderAccuracySection(
+        dashAttrsForQuality?.forecast_quality ?? null,
+        dashAttrsForQuality?.array_calibration ?? null,
+        dashAttrsForQuality?.solar_health ?? null,
+      );
     }
 
     // ── Net Billing ────────────────────────────────────────────────────────────
@@ -2674,16 +2679,17 @@
     // ── Forecast Quality Charts ────────────────────────────────────────────────
 
     _buildQualityChartOption(title, xLabels, metricsArr, availW) {
-      // metricsArr: [{n, bias_wh, mae_wh, rmse_wh, mape_pct, r2}, ...] aligned with xLabels.
+      // metricsArr: [{n, bias_wh, mae_wh, rmse_wh, r2}, ...] aligned with xLabels.
+      // MAPE is deliberately absent: on PV it is dominated by near-zero slots
+      // and tracks how many dim slots a window held, not forecast quality.
       const get = (key) => metricsArr.map(m => (m && m[key] != null) ? m[key] : null);
 
       const maeSeries  = get('mae_wh');
       const rmseSeries = get('rmse_wh');
       const biasSeries = get('bias_wh');
-      const mapeSeries = get('mape_pct');
       const r2Series   = get('r2').map(v => v != null ? +(v * 100).toFixed(2) : null);
 
-      const UNIT = ['Wh', 'Wh', 'Wh', '%', '%'];
+      const UNIT = ['Wh', 'Wh', 'Wh', '%'];
       const g    = this._qualityGeom(title, availW || 600);
 
       return {
@@ -2790,16 +2796,6 @@
             itemStyle:  { color: '#42a5f5' },
           },
           {
-            name:       'MAPE (%)',
-            type:       'line',
-            yAxisIndex: 1,
-            smooth:     true,
-            showSymbol: false,
-            data:       mapeSeries,
-            lineStyle:  { color: '#66bb6a', width: 2 },
-            itemStyle:  { color: '#66bb6a' },
-          },
-          {
             name:       'R²×100 (%)',
             type:       'line',
             yAxisIndex: 1,
@@ -2813,20 +2809,24 @@
       };
     }
 
-    _renderAccuracySection(quality) {
+    _renderAccuracySection(quality, calibration, health) {
       const container = this.shadowRoot.querySelector('#accuracy');
       if (!container) return;
 
       // Dispose previous charts up front so both the no-data and the rebuild
       // paths drop stale instances (and clear the resize registry).
-      if (this._g1Chart) { this._g1Chart.dispose(); this._g1Chart = null; }
-      if (this._g2Chart) { this._g2Chart.dispose(); this._g2Chart = null; }
-      if (this._g3Chart) { this._g3Chart.dispose(); this._g3Chart = null; }
+      for (const key of ['_csiChart', '_elevChart', '_azimChart', '_horizonChart']) {
+        if (this[key]) { this[key].dispose(); this[key] = null; }
+      }
       this._qualityCharts = [];
 
-      if (!quality || (!Object.keys(quality.group1 || {}).length &&
-                       !Object.keys(quality.group2 || {}).length &&
-                       !Object.keys(quality.group3 || {}).length)) {
+      const csi     = quality?.csi_bins       || {};
+      const elev    = quality?.elevation_bins || {};
+      const azim    = quality?.azimuth_bins   || {};
+      const horizon = quality?.horizon        || {};
+
+      if (!Object.keys(csi).length && !Object.keys(elev).length &&
+          !Object.keys(azim).length && !Object.keys(horizon).length) {
         container.innerHTML = '<div class="accuracy-title">Forecast Quality</div>'
           + '<div class="accuracy-subtitle" style="color:#666">No quality data yet — accumulates over time.</div>';
         return;
@@ -2839,20 +2839,58 @@
         ? new Date(quality.sunset_utc).toLocaleTimeString([], {hour:'2-digit', minute:'2-digit', hour12: false})
         : '—';
 
+      // The clear-sky axis needs a fitted array for its denominator; say so
+      // rather than rendering an empty chart that looks like a failure.
+      const csiNote = Object.keys(csi).length
+        ? ''
+        : '<div class="accuracy-subtitle" style="color:#666">Clear-sky index awaits array calibration.</div>';
+
+      // Array calibration: the correction factor is the actionable number —
+      // it says whether the forecast provider is configured with the right
+      // array. Low confidence is called out so it is not acted on too early.
+      let calibrationNote = '';
+      if (calibration) {
+        const corr = calibration.correction_factor;
+        const conf = calibration.confidence ?? 0;
+        const confLabel = conf >= 0.5 ? '' : ' — low confidence, do not act yet';
+        const corrLabel = (corr == null)
+          ? 'no comparison yet'
+          : `forecast implies ${calibration.implied_forecast_kwp} kWp → ×${corr.toFixed(2)}`;
+        calibrationNote =
+          `<div class="accuracy-subtitle">Array fit: ${calibration.kwp_eff} kWp at `
+          + `${calibration.tilt_deg}° tilt / ${calibration.azimuth_deg}° azimuth `
+          + `(${calibration.n_days}d, confidence ${conf.toFixed(2)})</div>`
+          + `<div class="accuracy-subtitle">${corrLabel}${confLabel}</div>`;
+      }
+
+      let healthNote = '';
+      if (health && health.status) {
+        const colors = { ok: '#66bb6a', degraded: '#ff7043', unknown: '#888' };
+        const ratioStr = health.ratio != null ? ` (${(health.ratio * 100).toFixed(0)}% of baseline)` : '';
+        healthNote =
+          `<div class="accuracy-subtitle">Array health: `
+          + `<span style="color:${colors[health.status] || '#888'}">${health.status}</span>`
+          + `${ratioStr}</div>`;
+      }
+
       container.innerHTML = `
         <div class="accuracy-title">Forecast Quality</div>
         <div class="accuracy-subtitle">Sunrise ${sunriseStr} · Sunset ${sunsetStr} (local)</div>
         <div class="accuracy-subtitle">EMA α=0.1 running accuracy per bucket</div>
-        <div id="g1-chart" class="accuracy-chart" style="height:300px"></div>
-        <div id="g2-chart" class="accuracy-chart" style="height:300px"></div>
-        <div id="g3-chart" class="accuracy-chart" style="height:300px"></div>
+        ${calibrationNote}
+        ${healthNote}
+        ${csiNote}
+        <div id="csi-chart" class="accuracy-chart" style="height:300px"></div>
+        <div id="elev-chart" class="accuracy-chart" style="height:300px"></div>
+        <div id="azim-chart" class="accuracy-chart" style="height:300px"></div>
+        <div id="horizon-chart" class="accuracy-chart" style="height:300px"></div>
       `;
 
       // Initialise one quality chart: size its container to the responsive
       // height, build the width-aware option, and register it for resize.
       const mount = (selector, title, labels, metrics) => {
         const el = container.querySelector(selector);
-        if (!el) return null;
+        if (!el || !labels.length) return null;
         const availW = el.clientWidth || window.innerWidth || 600;
         el.style.height = this._qualityGeom(title, availW).height + 'px';
         const chart = window.echarts.init(el, null, { renderer: 'canvas' });
@@ -2861,42 +2899,55 @@
         return chart;
       };
 
-      // Group 1: intensity bins — sorted numerically by Wh.
+      // Numeric-keyed groups sort by value, not lexically ("100" < "20").
+      const ordered = (group) => Object.keys(group).map(Number).sort((a, b) => a - b);
+
+      // Clear-sky index — the headline. The final bucket is an overflow for
+      // everything at or above 100%: a heavy overflow means the array is
+      // out-producing the capacity the forecast was configured with.
       {
-        const g1 = quality.group1 || {};
-        const keys = Object.keys(g1).map(Number).sort((a, b) => a - b);
-        const labels = keys.map(k => k + ' Wh');
-        const metrics = keys.map(k => g1[String(k)]);
-        this._g1Chart = mount('#g1-chart',
-          'Group 1 — Accuracy by Predicted Intensity (per forecast-kWh bin)',
-          labels, metrics);
+        const keys = ordered(csi);
+        const labels = keys.map(k => (k >= 100 ? '≥100% ⚠' : `${k}–${k + 10}%`));
+        this._csiChart = mount('#csi-chart',
+          'Clear-Sky Index — Accuracy by Fraction of Clear-Sky Potential',
+          labels, keys.map(k => csi[String(k)]));
       }
 
-      // Group 2: solar-day positional buckets — sorted 1..N.
+      // Solar elevation — isolates air-mass / low-sun model error.
       {
-        const g2 = quality.group2 || {};
-        const keys = Object.keys(g2).map(Number).sort((a, b) => a - b);
-        const n = keys.length;
-        const half = Math.ceil(n / 2);
-        const labels = keys.map(k => {
-          if (k <= half) return `Dawn +${k - 1}`;
-          return `Dusk -${n - k}`;
-        });
-        const metrics = keys.map(k => g2[String(k)]);
-        this._g2Chart = mount('#g2-chart',
-          'Group 2 — Accuracy by Solar-Day Position (Dawn → Dusk)',
-          labels, metrics);
+        const keys = ordered(elev);
+        this._elevChart = mount('#elev-chart',
+          'Solar Elevation — Accuracy by Sun Height Above Horizon',
+          keys.map(k => `${k}–${k + 5}°`), keys.map(k => elev[String(k)]));
       }
 
-      // Group 3: horizon buckets d0–d6.
+      // Solar azimuth — a persistent deficit in specific bearings is a fixed
+      // obstruction (tree, chimney, neighbouring roof), not forecast error.
       {
-        const g3 = quality.group3 || {};
-        const keys = Object.keys(g3).map(Number).sort((a, b) => a - b);
-        const labels = keys.map(k => `d${k}`);
-        const metrics = keys.map(k => g3[String(k)]);
-        this._g3Chart = mount('#g3-chart',
-          'Group 3 — Accuracy by Forecast Horizon (d0 = same day, d6 = 6 days ahead)',
-          labels, metrics);
+        const keys = ordered(azim);
+        const compass = (d) => {
+          if (d >= 337.5 || d < 22.5) return 'N';
+          if (d < 67.5)  return 'NE';
+          if (d < 112.5) return 'E';
+          if (d < 157.5) return 'SE';
+          if (d < 202.5) return 'S';
+          if (d < 247.5) return 'SW';
+          if (d < 292.5) return 'W';
+          return 'NW';
+        };
+        this._azimChart = mount('#azim-chart',
+          'Solar Azimuth — Accuracy by Sun Bearing (dips = fixed shading)',
+          keys.map(k => `${k}° ${compass(k)}`), keys.map(k => azim[String(k)]));
+      }
+
+      // Forecast horizon. The DP plans only ~32 h ahead (bounded by the price
+      // series), so d2–d6 cannot influence a decision and are informational.
+      {
+        const keys = ordered(horizon);
+        this._horizonChart = mount('#horizon-chart',
+          'Forecast Horizon — Day-Ahead Accuracy (d0/d1 drive dispatch; d2+ informational)',
+          keys.map(k => (k <= 1 ? `d${k}` : `d${k} (info)`)),
+          keys.map(k => horizon[String(k)]));
       }
     }
   }

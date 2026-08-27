@@ -85,6 +85,8 @@ def _coordinator_to_dict(entry_id: str, coordinator: Any) -> dict:
     batt_runtime = data.get("battery_runtime")
     profitability = data.get("profitability_score")
     forecast_quality = data.get("forecast_quality")
+    array_calibration = data.get("array_calibration")
+    solar_health = data.get("solar_health")
     sun_times = data.get("sun_times")
     monthly_bill = data.get("monthly_bill")
     grid_import_power_history = data.get("grid_import_power_history")
@@ -356,6 +358,7 @@ def _coordinator_to_dict(entry_id: str, coordinator: Any) -> dict:
             } if baked_history is not None else None,
             "forecast_error": {
                 "slot_count": len(forecast_err.slots),
+                "matched_slot_count": forecast_err.matched_slot_count,
                 "total_forecast_kwh": round(forecast_err.total_forecast_kwh, 4),
                 "total_observed_kwh": round(forecast_err.total_observed_kwh, 4),
                 "censored_slot_count": sum(1 for s in forecast_err.slots if s.censored),
@@ -434,13 +437,56 @@ def _coordinator_to_dict(entry_id: str, coordinator: Any) -> dict:
                 "window_days": profitability.window_days,
                 "computed_at": profitability.computed_at.isoformat(),
             } if profitability is not None else None,
+            "solar_health": {
+                "status": solar_health.status,
+                "recent_ceiling": (
+                    round(solar_health.recent_ceiling, 4)
+                    if solar_health.recent_ceiling is not None else None
+                ),
+                "baseline_ceiling": (
+                    round(solar_health.baseline_ceiling, 4)
+                    if solar_health.baseline_ceiling is not None else None
+                ),
+                "ratio": (
+                    round(solar_health.ratio, 4)
+                    if solar_health.ratio is not None else None
+                ),
+                "recent_days": solar_health.recent_days,
+                "baseline_days": solar_health.baseline_days,
+                "computed_at": (
+                    solar_health.computed_at.isoformat()
+                    if solar_health.computed_at else None
+                ),
+            } if solar_health is not None else None,
+            "array_calibration": {
+                "kwp_eff": round(array_calibration.kwp_eff, 4),
+                "tilt_deg": round(array_calibration.tilt_deg, 2),
+                "azimuth_deg": round(array_calibration.azimuth_deg, 2),
+                "fit_quality": round(array_calibration.fit_quality, 4),
+                "n_days": array_calibration.n_days,
+                "n_slots": array_calibration.n_slots,
+                "implied_forecast_kwp": (
+                    round(array_calibration.implied_forecast_kwp, 4)
+                    if array_calibration.implied_forecast_kwp is not None else None
+                ),
+                "correction_factor": (
+                    round(array_calibration.correction_factor, 4)
+                    if array_calibration.correction_factor is not None else None
+                ),
+                "confidence": round(array_calibration.confidence, 4),
+                "computed_at": (
+                    array_calibration.computed_at.isoformat()
+                    if array_calibration.computed_at else None
+                ),
+            } if array_calibration is not None else None,
             "forecast_quality": {
                 "sunrise_utc": sun_times.today_sunrise.isoformat() if (sun_times and sun_times.today_sunrise) else None,
                 "sunset_utc": sun_times.today_sunset.isoformat() if (sun_times and sun_times.today_sunset) else None,
-                "group1": {k: v.metrics() for k, v in forecast_quality.group1.items()},
-                "group2": {k: v.metrics() for k, v in forecast_quality.group2.items()},
-                "group3": {k: v.metrics() for k, v in forecast_quality.group3.items()},
-                "group3_pending_count": len(forecast_quality.group3_pending),
+                "csi_bins": {k: v.metrics() for k, v in forecast_quality.csi_bins.items()},
+                "elevation_bins": {k: v.metrics() for k, v in forecast_quality.elevation_bins.items()},
+                "azimuth_bins": {k: v.metrics() for k, v in forecast_quality.azimuth_bins.items()},
+                "horizon": {k: v.metrics() for k, v in forecast_quality.horizon.items()},
+                "horizon_pending_count": len(forecast_quality.horizon_pending),
             } if forecast_quality is not None else None,
             "monthly_bill": {
                 "slot_count": len(monthly_bill.slots),

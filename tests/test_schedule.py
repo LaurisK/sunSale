@@ -46,7 +46,8 @@ def _make_gen_series(solar: list[SolarForecast]) -> GenerationSeries:
     return GenerationSeries(slots=slots)
 
 
-def run(prices, solar=None, soc=0.50, battery_config=None, tariff_config=None):
+def run(prices, solar=None, soc=0.50, battery_config=None, tariff_config=None,
+        forecast_reserve_soc=0.0):
     """Convenience wrapper that wires up the pipeline pieces and runs the DP."""
     bc = battery_config or default_battery_config()
     tc = tariff_config or default_tariff_config()
@@ -56,7 +57,10 @@ def run(prices, solar=None, soc=0.50, battery_config=None, tariff_config=None):
     price_series = build_price_series(prices, tc, now=NOW)
     gen_series = _make_gen_series(solar or [])
     calc = calculate(price_series, gen_series, state, NOW)
-    return optimize_schedule(price_series, calc, bc, state, deg, NOW)
+    return optimize_schedule(
+        price_series, calc, bc, state, deg, NOW,
+        forecast_reserve_soc=forecast_reserve_soc,
+    )
 
 
 # ---------------------------------------------------------------------------
@@ -876,3 +880,54 @@ def test_export_cap_with_feed_in_disabled():
 
     _, max_export_kw = _replay_under_cap(schedule, *replay_args, _CAP_KW)
     assert max_export_kw <= _CAP_KW + 1e-9
+
+
+# ---------------------------------------------------------------------------
+# Forecast reserve — a planning floor on the DP's SoC envelope
+# ---------------------------------------------------------------------------
+
+
+def _sell_everything_prices():
+    """Prices that make discharging strictly attractive in every slot."""
+    return [make_price(h, 0.60) for h in range(6)]
+
+
+def test_without_reserve_the_planner_drains_to_the_battery_minimum():
+    """Control: with no reserve the DP is free to sell down to min_soc."""
+    schedule = run(_sell_everything_prices(), soc=0.90, forecast_reserve_soc=0.0)
+    bc = default_battery_config()
+    assert min(s.expected_soc_after for s in schedule.slots) == pytest.approx(
+        bc.min_soc, abs=0.02
+    )
+
+
+def test_reserve_stops_the_planner_draining_below_the_raised_floor():
+    """The reserve is the whole point: keep charge back against a bad forecast.
+
+    Without it the DP happily empties the battery into a high-price window on
+    the strength of solar it merely *expects* tomorrow; when that solar does not
+    arrive the shortfall is bought at peak.
+    """
+    reserve = 0.20
+    schedule = run(_sell_everything_prices(), soc=0.90, forecast_reserve_soc=reserve)
+    bc = default_battery_config()
+    lowest = min(s.expected_soc_after for s in schedule.slots)
+    assert lowest >= bc.min_soc + reserve - 0.02
+
+
+def test_reserve_never_strands_a_battery_already_below_the_floor():
+    """A battery starting under the raised floor must still be schedulable.
+
+    The reserve is a planning floor, not a hardware limit — treating it as one
+    would leave a depleted battery with no valid SoC bucket at all.
+    """
+    schedule = run(_sell_everything_prices(), soc=0.12, forecast_reserve_soc=0.20)
+    assert schedule.slots, "a below-floor battery must still produce a schedule"
+    assert all(s.mode is not None for s in schedule.slots)
+
+
+def test_reserve_larger_than_the_envelope_degrades_to_holding():
+    """An absurd reserve must clamp, not invert the SoC envelope."""
+    schedule = run(_sell_everything_prices(), soc=0.90, forecast_reserve_soc=5.0)
+    assert schedule.slots
+    assert all(s.expected_soc_after <= 1.0 for s in schedule.slots)

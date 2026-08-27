@@ -31,6 +31,8 @@ from .forecast import (
     ForecastCheckResult,
     ForecastCheckWidget,
     ForecastQualityCheckResult,
+    ArrayCalibrationCheckResult,
+    ArrayCalibrationCheckWidget,
     ForecastQualityCheckWidget,
 )
 from .inverter import InverterModeCheckResult, InverterModeCheckWidget
@@ -53,6 +55,7 @@ _DEEP_CATS: frozenset[str] = frozenset({
     "observed_generation", "observed_grid", "forecast_accuracy",
     "base_load", "battery_runtime",
     "household_consumption", "profitability", "forecast_quality",
+    "array_calibration",
     "monthly_bill", "baked_observed",
     "observed_consumption", "observed_losses",
     "inverter_mode", "capability",
@@ -93,6 +96,7 @@ class IntegrationCheckApp(App):
     HouseholdConsumptionCheckWidget { height: auto; }
     ProfitabilityCheckWidget { height: auto; }
     ForecastQualityCheckWidget { height: auto; }
+    ArrayCalibrationCheckWidget { height: auto; }
     ForecastQualityBucketTable DataTable { height: 14; }
     MonthlyBillCheckWidget { height: auto; }
     InverterModeCheckWidget { height: auto; }
@@ -116,6 +120,7 @@ class IntegrationCheckApp(App):
         household_consumption_results: dict[str, HouseholdConsumptionCheckResult],
         profitability_results: dict[str, ProfitabilityCheckResult],
         forecast_quality_results: dict[str, ForecastQualityCheckResult],
+        array_calibration_results: dict[str, ArrayCalibrationCheckResult],
         monthly_bill_results: dict[str, MonthlyBillCheckResult],
         observed_consumption_results: dict[str, ObservedConsumptionCheckResult],
         observed_losses_results: dict[str, ObservedLossesCheckResult],
@@ -141,6 +146,7 @@ class IntegrationCheckApp(App):
             household_consumption_results: Per-entry household consumption deep-check results.
             profitability_results: Per-entry profitability score deep-check results.
             forecast_quality_results: Per-entry forecast quality EMA bucket deep-check results.
+            array_calibration_results: Per-entry array calibration / solar health deep-check results.
             monthly_bill_results: Per-entry monthly electricity bill deep-check results.
             observed_consumption_results: Per-entry observed consumption deep-check results.
             observed_losses_results: Per-entry observed losses deep-check results.
@@ -163,6 +169,7 @@ class IntegrationCheckApp(App):
         self._household_consumption_results = household_consumption_results
         self._profitability_results = profitability_results
         self._forecast_quality_results = forecast_quality_results
+        self._array_calibration_results = array_calibration_results
         self._monthly_bill_results = monthly_bill_results
         self._observed_consumption_results = observed_consumption_results
         self._observed_losses_results = observed_losses_results
@@ -191,6 +198,7 @@ class IntegrationCheckApp(App):
             + list(self._household_consumption_results.values())
             + list(self._profitability_results.values())
             + list(self._forecast_quality_results.values())
+            + list(self._array_calibration_results.values())
             + list(self._monthly_bill_results.values())
             + list(self._observed_consumption_results.values())
             + list(self._observed_losses_results.values())
@@ -234,6 +242,7 @@ class IntegrationCheckApp(App):
                 ("observed_losses",         ObservedLossesCheckWidget,          self._observed_losses_results),
                 ("profitability",           ProfitabilityCheckWidget,           self._profitability_results),
                 ("forecast_quality",        ForecastQualityCheckWidget,         self._forecast_quality_results),
+                ("array_calibration",       ArrayCalibrationCheckWidget,        self._array_calibration_results),
                 ("monthly_bill",            MonthlyBillCheckWidget,             self._monthly_bill_results),
             ):
                 r = results_map.get(eid)

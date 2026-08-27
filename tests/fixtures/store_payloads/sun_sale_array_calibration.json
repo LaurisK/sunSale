@@ -1,0 +1,12 @@
+{
+  "azimuth_deg": 140.0,
+  "computed_at": "2026-07-11T12:30:00+00:00",
+  "confidence": 0.3408,
+  "correction_factor": 0.8862,
+  "fit_quality": 0.8521,
+  "implied_forecast_kwp": 8.61,
+  "kwp_eff": 7.63,
+  "n_days": 8,
+  "n_slots": 328,
+  "tilt_deg": 15.0
+}

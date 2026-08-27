@@ -91,6 +91,23 @@ CONF_NORDPOOL_RESOLUTION = "nordpool_resolution"
 # sensor (see inbound/pricing.py:build_price_translator). Default keeps the
 # historical Nordpool behaviour so existing configs need no migration.
 CONF_PRICE_SOURCE = "price_source"
+
+# When enabled, the fitted array calibration's correction factor is applied to
+# the generation forecast. Off by default: the factor is derived from the
+# install's own history, so it must be eyeballed in the panel before it is
+# allowed to move dispatch.
+CONF_APPLY_FORECAST_CORRECTION = "apply_forecast_correction"
+
+# When enabled, the DP holds back a slice of the battery sized from the
+# measured day-ahead forecast error, so it does not sell down on the strength
+# of solar that may not arrive. Dispatch-affecting, hence off by default.
+CONF_FORECAST_RESERVE_ENABLED = "forecast_reserve_enabled"
+DEFAULT_FORECAST_RESERVE_ENABLED = False
+DEFAULT_APPLY_FORECAST_CORRECTION = False
+
+# Calibration confidence below which the correction is never applied, however
+# the flag is set — a fit from a handful of clear days is not evidence.
+FORECAST_CORRECTION_MIN_CONFIDENCE = 0.5
 CONF_PRICE_EXPORT_ENTITY = "price_export_entity"  # optional separate export feed
 # Absolute import-price TOU schedule for the synthetic ``tou`` source: a list of
 # {"start": "HH:MM", "price": float} dicts (local time), same row shape as the
@@ -167,6 +184,7 @@ STORAGE_KEY_PV_POWER = f"{DOMAIN}_pv_power"
 STORAGE_KEY_CONSUMPTION_DAILY = f"{DOMAIN}_consumption_daily"
 STORAGE_KEY_PRICE_HISTORY = f"{DOMAIN}_price_history"
 STORAGE_KEY_FORECAST_QUALITY = f"{DOMAIN}_forecast_quality"
+STORAGE_KEY_ARRAY_CALIBRATION = f"{DOMAIN}_array_calibration"
 STORAGE_KEY_GRID_IMPORT_POWER = f"{DOMAIN}_grid_import_power"
 STORAGE_KEY_GRID_EXPORT_POWER = f"{DOMAIN}_grid_export_power"
 STORAGE_KEY_GRID_IMPORT_TOTAL = f"{DOMAIN}_grid_import_total"

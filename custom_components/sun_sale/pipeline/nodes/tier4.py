@@ -5,6 +5,7 @@ import logging
 from dataclasses import replace
 
 from ...contract.models import (
+    ForecastQualityStore,
     BaseLoadProfile,
     BatteryConfig,
     BatteryState,
@@ -17,6 +18,7 @@ from ...contract.models import (
     Schedule,
     SchedulePolicy,
 )
+from .. import forecast_accuracy
 from .. import schedule as schedule_module
 from ..dag_engine import DagNode, NodeContext
 
@@ -103,6 +105,16 @@ class ScheduleNode(DagNode):
         current_mode = mode_reading.mode if mode_reading is not None else None
         policy = ctx.get(SchedulePolicy) or SchedulePolicy()
 
+        # Resolved here rather than in the policy seed step: sizing the reserve
+        # needs the learned battery capacity, which only exists once the
+        # battery translator has run.
+        reserve_soc = 0.0
+        if ctx.config.forecast_reserve_enabled:
+            reserve_soc = forecast_accuracy.forecast_reserve_soc(
+                ctx.get(ForecastQualityStore),
+                battery_state.estimated_capacity_kwh,
+            ) or 0.0
+
         schedule = schedule_module.optimize_schedule(
             price_series=price_series,
             calc=calc,
@@ -123,6 +135,7 @@ class ScheduleNode(DagNode):
             terminal_value_discount=policy.terminal_value_discount,
             max_discharge_to_grid_kw=policy.max_discharge_to_grid_kw,
             export_limit_kw=policy.export_limit_kw,
+            forecast_reserve_soc=reserve_soc,
         )
 
         return schedule

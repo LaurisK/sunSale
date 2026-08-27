@@ -28,6 +28,7 @@ import pytest
 from custom_components.sun_sale.contract.const import (
     STORAGE_KEY_BAKED_OBSERVED,
     STORAGE_KEY_CONSUMPTION_DAILY,
+    STORAGE_KEY_ARRAY_CALIBRATION,
     STORAGE_KEY_COUNTER_SNAPSHOT,
     STORAGE_KEY_FORECAST_QUALITY,
     STORAGE_KEY_MODE_HISTORY,
@@ -35,7 +36,10 @@ from custom_components.sun_sale.contract.const import (
     STORAGE_KEY_PRICE_HISTORY,
     STORAGE_KEY_YESTERDAY,
 )
+from custom_components.sun_sale.pipeline import forecast_accuracy
 from custom_components.sun_sale.contract.models import (
+    FORECAST_QUALITY_STORE_VERSION,
+    ArrayCalibration,
     AccuracyBucketState,
     BakedDayRecord,
     BakedObservedHistory,
@@ -128,12 +132,37 @@ def _rep_price_history() -> list[DailyPeak]:
 
 
 def _rep_forecast_quality() -> ForecastQualityStore:
-    """Return a quality store with a populated bucket and a pending record."""
+    """Return a quality store with a populated bucket and a pending record.
+
+    Must be stamped at the current STORE_VERSION with a watermark set: a v0
+    payload is deliberately lossy on load (group1/group2 are dropped), so an
+    unversioned representative would exercise the migration path rather than
+    the round-trip this fixture is for.
+    """
     return ForecastQualityStore(
-        group1={"0": AccuracyBucketState(ema_error=0.1, ema_abs_error=0.2, n=5)},
-        group2={"1": AccuracyBucketState(ema_obs=1.5, ema_obs_sq=2.25, n=3)},
-        group3={"0": AccuracyBucketState(n=0)},
-        group3_pending=[{"target_date": "2026-07-11", "horizon": 1, "forecast_kwh": 2.5}],
+        csi_bins={"90": AccuracyBucketState(ema_error=0.1, ema_abs_error=0.2, n=5)},
+        elevation_bins={"25": AccuracyBucketState(ema_obs=1.5, ema_obs_sq=2.25, n=3)},
+        azimuth_bins={"180": AccuracyBucketState(ema_error=-0.05, ema_abs_error=0.05, n=7)},
+        horizon={"0": AccuracyBucketState(n=0)},
+        horizon_pending=[{"target_date": "2026-07-11", "horizon": 1, "forecast_kwh": 2.5}],
+        last_ingested_slot_utc="2026-07-11T12:00:00+00:00",
+        version=FORECAST_QUALITY_STORE_VERSION,
+    )
+
+
+def _rep_array_calibration() -> ArrayCalibration:
+    """Return a fitted calibration with both capacities and a correction set."""
+    return ArrayCalibration(
+        kwp_eff=7.63,
+        tilt_deg=15.0,
+        azimuth_deg=140.0,
+        fit_quality=0.8521,
+        n_days=8,
+        n_slots=328,
+        implied_forecast_kwp=8.61,
+        correction_factor=0.8862,
+        confidence=0.3408,
+        computed_at=_T2,
     )
 
 
@@ -196,6 +225,7 @@ def _rep_baked_observed() -> BakedObservedHistory:
 _SINGLETON_REPRESENTATIVE = {
     STORAGE_KEY_CONSUMPTION_DAILY: _rep_consumption_daily,
     STORAGE_KEY_PRICE_HISTORY: _rep_price_history,
+    STORAGE_KEY_ARRAY_CALIBRATION: _rep_array_calibration,
     STORAGE_KEY_FORECAST_QUALITY: _rep_forecast_quality,
     STORAGE_KEY_MONTHLY_BILL: _rep_monthly_bill,
     STORAGE_KEY_YESTERDAY: _rep_yesterday,
@@ -306,3 +336,29 @@ def test_capacity_stale_schema_purges_to_nominal():
     # Poison observations dropped; estimate collapses back to nominal.
     assert restored.to_dict()["observations"] == []
     assert restored.estimated_capacity_kwh == pytest.approx(28.0)
+
+
+def test_forecast_quality_v0_drops_legacy_per_slot_axes():
+    """A pre-v2 quality fixture loses its per-slot buckets but keeps the horizon.
+
+    Pins two regressions at once. Before the ingestion watermark the DAG re-fed
+    every matched slot on every coordinator cycle (~288x/day), so those EMAs
+    describe minutes rather than months; and the old buckets were keyed on
+    absolute forecast kWh / slot-within-day position, which the current
+    physical axes cannot be re-derived from. The horizon buckets commit once per
+    (target_date, horizon) under both schemas and must survive.
+    """
+    fixture = FIXTURE_DIR / "forecast_quality_v0_no_watermark.json"
+    payload = json.loads(fixture.read_text())
+    assert "version" not in payload
+    assert payload["group1"]["0"]["n"] == 5
+
+    restored = forecast_accuracy.store_from_dict(payload)
+
+    assert restored.csi_bins == {}
+    assert restored.elevation_bins == {}
+    assert restored.azimuth_bins == {}
+    assert restored.horizon["0"].n == 0
+    assert restored.horizon_pending == payload["group3_pending"]
+    assert restored.last_ingested_slot_utc is None
+    assert restored.version == FORECAST_QUALITY_STORE_VERSION

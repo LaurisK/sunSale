@@ -28,6 +28,7 @@ from ..contract.const import (
     STORAGE_KEY_BAKED_OBSERVED,
     STORAGE_KEY_CONSUMPTION_DAILY,
     STORAGE_KEY_COUNTER_SNAPSHOT,
+    STORAGE_KEY_ARRAY_CALIBRATION,
     STORAGE_KEY_FORECAST_QUALITY,
     STORAGE_KEY_MODE_HISTORY,
     STORAGE_KEY_MONTHLY_BILL,
@@ -43,6 +44,7 @@ from ..contract.models import (
     CounterSnapshotRecord,
     DailyPeak,
     DayClass,
+    ArrayCalibration,
     ForecastQualityStore,
     InverterModeChange,
     InverterModeHistory,
@@ -393,6 +395,69 @@ def _deserialize_mode_history(d: dict) -> InverterModeHistory:
     return InverterModeHistory(samples=tuple(samples))
 
 
+def _serialize_array_calibration(cal: ArrayCalibration) -> dict:
+    """Serialise a fitted array calibration to a JSON-safe dict.
+
+    Args:
+        cal: Calibration to persist.
+
+    Returns:
+        Dict suitable for HA's Store.async_save().
+    """
+    return {
+        "kwp_eff": round(cal.kwp_eff, 4),
+        "tilt_deg": round(cal.tilt_deg, 2),
+        "azimuth_deg": round(cal.azimuth_deg, 2),
+        "fit_quality": round(cal.fit_quality, 4),
+        "n_days": cal.n_days,
+        "n_slots": cal.n_slots,
+        "implied_forecast_kwp": (
+            round(cal.implied_forecast_kwp, 4)
+            if cal.implied_forecast_kwp is not None else None
+        ),
+        "correction_factor": (
+            round(cal.correction_factor, 4)
+            if cal.correction_factor is not None else None
+        ),
+        "confidence": round(cal.confidence, 4),
+        "computed_at": cal.computed_at.isoformat() if cal.computed_at else None,
+    }
+
+
+def _deserialize_array_calibration(d: dict) -> ArrayCalibration | None:
+    """Rebuild a fitted array calibration from its stored dict.
+
+    Args:
+        d: Dict from HA's Store.async_load().
+
+    Returns:
+        The restored calibration, or ``None`` when the payload is unusable —
+        a partially-written calibration must not silently become a
+        zero-capacity one, which would make every clear-sky index infinite.
+    """
+    if not d or d.get("kwp_eff") in (None, 0):
+        return None
+    raw_at = d.get("computed_at")
+    return ArrayCalibration(
+        kwp_eff=float(d["kwp_eff"]),
+        tilt_deg=float(d.get("tilt_deg", 0.0)),
+        azimuth_deg=float(d.get("azimuth_deg", 180.0)),
+        fit_quality=float(d.get("fit_quality", 0.0)),
+        n_days=int(d.get("n_days", 0)),
+        n_slots=int(d.get("n_slots", 0)),
+        implied_forecast_kwp=(
+            float(d["implied_forecast_kwp"])
+            if d.get("implied_forecast_kwp") is not None else None
+        ),
+        correction_factor=(
+            float(d["correction_factor"])
+            if d.get("correction_factor") is not None else None
+        ),
+        confidence=float(d.get("confidence", 0.0)),
+        computed_at=datetime.fromisoformat(raw_at) if raw_at else None,
+    )
+
+
 def _serialize_monthly_bill(state: MonthlyBillState) -> dict:
     """Serialise the monthly bill ledger as a ``date_str → cost`` map."""
     return {"finalized_days": dict(state.finalized_days)}
@@ -433,6 +498,11 @@ SINGLETON_STORE_SPECS: tuple[SingletonStoreSpec, ...] = (
         storage_key=STORAGE_KEY_PRICE_HISTORY,
         serialize=_serialize_price_history,
         deserialize=_deserialize_price_history,
+    ),
+    SingletonStoreSpec(
+        storage_key=STORAGE_KEY_ARRAY_CALIBRATION,
+        serialize=_serialize_array_calibration,
+        deserialize=_deserialize_array_calibration,
     ),
     SingletonStoreSpec(
         storage_key=STORAGE_KEY_FORECAST_QUALITY,

@@ -266,6 +266,13 @@ class SchedulePolicy:
             solar instead of planning exports the inverter cannot deliver.
             ``None`` = uncapped (legacy behaviour, and the fallback for a bare
             ``SchedulePolicy()`` in ``ScheduleNode``).
+        ``forecast_reserve_soc`` — extra SoC fraction the planner may not spend,
+            sized from the measured spread of the day-ahead generation forecast.
+            The DP sells battery *now* on the strength of solar it expects
+            *later*; when that solar does not arrive the battery is empty and
+            the shortfall is imported at peak. Holding back roughly one standard
+            deviation of day-ahead forecast error bounds that exposure. Raises
+            the DP's SoC floor only — never forces a charge. ``None`` = disabled.
         ``max_battery_charge_kw`` / ``max_battery_discharge_kw`` — the battery
             legs' live ceilings from ``InverterCapability``, already reduced
             against ``BatteryConfig``. ``ScheduleNode`` substitutes them into the
@@ -284,6 +291,7 @@ class SchedulePolicy:
     export_limit_kw: float | None = None  # None → uncapped
     max_battery_charge_kw: float | None = None     # None → use BatteryConfig
     max_battery_discharge_kw: float | None = None  # None → use BatteryConfig
+    forecast_reserve_soc: float | None = None      # None → no reserve held
 
 
 @dataclass(frozen=True)
@@ -487,10 +495,15 @@ class ForecastErrorSlot:
 class ForecastErrorSeries:
     """Aligned forecast/observed error series over the overlap window.
 
-    Slots are those for which both a forecast and an observation exist (the
-    observed series covers yesterday 00:00 → now, so future slots are absent).
-    Statistics summarise the slots in this series and are intended to feed a
-    future calibration/correction stage that minimises forecast error.
+    ``slots`` spans the whole forecast window, so it includes future slots that
+    have no observation yet; those carry the ``-1.0`` sentinel in every
+    observed-side field so a chart can draw "no data yet". **The aggregate
+    statistics below are computed over the matched slots only.** That makes
+    ``len(slots)`` and the statistics describe different populations — summing
+    ``observed_kwh`` across ``slots`` yields nonsense (a 72 h window that is
+    half in the future sums to a large negative number). ``matched_slot_count``
+    is the denominator the statistics actually used; prefer it over
+    ``len(slots)`` whenever dividing.
     """
     slots: tuple[ForecastErrorSlot, ...]
     total_forecast_kwh: float
@@ -500,6 +513,7 @@ class ForecastErrorSeries:
     bias_kwh: float                    # mean signed error per slot
     mean_absolute_percentage_error: float | None    # MAPE (forecast-weighted); None when total_forecast_kwh == 0
     computed_at: datetime
+    matched_slot_count: int = 0       # slots with a real observation (stats denominator)
 
 
 @dataclass(frozen=True)
@@ -784,12 +798,23 @@ class SunSaleConfig:
 
     `local_tz` defaults to UTC for tests / installs without HA's timezone
     set; the coordinator populates it from `hass.config.time_zone` at setup.
+
+    `latitude` / `longitude` come from `hass.config` and drive the solar-position
+    geometry behind the clear-sky index. They are optional because HA allows an
+    unset home location; consumers must degrade gracefully rather than assume a
+    site, since a wrong coordinate silently mis-bins every accuracy sample.
     """
     tariff: TariffConfig
     battery: BatteryConfig
     local_tz: tzinfo = field(default=UTC)
     price_source: str = "nordpool"  # provenance tag for PriceSlot.sources
     currency: str = "EUR"           # display-only currency code (UI labels/panel)
+    latitude: float | None = None
+    longitude: float | None = None
+    # Opt-in: hold battery back against day-ahead forecast error. Off by
+    # default because it is dispatch-affecting and sized from the install's own
+    # measured error, which needs weeks of honest history to be meaningful.
+    forecast_reserve_enabled: bool = False
 
 
 # ---------------------------------------------------------------------------
@@ -808,32 +833,39 @@ class AccuracyBucketState:
     ema_error: float = 0.0       # mean signed error — drives Bias metric
     ema_abs_error: float = 0.0   # mean |error| — drives MAE metric
     ema_sq_error: float = 0.0    # mean error² — drives RMSE metric (sqrt at display)
-    ema_rel_error: float = 0.0   # mean |error|/forecast — drives MAPE metric
     ema_obs: float = 0.0         # mean observed — needed for R² denominator
     ema_obs_sq: float = 0.0      # mean observed² — needed for R² denominator
     n: int = 0                   # total samples absorbed into EMA
 
     def metrics(self) -> dict:
-        """Compute the five quality metrics from current EMA state.
+        """Compute the quality metrics from current EMA state.
+
+        MAPE is deliberately absent. On PV it is dominated by near-zero slots —
+        a 0.36 kWh dawn slot missed by 0.86 kWh reports 239 % — so the aggregate
+        tracks how many dim slots the window happened to contain rather than how
+        good the forecast is. Bias/MAE/RMSE carry the same information in kWh,
+        where an error's size means something.
 
         Returns:
-            Dict with keys n, bias_wh, mae_wh, rmse_wh, mape_pct, r2.
-            Fields other than n are None when n == 0.
+            Dict with keys n, bias_wh, mae_wh, rmse_wh, r2. Fields other than n
+            are None when n == 0. ``r2`` is additionally None when observed
+            variance is ~0 (a constant series has no variance to explain) and is
+            clamped at -9.99 below, since arbitrarily negative values only say
+            "far worse than predicting the mean".
         """
         if self.n == 0:
             return {"n": 0, "bias_wh": None, "mae_wh": None,
-                    "rmse_wh": None, "mape_pct": None, "r2": None}
+                    "rmse_wh": None, "r2": None}
         bias_wh = round(self.ema_error * 1000, 2)
         mae_wh  = round(self.ema_abs_error * 1000, 2)
         rmse_wh = round(math.sqrt(max(0.0, self.ema_sq_error)) * 1000, 2)
-        mape_pct = round(self.ema_rel_error * 100, 2)
         obs_var = self.ema_obs_sq - self.ema_obs ** 2
         if obs_var > 1e-12:
             r2 = round(max(-9.99, min(1.0, 1.0 - self.ema_sq_error / obs_var)), 4)
         else:
             r2 = None
         return {"n": self.n, "bias_wh": bias_wh, "mae_wh": mae_wh,
-                "rmse_wh": rmse_wh, "mape_pct": mape_pct, "r2": r2}
+                "rmse_wh": rmse_wh, "r2": r2}
 
 
 @dataclass(frozen=True)
@@ -847,23 +879,136 @@ class SunTimes:
     today_sunset: datetime | None
 
 
+@dataclass(frozen=True)
+class ArrayCalibration:
+    """Effective PV array geometry fitted from measured generation.
+
+    The clear-sky index needs a denominator: what this array *would* produce
+    under a cloudless sky. Rather than asking the user for kWp/tilt/azimuth
+    (which they usually do not know accurately, and which existing installs
+    would have to be re-prompted for), these are fitted from observed output
+    against computed solar position.
+
+    ``kwp_eff`` is deliberately an *effective* capacity: it absorbs module
+    efficiency, inverter losses, wiring and the clear-sky model's own absolute
+    calibration. It is therefore not comparable to a nameplate rating — only to
+    itself over time, and to ``implied_forecast_kwp``.
+
+    Attributes:
+        kwp_eff: Fitted effective peak capacity in kW.
+        tilt_deg: Fitted array tilt from horizontal.
+        azimuth_deg: Fitted array facing, clockwise from true north.
+        fit_quality: 1 − (residual spread / mean) over the clear slots used;
+            1.0 is a perfect fit, ≤ 0 means the geometry explains nothing.
+        n_days: Number of distinct clear-ish days contributing to the fit.
+        n_slots: Number of slots contributing to the fit.
+        implied_forecast_kwp: The capacity implied by the *forecast provider's*
+            own peak output over the same geometry. Comparing this against
+            ``kwp_eff`` is the whole point: a large gap means the configured
+            array in the forecast provider is the wrong size.
+        correction_factor: ``kwp_eff / implied_forecast_kwp`` — what the
+            forecast would need to be multiplied by. ``None`` when the forecast
+            peak is too small to divide by.
+        confidence: 0–1 readiness score combining fit quality and sample count.
+            Consumers must refuse to act on a low-confidence calibration.
+        computed_at: When the fit was last recomputed.
+    """
+    kwp_eff: float
+    tilt_deg: float
+    azimuth_deg: float
+    fit_quality: float
+    n_days: int
+    n_slots: int
+    implied_forecast_kwp: float | None = None
+    correction_factor: float | None = None
+    confidence: float = 0.0
+    computed_at: datetime | None = None
+
+
+@dataclass(frozen=True)
+class SolarHealth:
+    """Verdict on whether the array is physically under-performing its own past.
+
+    Compares the *ceiling* of the clear-sky index over a recent window against
+    an older baseline. Cloud only ever pushes the index down, so the ceiling
+    estimates what the array can physically do while the mean would mostly
+    measure the weather.
+
+    Deliberately independent of the generation forecast: it needs the error
+    distribution to be stationary, not centred, so it stays informative even
+    while the forecast has no skill.
+
+    Attributes:
+        status: ``"ok"``, ``"degraded"``, or ``"unknown"``. ``"unknown"`` means
+            not enough clear weather or history to judge — never an all-clear.
+        recent_ceiling: Best clear-sky index in the recent window.
+        baseline_ceiling: Reference ceiling from the older window.
+        ratio: ``recent_ceiling / baseline_ceiling``; below ~0.8 reads as
+            soiling, snow, new shading or a dead string.
+        recent_days: Days contributing to the recent ceiling.
+        baseline_days: Days contributing to the baseline.
+        computed_at: When this verdict was formed.
+    """
+    status: str
+    recent_ceiling: float | None
+    baseline_ceiling: float | None
+    ratio: float | None
+    recent_days: int
+    baseline_days: int
+    computed_at: datetime | None = None
+
+
+# Bumped when persisted quality state stops being interpretable under the
+# current rules. v2 replaced the absolute-intensity and slot-position axes with
+# physically normalised ones (clear-sky index, solar elevation, solar azimuth)
+# and introduced the per-slot ingestion watermark. Everything below v2 is
+# dropped except the horizon buckets (forecast_accuracy.store_from_dict).
+FORECAST_QUALITY_STORE_VERSION = 2
+
+
 @dataclass
 class ForecastQualityStore:
-    """Persistent quality store — mutable EMA state for all three accuracy groups.
+    """Persistent quality store — mutable EMA state for every accuracy axis.
 
-    group1: keyed by bin_start_Wh as str ("0", "100", "200", ...).
-    group2: keyed by solar-day position as str ("1"–"20" for 15 min,
-            "1"–"6" for 1 h). Positions 1–10 are dawn (sunrise slot = #1),
-            positions 11–20 are dusk (sunset slot = #20).
-    group3: keyed by day-ahead horizon as str ("0"–"6").
-    group3_pending: unresolved day-ahead forecast records awaiting actual
-            generation data.  Each entry is a dict with keys
-            target_date (ISO str), horizon (int), forecast_kwh (float).
+    The per-slot axes are keyed on *physical* coordinates rather than on raw
+    magnitude or slot index. Binning by absolute forecast kWh conflates "low
+    because it is dawn" with "low because it is overcast" — unrelated failure
+    modes with unrelated fixes — so each axis below isolates one cause:
+
+    csi_bins: keyed by clear-sky-index band start in whole percent ("0", "10",
+            … "100"). The "100" bucket is an **overflow** holding every slot at
+            or above 100 %: a well-populated overflow means the array beat the
+            clear-sky model built from its own declared capacity, which is the
+            signature of a declared capacity that is too small.
+    elevation_bins: keyed by solar-elevation band start in whole degrees
+            ("0", "5", …). Isolates air-mass and low-sun model error.
+    azimuth_bins: keyed by solar-azimuth band start in whole degrees
+            ("0", "15", …). A fixed obstruction — tree, chimney, neighbouring
+            roof — shows up as a persistent deficit in specific bearings.
+    horizon: keyed by day-ahead horizon as str ("0"–"6"). d0/d1 are the only
+            horizons the DP can act on; the price series caps planning at ~32 h,
+            so d2–d6 are informational.
+    horizon_pending: unresolved day-ahead forecast records awaiting actual
+            generation data. Each entry is a dict with keys target_date
+            (ISO str), horizon (int), forecast_kwh (float).
+    last_ingested_slot_utc: ISO timestamp of the newest per-slot sample already
+            absorbed. The DAG re-runs every coordinator cycle over the same
+            3-day error window, so without this watermark each slot is re-fed
+            ~288×/day — which collapses an α=0.1 EMA's effective memory from
+            months to minutes. Slots at or before this mark are skipped. The
+            horizon buckets need no watermark: they commit once per
+            (target_date, horizon) by construction.
+    version: store schema version. A freshly constructed store is current by
+            definition; only a *persisted* payload below the current version is
+            legacy, so the migration check reads the dict, not this default.
     """
-    group1: dict[str, AccuracyBucketState] = field(default_factory=dict)
-    group2: dict[str, AccuracyBucketState] = field(default_factory=dict)
-    group3: dict[str, AccuracyBucketState] = field(default_factory=dict)
-    group3_pending: list[dict] = field(default_factory=list)
+    csi_bins: dict[str, AccuracyBucketState] = field(default_factory=dict)
+    elevation_bins: dict[str, AccuracyBucketState] = field(default_factory=dict)
+    azimuth_bins: dict[str, AccuracyBucketState] = field(default_factory=dict)
+    horizon: dict[str, AccuracyBucketState] = field(default_factory=dict)
+    horizon_pending: list[dict] = field(default_factory=list)
+    last_ingested_slot_utc: str | None = None
+    version: int = FORECAST_QUALITY_STORE_VERSION
 
 
 @dataclass(frozen=True)

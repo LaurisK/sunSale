@@ -27,7 +27,9 @@ from .contract.models import (
     CalculationResult,
     DerivedPowerHistory,
     ForecastErrorSeries,
+    ArrayCalibration,
     ForecastQualityStore,
+    SolarHealth,
     GenerationSeries,
     InverterModeHistory,
     InverterModeReading,
@@ -702,9 +704,40 @@ class DashboardSensor(_BaseSensor):
             forecast_quality_data = {
                 "sunrise_utc": sun_times.today_sunrise.isoformat() if (sun_times and sun_times.today_sunrise) else None,
                 "sunset_utc": sun_times.today_sunset.isoformat() if (sun_times and sun_times.today_sunset) else None,
-                "group1": {k: v.metrics() for k, v in quality.group1.items()},
-                "group2": {k: v.metrics() for k, v in quality.group2.items()},
-                "group3": {k: v.metrics() for k, v in quality.group3.items()},
+                "csi_bins": {k: v.metrics() for k, v in quality.csi_bins.items()},
+                "elevation_bins": {k: v.metrics() for k, v in quality.elevation_bins.items()},
+                "azimuth_bins": {k: v.metrics() for k, v in quality.azimuth_bins.items()},
+                "horizon": {k: v.metrics() for k, v in quality.horizon.items()},
+                "horizon_pending_count": len(quality.horizon_pending),
+            }
+
+        calibration: ArrayCalibration | None = self.coordinator.data.get("array_calibration")
+        array_calibration_data = None
+        if calibration is not None:
+            array_calibration_data = {
+                "kwp_eff": round(calibration.kwp_eff, 3),
+                "tilt_deg": round(calibration.tilt_deg, 1),
+                "azimuth_deg": round(calibration.azimuth_deg, 1),
+                "implied_forecast_kwp": (
+                    round(calibration.implied_forecast_kwp, 3)
+                    if calibration.implied_forecast_kwp is not None else None
+                ),
+                "correction_factor": (
+                    round(calibration.correction_factor, 3)
+                    if calibration.correction_factor is not None else None
+                ),
+                "confidence": round(calibration.confidence, 3),
+                "n_days": calibration.n_days,
+            }
+
+        health: SolarHealth | None = self.coordinator.data.get("solar_health")
+        solar_health_data = None
+        if health is not None:
+            solar_health_data = {
+                "status": health.status,
+                "ratio": round(health.ratio, 3) if health.ratio is not None else None,
+                "recent_days": health.recent_days,
+                "baseline_days": health.baseline_days,
             }
 
         gen: GenerationSeries | None = self.coordinator.data.get("forecast")
@@ -789,6 +822,8 @@ class DashboardSensor(_BaseSensor):
                 "battery_soc", "",
             ) or config.get(CONF_INVERTER_ENTITY_BATTERY_SOC, ""),
             "forecast_quality": forecast_quality_data,
+            "array_calibration": array_calibration_data,
+            "solar_health": solar_health_data,
             "forecast_daily_kwh": forecast_daily_kwh,
             "actual_yesterday_kwh": round(observed.total_yesterday_kwh, 3) if observed else None,
             "actual_today_kwh": round(observed.total_today_so_far_kwh, 3) if observed else None,

@@ -565,3 +565,37 @@ async def test_shutdown_cancels_the_aligned_tick():
 
     assert cancelled == [True]
     assert coord._unsub_aligned_tick is None
+
+
+# ---------------------------------------------------------------------------
+# Home location resolution (drives solar-position geometry)
+# ---------------------------------------------------------------------------
+
+
+def _location_stub(latitude, longitude):
+    """Return a minimal stand-in exposing hass.config.latitude/longitude."""
+    stub = MagicMock()
+    stub.hass.config.latitude = latitude
+    stub.hass.config.longitude = longitude
+    return stub
+
+
+@pytest.mark.parametrize("lat,lon,expected", [
+    (54.9110344, 23.9253644, (54.9110344, 23.9253644)),   # configured site
+    (0.0, 23.9, (0.0, 23.9)),                             # genuine equatorial site
+    (54.9, 0.0, (54.9, 0.0)),                             # genuine prime-meridian site
+    (-33.87, 151.21, (-33.87, 151.21)),                   # southern hemisphere
+    (0.0, 0.0, (None, None)),                             # HA's "never configured"
+    (None, None, (None, None)),                           # attribute absent
+    ("nonsense", 23.9, (None, None)),                     # unparseable
+    (91.0, 23.9, (None, None)),                           # out of range
+    (54.9, 181.0, (None, None)),                          # out of range
+])
+def test_resolve_home_location(lat, lon, expected):
+    """Only (0, 0) counts as unset — a single zero component is a real place.
+
+    Treating latitude 0 alone as "unknown" would silently disable clear-sky
+    calibration for every equatorial install.
+    """
+    resolved = SunSaleCoordinator._resolve_home_location(_location_stub(lat, lon))
+    assert resolved == expected

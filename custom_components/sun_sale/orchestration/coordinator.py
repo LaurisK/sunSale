@@ -52,6 +52,7 @@ from ..contract.const import (
     CONF_NORDPOOL_ENTITY,
     CONF_NORDPOOL_RESOLUTION,
     CONF_PRICE_EXPORT_ENTITY,
+    CONF_FORECAST_RESERVE_ENABLED,
     CONF_PRICE_SOURCE,
     CONF_PRICE_TOU_BANDS,
     CONF_SOLAR_FORECAST_DEVICE_IDS,
@@ -72,6 +73,7 @@ from ..contract.const import (
     DEFAULT_EXPORT_LIMIT_W,
     DEFAULT_INVERTER_EXPORT_LIMIT_KW,
     DEFAULT_INVERTER_MAX_POWER_KW,
+    DEFAULT_FORECAST_RESERVE_ENABLED,
     DEFAULT_PRICE_SOURCE,
     DEFAULT_SCHEDULE_ALLOW_DISCHARGE_TO_GRID,
     DEFAULT_SCHEDULE_ALLOW_FEED_IN,
@@ -91,6 +93,7 @@ from ..contract.const import (
     STORAGE_KEY_CONSUMPTION_DAILY,
     STORAGE_KEY_COUNTER_SNAPSHOT,
     STORAGE_KEY_DERIVED_POWER,
+    STORAGE_KEY_ARRAY_CALIBRATION,
     STORAGE_KEY_FORECAST_QUALITY,
     STORAGE_KEY_MODE_HISTORY,
     STORAGE_KEY_MONTHLY_BILL,
@@ -114,8 +117,10 @@ from ..contract.models import (
     DailyPeak,
     DegradationCost,
     DerivedPowerHistory,
+    ArrayCalibration,
     ForecastAccuracyResult,
     ForecastQualityStore,
+    SolarHealth,
     GenerationReading,
     GenerationSeries,
     GridExportPowerHistory,
@@ -212,6 +217,7 @@ from ..pipeline.nodes import (
     BatteryStateNode,
     BatteryStatusNode,
     DegradationNode,
+    ArrayCalibrationNode,
     ForecastAccuracyNode,
     GenerationNode,
     LockoutNode,
@@ -394,6 +400,7 @@ class SunSaleCoordinator(DataUpdateCoordinator):
         self._consumption_daily_store: PersistentStore[ConsumptionDailyBuckets] | None = None
         self._price_history_store: PersistentStore[list[DailyPeak]] | None = None
         self._forecast_quality_store: PersistentStore[ForecastQualityStore] | None = None
+        self._array_calibration_store: PersistentStore[ArrayCalibration] | None = None
         self._grid_import_power_entity_id: str = ""
         self._grid_export_power_entity_id: str = ""
         self._monthly_bill_store: PersistentStore[MonthlyBillState] | None = None
@@ -771,11 +778,17 @@ class SunSaleCoordinator(DataUpdateCoordinator):
         ))
 
         local_tz = self._resolve_local_tz()
+        home_lat, home_lon = self._resolve_home_location()
         self._sun_sale_config = SunSaleConfig(
             tariff=tariff_config, battery=battery_config,
             local_tz=local_tz,
             price_source=data.get(CONF_PRICE_SOURCE, DEFAULT_PRICE_SOURCE),
             currency=(data.get(CONF_CURRENCY) or DEFAULT_CURRENCY).strip().upper(),
+            latitude=home_lat,
+            longitude=home_lon,
+            forecast_reserve_enabled=bool(
+                data.get(CONF_FORECAST_RESERVE_ENABLED, DEFAULT_FORECAST_RESERVE_ENABLED)
+            ),
         )
 
         # Per-deployment inverter power ratings (config flow, kW → W). Fall back
@@ -888,6 +901,7 @@ class SunSaleCoordinator(DataUpdateCoordinator):
             DegradationNode(),
             MonthlyBillNode(),
             BatteryRuntimeNode(),
+            ArrayCalibrationNode(),
             ForecastAccuracyNode(),
             ProfitabilityNode(),
             LockoutNode(),
@@ -988,6 +1002,7 @@ class SunSaleCoordinator(DataUpdateCoordinator):
         self._consumption_daily_store = self._stores[STORAGE_KEY_CONSUMPTION_DAILY]
         self._price_history_store = self._stores[STORAGE_KEY_PRICE_HISTORY]
         self._forecast_quality_store = self._stores[STORAGE_KEY_FORECAST_QUALITY]
+        self._array_calibration_store = self._stores[STORAGE_KEY_ARRAY_CALIBRATION]
         self._monthly_bill_store = self._stores[STORAGE_KEY_MONTHLY_BILL]
         self._yesterday_store = self._stores[STORAGE_KEY_YESTERDAY]
         self._mode_history_store = self._stores[STORAGE_KEY_MODE_HISTORY]
@@ -1038,6 +1053,7 @@ class SunSaleCoordinator(DataUpdateCoordinator):
                 monthly_bill_store=self._monthly_bill_store,
                 price_history_store=self._price_history_store,
                 forecast_quality_store=self._forecast_quality_store,
+                array_calibration_store=self._array_calibration_store,
                 mode_history_store=self._mode_history_store,
                 read_sun_times=self._read_sun_times,
             ),
@@ -1302,6 +1318,14 @@ class SunSaleCoordinator(DataUpdateCoordinator):
                 if baked_after is not baked_before:
                     await self._baked_observed_store.save(baked_after)
 
+        with self._guarded("array-calibration save"):
+            calibration: ArrayCalibration | None = secondary.get(ArrayCalibration)
+            if calibration is not None and self._array_calibration_store is not None:
+                # Only rewrite when the fit actually moved on; the node returns
+                # the cached object unchanged on same-day cycles.
+                if calibration is not self._array_calibration_store.value:
+                    await self._array_calibration_store.save(calibration)
+
         with self._guarded("forecast-quality save"):
             acc_result: ForecastAccuracyResult | None = secondary.get(ForecastAccuracyResult)
             if acc_result is not None and self._forecast_quality_store is not None:
@@ -1417,6 +1441,32 @@ class SunSaleCoordinator(DataUpdateCoordinator):
             return ZoneInfo(tz_name)
         except Exception:    # ZoneInfoNotFoundError + anything weird from HA mocks
             return UTC
+
+    def _resolve_home_location(self) -> tuple[float | None, float | None]:
+        """Return the HA home latitude/longitude, or (None, None) when unset.
+
+        Drives the solar-position geometry behind the clear-sky index. HA
+        reports (0.0, 0.0) when the home location was never configured, which
+        is a real coordinate in the Gulf of Guinea — so that exact pair is
+        treated as "unknown". A single zero component is kept: latitude 0 with a
+        non-zero longitude is a genuine equatorial site.
+
+        Returns:
+            Tuple of (latitude, longitude) in degrees, or (None, None) when the
+            location is unset or unreadable.
+        """
+        lat = getattr(self.hass.config, "latitude", None)
+        lon = getattr(self.hass.config, "longitude", None)
+        try:
+            lat = float(lat)
+            lon = float(lon)
+        except (TypeError, ValueError):
+            return None, None
+        if lat == 0.0 and lon == 0.0:
+            return None, None
+        if not (-90.0 <= lat <= 90.0 and -180.0 <= lon <= 180.0):
+            return None, None
+        return lat, lon
 
     def _build_live_flow_sources(self) -> dict[str, Any] | None:
         """Build the per-leg source specs the panel reads live for the flow diagram.
@@ -1594,6 +1644,8 @@ class SunSaleCoordinator(DataUpdateCoordinator):
                 consumption.today_total_kwh if consumption else None
             ),
             "forecast_quality": _acc.quality if _acc else None,
+            "array_calibration": secondary.get(ArrayCalibration),
+            "solar_health": secondary.get(SolarHealth),
             "sun_times": primary.get(SunTimes),
             "monthly_bill": secondary.get(MonthlyBillResult),
             "grid_import_power_history": primary.get(GridImportPowerHistory),

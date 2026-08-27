@@ -728,6 +728,12 @@ class ForecastAccuracyCheckWidget(Static):
                 yield ForecastAccuracySlotsTable(fa)
 
 
+# A per-slot axis can absorb at most ~96 samples/day (one per 15-min slot), so
+# even a year of data stays in the tens of thousands. Anything far above that
+# means a slot is being ingested more than once per cycle.
+_MAX_PLAUSIBLE_BUCKET_N = 200_000
+
+
 @dataclass
 class ForecastQualityCheckResult:
     """Result of the forecast quality deep-check: EMA bucket counts and metric ranges."""
@@ -736,13 +742,15 @@ class ForecastQualityCheckResult:
     skip_reason: str = ""
     sunrise_utc: str = ""
     sunset_utc: str = ""
-    group1_bucket_count: int = 0
-    group2_bucket_count: int = 0
-    group3_bucket_count: int = 0
-    group3_pending_count: int = 0
-    group1_buckets: list[dict] = field(default_factory=list)
-    group2_buckets: list[dict] = field(default_factory=list)
-    group3_buckets: list[dict] = field(default_factory=list)
+    csi_bucket_count: int = 0
+    elevation_bucket_count: int = 0
+    azimuth_bucket_count: int = 0
+    horizon_bucket_count: int = 0
+    horizon_pending_count: int = 0
+    csi_buckets: list[dict] = field(default_factory=list)
+    elevation_buckets: list[dict] = field(default_factory=list)
+    azimuth_buckets: list[dict] = field(default_factory=list)
+    horizon_buckets: list[dict] = field(default_factory=list)
     mismatches: list[str] = field(default_factory=list)
     overall_ok: bool = True
 
@@ -765,7 +773,7 @@ def check_forecast_quality(snap: Snapshot) -> ForecastQualityCheckResult:
 
     result.sunrise_utc = fq.get("sunrise_utc") or ""
     result.sunset_utc  = fq.get("sunset_utc") or ""
-    result.group3_pending_count = fq.get("group3_pending_count", 0)
+    result.horizon_pending_count = fq.get("horizon_pending_count", 0)
 
     def _validate_buckets(group_dict: dict, label: str) -> list[dict]:
         """Sanity-check every EMA bucket in one quality group and return per-bucket rows.
@@ -782,7 +790,6 @@ def check_forecast_quality(snap: Snapshot) -> ForecastQualityCheckResult:
             n = m.get("n", 0)
             mae = m.get("mae_wh")
             rmse = m.get("rmse_wh")
-            mape = m.get("mape_pct")
             r2   = m.get("r2")
             ok = True
             issues = []
@@ -795,9 +802,6 @@ def check_forecast_quality(snap: Snapshot) -> ForecastQualityCheckResult:
             if rmse is not None and rmse < 0:
                 ok = False
                 issues.append("negative_rmse")
-            if mape is not None and mape < 0:
-                ok = False
-                issues.append("negative_mape")
             if r2 is not None and not (-10.0 <= r2 <= 1.0):
                 ok = False
                 issues.append("r2_out_of_range")
@@ -806,22 +810,39 @@ def check_forecast_quality(snap: Snapshot) -> ForecastQualityCheckResult:
                 result.overall_ok = False
             rows.append({
                 "key": key, "n": n, "mae_wh": mae, "rmse_wh": rmse,
-                "bias_wh": m.get("bias_wh"), "mape_pct": mape, "r2": r2,
+                "bias_wh": m.get("bias_wh"), "r2": r2,
                 "ok": ok,
             })
         return rows
 
-    result.group1_buckets = _validate_buckets(fq.get("group1") or {}, "group1")
-    result.group2_buckets = _validate_buckets(fq.get("group2") or {}, "group2")
-    result.group3_buckets = _validate_buckets(fq.get("group3") or {}, "group3")
-    result.group1_bucket_count = len(result.group1_buckets)
-    result.group2_bucket_count = len(result.group2_buckets)
-    result.group3_bucket_count = len(result.group3_buckets)
+    result.csi_buckets       = _validate_buckets(fq.get("csi_bins") or {}, "csi")
+    result.elevation_buckets = _validate_buckets(fq.get("elevation_bins") or {}, "elevation")
+    result.azimuth_buckets   = _validate_buckets(fq.get("azimuth_bins") or {}, "azimuth")
+    result.horizon_buckets   = _validate_buckets(fq.get("horizon") or {}, "horizon")
+    result.csi_bucket_count       = len(result.csi_buckets)
+    result.elevation_bucket_count = len(result.elevation_buckets)
+    result.azimuth_bucket_count   = len(result.azimuth_buckets)
+    result.horizon_bucket_count   = len(result.horizon_buckets)
+
+    # A slot ingested more than once per cycle is the re-ingestion regression
+    # (fixed by the store watermark). Per-slot buckets accumulate at most ~96
+    # samples/day/axis, so counts in the hundreds of thousands mean the
+    # watermark is not holding.
+    for label, rows in (("csi", result.csi_buckets),
+                        ("elevation", result.elevation_buckets),
+                        ("azimuth", result.azimuth_buckets)):
+        for row in rows:
+            if row["n"] > _MAX_PLAUSIBLE_BUCKET_N:
+                result.mismatches.append(
+                    f"{label}[{row['key']}]: n={row['n']} implies re-ingestion "
+                    f"(> {_MAX_PLAUSIBLE_BUCKET_N})"
+                )
+                result.overall_ok = False
     return result
 
 
 class ForecastQualityBucketTable(Static):
-    """DataTable: bucket key | n | Bias | MAE | RMSE | MAPE% | R² | ✓/✗."""
+    """DataTable: bucket key | n | Bias | MAE | RMSE | R² | ✓/✗."""
 
     DEFAULT_CSS = """
     ForecastQualityBucketTable { height: auto; }
@@ -847,7 +868,7 @@ class ForecastQualityBucketTable(Static):
     def on_mount(self) -> None:
         """Populate the DataTable with one row per bucket."""
         table = self.query_one(DataTable)
-        table.add_columns("Bucket", "n", "Bias Wh", "MAE Wh", "RMSE Wh", "MAPE %", "R²", "")
+        table.add_columns("Bucket", "n", "Bias Wh", "MAE Wh", "RMSE Wh", "R²", "")
         def fmt(v: float | None) -> str:
             """Format a value to 1 decimal place, or an em dash when None."""
             return f"{v:.1f}" if v is not None else "—"
@@ -864,7 +885,6 @@ class ForecastQualityBucketTable(Static):
                 Text(fmt(row["bias_wh"]),  style=ok_style),
                 Text(fmt(row["mae_wh"]),   style=ok_style),
                 Text(fmt(row["rmse_wh"]),  style=ok_style),
-                Text(fmt(row["mape_pct"]), style=ok_style),
                 Text(fmt4(row["r2"])),
                 Text("✓" if row["ok"] else "✗", style="green" if row["ok"] else "red"),
             )
@@ -897,10 +917,11 @@ class ForecastQualityCheckWidget(Static):
         status = "PASS" if fqr.overall_ok else "FAIL"
         title = (
             f"[{color}]{mark}[/{color}]  forecast_quality   [{color}]{status}[/{color}]"
-            f"   G1={fqr.group1_bucket_count}b"
-            f"  G2={fqr.group2_bucket_count}b"
-            f"  G3={fqr.group3_bucket_count}b"
-            f"  pending={fqr.group3_pending_count}"
+            f"   CSI={fqr.csi_bucket_count}b"
+            f"  elev={fqr.elevation_bucket_count}b"
+            f"  azim={fqr.azimuth_bucket_count}b"
+            f"  horizon={fqr.horizon_bucket_count}b"
+            f"  pending={fqr.horizon_pending_count}"
         )
 
         with Collapsible(title=title, collapsed=True):
@@ -909,7 +930,7 @@ class ForecastQualityCheckWidget(Static):
             yield Static(
                 f"  Sunrise UTC: {sunrise_str}\n"
                 f"  Sunset  UTC: {sunset_str}\n"
-                f"  Group3 pending: {fqr.group3_pending_count}",
+                f"  Horizon pending: {fqr.horizon_pending_count}",
                 markup=False,
             )
             if fqr.mismatches:
@@ -917,12 +938,181 @@ class ForecastQualityCheckWidget(Static):
                     "  [red]Mismatches:[/red] " + ", ".join(fqr.mismatches),
                     markup=True,
                 )
-            if fqr.group1_buckets:
-                sorted_g1 = sorted(fqr.group1_buckets, key=lambda r: int(r["key"]))
-                yield ForecastQualityBucketTable("Group 1 — Intensity (forecast Wh bin)", sorted_g1)
-            if fqr.group2_buckets:
-                sorted_g2 = sorted(fqr.group2_buckets, key=lambda r: int(r["key"]))
-                yield ForecastQualityBucketTable("Group 2 — Solar-Day Position (#1=sunrise, #N=sunset)", sorted_g2)
-            if fqr.group3_buckets:
-                sorted_g3 = sorted(fqr.group3_buckets, key=lambda r: int(r["key"]))
-                yield ForecastQualityBucketTable("Group 3 — Forecast Horizon (d0=today … d6=6d ahead)", sorted_g3)
+            if fqr.csi_buckets:
+                rows = sorted(fqr.csi_buckets, key=lambda r: int(r["key"]))
+                yield ForecastQualityBucketTable(
+                    "Clear-Sky Index — % of clear-sky potential (100 = overflow, ≥100%)", rows)
+            if fqr.elevation_buckets:
+                rows = sorted(fqr.elevation_buckets, key=lambda r: int(r["key"]))
+                yield ForecastQualityBucketTable("Solar Elevation — band start in degrees", rows)
+            if fqr.azimuth_buckets:
+                rows = sorted(fqr.azimuth_buckets, key=lambda r: int(r["key"]))
+                yield ForecastQualityBucketTable("Solar Azimuth — band start in degrees (dips = shading)", rows)
+            if fqr.horizon_buckets:
+                rows = sorted(fqr.horizon_buckets, key=lambda r: int(r["key"]))
+                yield ForecastQualityBucketTable(
+                    "Forecast Horizon — d0/d1 drive dispatch; d2+ informational", rows)
+
+
+# ---------------------------------------------------------------------------
+# Array calibration + solar health
+# ---------------------------------------------------------------------------
+
+
+@dataclass
+class ArrayCalibrationCheckResult:
+    """Result of the array calibration / solar health deep-check."""
+
+    skipped: bool = False
+    skip_reason: str = ""
+    kwp_eff: float | None = None
+    tilt_deg: float | None = None
+    azimuth_deg: float | None = None
+    fit_quality: float | None = None
+    n_days: int = 0
+    n_slots: int = 0
+    implied_forecast_kwp: float | None = None
+    correction_factor: float | None = None
+    confidence: float | None = None
+    health_status: str = ""
+    health_ratio: float | None = None
+    health_recent_days: int = 0
+    health_baseline_days: int = 0
+    mismatches: list[str] = field(default_factory=list)
+    overall_ok: bool = True
+
+
+def check_array_calibration(snap: Snapshot) -> ArrayCalibrationCheckResult:
+    """Validate the fitted array calibration and the derived health verdict.
+
+    Cross-checks the calibration's internal consistency (the correction factor
+    must equal the ratio of the two capacities it is derived from) and bounds
+    every fitted quantity to something physically meaningful — a negative tilt
+    or a zero capacity would silently make every clear-sky index nonsense.
+
+    Args:
+        snap: Coordinator snapshot containing pipeline.array_calibration.
+
+    Returns:
+        ArrayCalibrationCheckResult with the fitted values and pass/fail.
+    """
+    result = ArrayCalibrationCheckResult()
+    cal = snap.pipeline.get("array_calibration")
+    if not cal:
+        result.skipped = True
+        result.skip_reason = "pipeline.array_calibration is null (not yet fitted)"
+        return result
+
+    result.kwp_eff = cal.get("kwp_eff")
+    result.tilt_deg = cal.get("tilt_deg")
+    result.azimuth_deg = cal.get("azimuth_deg")
+    result.fit_quality = cal.get("fit_quality")
+    result.n_days = cal.get("n_days", 0)
+    result.n_slots = cal.get("n_slots", 0)
+    result.implied_forecast_kwp = cal.get("implied_forecast_kwp")
+    result.correction_factor = cal.get("correction_factor")
+    result.confidence = cal.get("confidence")
+
+    def _fail(msg: str) -> None:
+        """Record one mismatch and mark the check failed."""
+        result.mismatches.append(msg)
+        result.overall_ok = False
+
+    if not result.kwp_eff or result.kwp_eff <= 0:
+        _fail(f"kwp_eff={result.kwp_eff} is not a usable capacity")
+    if result.tilt_deg is None or not (0.0 <= result.tilt_deg <= 90.0):
+        _fail(f"tilt_deg={result.tilt_deg} outside 0–90")
+    if result.azimuth_deg is None or not (0.0 <= result.azimuth_deg <= 360.0):
+        _fail(f"azimuth_deg={result.azimuth_deg} outside 0–360")
+    if result.confidence is not None and not (0.0 <= result.confidence <= 1.0):
+        _fail(f"confidence={result.confidence} outside 0–1")
+    if result.n_slots and result.n_days and result.n_slots < result.n_days:
+        _fail(f"n_slots={result.n_slots} < n_days={result.n_days}")
+
+    # The correction factor is the whole point of the module — if it does not
+    # equal the ratio it claims to be, its advice is unfounded.
+    if (result.correction_factor is not None
+            and result.implied_forecast_kwp
+            and result.kwp_eff):
+        expected = result.kwp_eff / result.implied_forecast_kwp
+        if abs(expected - result.correction_factor) > 1e-3:
+            _fail(
+                f"correction_factor={result.correction_factor} != "
+                f"kwp_eff/implied={expected:.4f}"
+            )
+
+    health = snap.pipeline.get("solar_health")
+    if health:
+        result.health_status = health.get("status", "")
+        result.health_ratio = health.get("ratio")
+        result.health_recent_days = health.get("recent_days", 0)
+        result.health_baseline_days = health.get("baseline_days", 0)
+        if result.health_status not in ("ok", "degraded", "unknown"):
+            _fail(f"solar_health.status={result.health_status!r} is not a known verdict")
+        recent = health.get("recent_ceiling")
+        baseline = health.get("baseline_ceiling")
+        if (result.health_ratio is not None and recent and baseline):
+            expected_ratio = recent / baseline
+            if abs(expected_ratio - result.health_ratio) > 1e-3:
+                _fail(
+                    f"solar_health.ratio={result.health_ratio} != "
+                    f"recent/baseline={expected_ratio:.4f}"
+                )
+        # A verdict of ok/degraded asserts a comparison was actually possible.
+        if result.health_status in ("ok", "degraded") and result.health_ratio is None:
+            _fail(f"solar_health.status={result.health_status!r} without a ratio")
+
+    return result
+
+
+class ArrayCalibrationCheckWidget(Static):
+    """Collapsible array-calibration deep-check: fitted geometry + health verdict."""
+
+    DEFAULT_CSS = "ArrayCalibrationCheckWidget { height: auto; }"
+
+    def __init__(self, acr: ArrayCalibrationCheckResult) -> None:
+        """Initialise with the pre-computed array calibration check result."""
+        super().__init__()
+        self._acr = acr
+
+    def compose(self) -> ComposeResult:
+        """Render the status line and the fitted values."""
+        acr = self._acr
+        if acr.skipped:
+            yield Static(f"  ⚠  array_calibration   SKIP   {acr.skip_reason}")
+            return
+
+        color = "green" if acr.overall_ok else "red"
+        mark = "✓" if acr.overall_ok else "✗"
+        status = "PASS" if acr.overall_ok else "FAIL"
+        kwp = f"{acr.kwp_eff:.2f}" if acr.kwp_eff is not None else "—"
+        corr = f"{acr.correction_factor:.2f}x" if acr.correction_factor is not None else "—"
+        title = (
+            f"[{color}]{mark}[/{color}]  array_calibration   [{color}]{status}[/{color}]"
+            f"   kWp={kwp}  correction={corr}"
+            f"  health={acr.health_status or '—'}"
+        )
+
+        with Collapsible(title=title, collapsed=True):
+            def fmt(v: float | None, places: int = 2) -> str:
+                """Format a value, or an em dash when None."""
+                return f"{v:.{places}f}" if v is not None else "—"
+
+            yield Static(
+                f"  Fitted geometry : {fmt(acr.kwp_eff)} kWp  "
+                f"tilt {fmt(acr.tilt_deg, 0)}°  azimuth {fmt(acr.azimuth_deg, 0)}°\n"
+                f"  Fit             : quality {fmt(acr.fit_quality, 3)}  "
+                f"confidence {fmt(acr.confidence, 3)}  "
+                f"({acr.n_days} days, {acr.n_slots} slots)\n"
+                f"  Forecast implies: {fmt(acr.implied_forecast_kwp)} kWp  "
+                f"→ correction {fmt(acr.correction_factor)}x\n"
+                f"  Array health    : {acr.health_status or '—'}  "
+                f"ratio {fmt(acr.health_ratio, 3)}  "
+                f"({acr.health_recent_days}d recent vs {acr.health_baseline_days}d baseline)",
+                markup=False,
+            )
+            if acr.mismatches:
+                yield Static(
+                    "  [red]Mismatches:[/red] " + ", ".join(acr.mismatches),
+                    markup=True,
+                )

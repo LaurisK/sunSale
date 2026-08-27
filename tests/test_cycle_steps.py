@@ -19,6 +19,7 @@ from custom_components.sun_sale.contract.const import STORAGE_KEY_DERIVED_POWER
 from custom_components.sun_sale.contract.models import (
     AcPortPowerReading,
     BackupPowerReading,
+    ArrayCalibration,
     BakedObservedHistory,
     BatteryReading,
     CapacityObservation,
@@ -305,6 +306,7 @@ def test_stored_primaries_seeds_all_keys_with_defaults():
         monthly_bill_store=FakeStore(value=None),
         price_history_store=FakeStore(value=None),
         forecast_quality_store=FakeStore(value=None),
+        array_calibration_store=FakeStore(value=None),
         mode_history_store=FakeStore(value=None),
         read_sun_times=lambda now: SunTimes(today_sunrise=None, today_sunset=None),
     ).seed(primary, _NOW, CycleScratch())
@@ -312,6 +314,9 @@ def test_stored_primaries_seeds_all_keys_with_defaults():
     assert primary[MonthlyBillState] is None      # None is meaningful, not defaulted
     assert primary[PriceHistory] == PriceHistory(peaks=())
     assert primary[ForecastQualityStore] == ForecastQualityStore()
+    # None is meaningful: a zero-capacity calibration would make every
+    # clear-sky index infinite, so "not fitted yet" must stay distinguishable.
+    assert primary[ArrayCalibration] is None
     assert primary[InverterModeHistory] == InverterModeHistory(samples=())
     assert isinstance(primary[SunTimes], SunTimes)
 

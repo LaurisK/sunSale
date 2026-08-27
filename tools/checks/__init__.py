@@ -52,9 +52,11 @@ from .derived import (
     check_observed_losses,
 )
 from .forecast import (
+    ArrayCalibrationCheckResult,
     ForecastAccuracyCheckResult,
     ForecastCheckResult,
     ForecastQualityCheckResult,
+    check_array_calibration,
     check_forecast,
     check_forecast_accuracy,
     check_forecast_quality,
@@ -110,8 +112,10 @@ __all__ = [
     "ObservedConsumptionCheckResult",
     "ObservedLossesCheckResult",
     # checks
+    "ArrayCalibrationCheckResult",
     "check_forecast",
     "check_forecast_accuracy",
+    "check_array_calibration",
     "check_forecast_quality",
     "check_pricing",
     "check_calculation",

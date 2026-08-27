@@ -27,6 +27,8 @@ at the exact SoC to keep rewards and projected SoC continuous.
 """
 from __future__ import annotations
 
+from dataclasses import replace
+
 from datetime import datetime, tzinfo
 from statistics import median
 
@@ -95,6 +97,7 @@ def optimize_schedule(
     profitability_tilt_alpha: float = DEFAULT_PROFITABILITY_TILT_ALPHA,
     terminal_value_discount: float = DEFAULT_TERMINAL_VALUE_DISCOUNT,
     max_discharge_to_grid_kw: float | None = None,
+    forecast_reserve_soc: float = 0.0,
 ) -> Schedule:
     """Compute a future StorageMode schedule via SoC-bucketed dynamic programming.
 
@@ -137,6 +140,11 @@ def optimize_schedule(
         max_discharge_to_grid_kw: Optional AC-power cap applied only to the
             Discharge-to-grid mode; ``None`` means use hardware max. Does not
             affect discharge in SelfUse/NoExport (load cover).
+        forecast_reserve_soc: Extra SoC fraction the planner may not spend,
+            held back against the generation forecast being wrong. Raises the
+            floor of the DP's SoC envelope only — it never forces a charge, and
+            a battery already below the raised floor is not stranded (the
+            bucketer clamps such a state to its lowest bucket). 0 disables it.
 
     Returns:
         Schedule with one ScheduleSlot per future price slot.
@@ -162,7 +170,28 @@ def optimize_schedule(
         future_slots, base_load_profile, local_tz, slot_hours,
     )
 
-    bucketer = _Bucketer(battery_config.min_soc, battery_config.max_soc, _SOC_BUCKETS)
+    # The reserve is a planning floor, not a hardware limit: the DP simply may
+    # not schedule its way below it. Two clamps keep it well-behaved —
+    #   * under max_soc, so a huge reserve degrades to "hold everything"
+    #     instead of inverting the envelope;
+    #   * never above the *current* SoC, because a reserve cannot retroactively
+    #     create charge. A battery already under the floor must still be
+    #     schedulable (and must not be reported as fuller than it is); the
+    #     reserve then simply stops it being drained further.
+    reserve = max(0.0, forecast_reserve_soc)
+    floor_soc = min(
+        battery_config.max_soc,
+        battery_config.min_soc + reserve,
+        max(battery_config.min_soc, battery_state.soc),
+    )
+    # Threaded through the slot physics, not just the value lookup: the DP's
+    # bucketing only shapes which mode is chosen, while the discharge depth
+    # itself is bounded by the config handed to simulate_slot.
+    planning_config = (
+        replace(battery_config, min_soc=floor_soc)
+        if floor_soc > battery_config.min_soc else battery_config
+    )
+    bucketer = _Bucketer(floor_soc, battery_config.max_soc, _SOC_BUCKETS)
 
     actions = _filter_actions(
         _ACTIONS,
@@ -176,7 +205,7 @@ def optimize_schedule(
     if not bucketer.has_envelope:
         return _standby_only_schedule(
             future_slots, baseload_kwh, solar_kwh, slot_hours,
-            battery_config, cap_kwh, degradation_cost, export_limit_kw, now,
+            planning_config, cap_kwh, degradation_cost, export_limit_kw, now,
         )
 
     terminal_per_kwh = _terminal_value_per_storage_kwh(
@@ -187,14 +216,14 @@ def optimize_schedule(
 
     choice = _run_dp(
         future_slots, baseload_kwh, solar_kwh, slot_hours,
-        battery_config, cap_kwh, degradation_cost, export_limit_kw,
+        planning_config, cap_kwh, degradation_cost, export_limit_kw,
         bucketer, terminal_per_kwh, mode_change_penalty, actions,
-        max_discharge_to_grid_kw,
+        max_discharge_to_grid_kw, floor_soc,
     )
 
     return _forward_roll(
         future_slots, baseload_kwh, solar_kwh, slot_hours,
-        battery_config, battery_state, cap_kwh, degradation_cost,
+        planning_config, battery_state, cap_kwh, degradation_cost,
         export_limit_kw, bucketer, choice, now,
         current_mode, mode_change_penalty, actions,
         max_discharge_to_grid_kw,
@@ -430,6 +459,7 @@ def _run_dp(
     mode_change_penalty: float,
     actions: tuple[StorageMode, ...],
     max_discharge_to_grid_kw: float | None = None,
+    floor_soc: float | None = None,
 ) -> list[list[list[StorageMode]]]:
     """Backward DP — compute the optimal mode for every (slot, soc_bucket, prev_mode) cell.
 
@@ -454,6 +484,11 @@ def _run_dp(
         actions: Modes the DP may pick from (possibly filtered by policy).
         max_discharge_to_grid_kw: AC-power cap for Discharge mode; ``None``
             means hardware max.
+        floor_soc: Bottom of the DP's SoC envelope, which the forecast reserve
+            may have raised above ``battery_config.min_soc``. Terminal value is
+            measured from this same floor so held charge is not double-counted
+            as being "above minimum". ``None`` falls back to the battery's own
+            minimum.
 
     Returns:
         ``choice[t][b][m]`` — the optimal StorageMode for slot ``t`` when the
@@ -478,8 +513,9 @@ def _run_dp(
         [[0.0] * n_prev for _ in range(n_buckets)]
         for _ in range(n_slots + 1)
     ]
+    terminal_floor = battery_config.min_soc if floor_soc is None else floor_soc
     for b in range(n_buckets):
-        v_term = max(0.0, (bucketer.to_soc(b) - battery_config.min_soc)) \
+        v_term = max(0.0, (bucketer.to_soc(b) - terminal_floor)) \
                  * cap_kwh * terminal_per_kwh
         for m in range(n_prev):
             value[n_slots][b][m] = v_term
@@ -579,6 +615,7 @@ def _forward_roll(
     mode_change_penalty: float,
     actions: tuple[StorageMode, ...],
     max_discharge_to_grid_kw: float | None = None,
+    forecast_reserve_soc: float = 0.0,
 ) -> Schedule:
     """Walk the chosen policy forward from the actual current SoC and mode.
 

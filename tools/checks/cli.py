@@ -18,6 +18,7 @@ from .derived import check_observed_consumption, check_observed_losses
 from .forecast import (
     check_forecast,
     check_forecast_accuracy,
+    check_array_calibration,
     check_forecast_quality,
 )
 from .inverter import check_inverter_mode
@@ -105,6 +106,7 @@ def main(argv: list[str] | None = None) -> int:
     household_consumption_results  = {s.entry_id: check_household_consumption(s)     for s in snapshots}
     profitability_results          = {s.entry_id: check_profitability(s)             for s in snapshots}
     forecast_quality_results       = {s.entry_id: check_forecast_quality(s)          for s in snapshots}
+    array_calibration_results      = {s.entry_id: check_array_calibration(s)         for s in snapshots}
     monthly_bill_results           = {s.entry_id: check_monthly_bill(s)              for s in snapshots}
     observed_consumption_results   = {s.entry_id: check_observed_consumption(s)      for s in snapshots}
     observed_losses_results        = {s.entry_id: check_observed_losses(s)           for s in snapshots}
@@ -120,6 +122,7 @@ def main(argv: list[str] | None = None) -> int:
         base_load_results, battery_runtime_results,
         household_consumption_results, profitability_results,
         forecast_quality_results,
+        array_calibration_results,
         monthly_bill_results,
         observed_consumption_results,
         observed_losses_results,
