@@ -10,6 +10,167 @@ Any behavior-affecting change bumps the `version` in
 
 ## [Unreleased]
 
+## [0.5.0] — 2026-08-27
+
+### Fixed
+- **Forecast-quality EMA buckets measured the last ~30 minutes, not months.**
+  `_update_quality` looped over every matched slot on *every* coordinator cycle
+  with no already-ingested guard, so each slot was absorbed ~288×/day. On the
+  reference install this was exact: `group2["1"].n = 30526` ÷ 2 per cycle
+  = 15,263 cycles ÷ 288/day = **52.997 days**, matching the horizon buckets'
+  `n = 53`. With α=0.1 (memory ≈10 updates) the effective window had collapsed
+  to **0.6 min** for the busiest bucket — the module docstring's claim that
+  quality "accumulates over months" was false. Symptoms visible in the stored
+  state: `bias_wh == mae_wh` exactly in 17 buckets (EMA collapsed onto a single
+  sample) and R² pinned at the −9.99 clamp in 11. `ForecastQualityStore` now
+  carries `last_ingested_slot_utc`; slots at or before it are skipped.
+  Pre-existing per-slot buckets are unrecoverable and are dropped on load.
+
+### Added
+- **Solar geometry** (`pipeline/solar_geometry.py`) — NOAA solar position from
+  `hass.config` latitude/longitude. Verified against an independent
+  implementation of the Astronomical Almanac formulae: max deviation 0.008°
+  across 2108 daylight instants.
+- **Clear-sky reference and index** (`pipeline/clear_sky.py`) — measured output
+  as a fraction of cloudless potential, which divides season and time-of-day out
+  of the accuracy metrics.
+- **Array calibration** (`pipeline/array_calibration.py`) — fits effective kWp,
+  tilt and azimuth from baked generation history, then runs the *forecast*
+  through the same geometry to derive the capacity the forecast provider appears
+  to be configured with. Their ratio (`correction_factor`) answers "is my
+  forecast's array the right size?" — a one-time configuration fix worth more
+  than any runtime bias correction. Exposed under `pipeline.array_calibration`;
+  advisory only, gated behind `CONF_APPLY_FORECAST_CORRECTION` (default off).
+- **Array health** (`pipeline/solar_health.py`) — detects soiling, snow, new
+  shading and dead strings by comparing the array against *its own past self*:
+  the recent 7-day ceiling of the clear-sky index against a 90th-percentile
+  baseline. Uses ceilings rather than averages because cloud can only push the
+  index down, so the ceiling tracks hardware while the mean tracks weather. Works
+  even though the forecast has no skill — it needs the error distribution to be
+  stationary, not centred. Exposed under `pipeline.solar_health`. Known
+  limitation: a week with no clear spell at all reads as `degraded`.
+- **Forecast reserve** (`CONF_FORECAST_RESERVE_ENABLED`, default **off**) — sizes
+  a battery reserve from the measured d0/d1 day-ahead RMSE and raises the DP's
+  SoC floor by it, so the planner cannot sell down on the strength of solar that
+  may not arrive. A *planning* floor only: it never forces a charge, and is
+  clamped to the current SoC so a battery already below it is not stranded.
+  Capped at 25 % of usable capacity — uncapped, the reference install's ~25 kWh
+  d0 RMSE against a ~26 kWh pack would reserve the whole battery.
+- `matched_slot_count` on `ForecastErrorSeries`. `slot_count` counts the whole
+  forecast window including future slots carrying the `-1.0` "no data" sentinel,
+  while the aggregate statistics are computed over matched slots only; summing
+  `observed_kwh` across `slots` previously yielded a large negative number for a
+  window half in the future.
+- `check_array_calibration` deep-check + TUI widget, covering the fitted geometry
+  and the health verdict, and verifying `correction_factor` really equals the
+  ratio of the two capacities it is derived from.
+- [`docs/forecast_calibration.md`](docs/forecast_calibration.md) documenting the
+  whole seam.
+- **Week-ahead price forecast** (`pipeline/price_forecast.py`) — daily price
+  statistics for the next seven days, published on the same day axis as the
+  existing week-ahead generation forecast so the two read together. Per local
+  day: the mean of the highest and lowest 1 h and 3 h (`peak_1h/3h`,
+  `trough_1h/3h`), the 3 h spread, the hours at or below the export
+  break-even, and the PV energy expected to land in those hours. Days the
+  day-ahead auction already covers are reported verbatim (`source="actual"`);
+  the rest are predicted.
+
+  `negative_generation_kwh` splits into `absorbable_kwh` and `surplus_kwh`.
+  Headroom is deliberately the best case — the whole battery plus the load
+  running through those hours — so surplus is the PV that will be produced into
+  loss-making prices *even if the battery is empty by then*. That makes it a
+  lower bound on unavoidable spill, and a forward-looking reason to sell
+  earlier: if D+2 will spill 40 kWh no matter what, arriving at it full is a
+  loss, and today's mediocre price is the best exit available. The split is
+  reported as a pair or not at all — an install whose battery size is unknown
+  gets neither half rather than a guessed one.
+
+  The trough bands are not decoration. Measured on 20 months of Lithuanian
+  prices, the winter change is **not** a collapse in volatility — January's
+  3 h spread (0.158) was *higher* than July's (0.135) — it is a 4–5× rise in
+  the **trough**: 0.083–0.087 in Jan/Feb against 0.017–0.032 in summer. What
+  makes winter different is that refilling gets expensive, not that arbitrage
+  stops working.
+
+- **Skill-weighted model with a climatology floor.** The prediction is a
+  trailing day-class median; a weather-anomaly ridge regression (wind through a
+  turbine power curve, temperature, the install's own PV forecast, plus a
+  weekend interaction) contributes only in proportion to its own measured
+  out-of-sample skill against that baseline.
+
+  This is a correctness requirement for a multi-region integration, not a
+  refinement. Running one model, one specification, across eight European
+  bidding zones: it is worth +31 % in DE-LU, +27 % in BE and +21 % in LT, but
+  **−16 % in NO2 and −2 % in FR** — where hydro reservoir water value and
+  nuclear availability set the price, weather explains nothing and adding it
+  actively degrades the forecast. Skill correlates +0.75 with a zone's
+  wind+solar share. Rather than configure per region, each install measures its
+  own skill and the blend weight collapses to zero when it earns none.
+
+  The skill floor (`PRICE_FORECAST_MIN_SKILL`) is a deliberate dead zone:
+  across 30 synthetic histories with *no* signal whatsoever, 12 still scored
+  positive skill by chance (max +1.9 %). Trusting any positive number would be
+  selecting on noise.
+
+- **Feature vintages** (`DayFeatureVintage`). Each day's model features are
+  frozen two days ahead — the shortest horizon the auction does not already
+  cover — and the settled record is written from that frozen row, not from the
+  day's realised weather. Training on realised weather would flatter the fit
+  offline and degrade in production, since forecast error at the serving
+  horizon is a large part of the real uncertainty.
+
+- **Weather translator** (`inbound/weather.py`) — reads any Home Assistant
+  `weather` entity's daily forecast (auto-detected, or set via
+  `CONF_WEATHER_ENTITY`). No API key and no new cloud dependency, so the
+  integration keeps its `local_polling` character and works wherever the user's
+  existing weather integration does. Weather is optional throughout: without it
+  the forecast publishes its climatology baseline.
+
+- **Price-curve history store** (`sun_sale_price_curve_history`) — rolling 400
+  days of settled daily statistics plus their frozen feature vintages. The
+  existing `price_history` store keeps only daily peaks, which is enough for
+  the profitability percentile and nothing else.
+
+- **`sunSale Price Forecast` sensor** — state is tomorrow's expected 3 h peak;
+  attributes carry every day plus `model_skill` / `model_weight`, so how much
+  the forecast is trusting its weather model is visible rather than implicit.
+  The same per-day block is appended to the existing forecast sensor's
+  attributes and to `pipeline.price_forecast` in the debug API.
+
+- **`check_price_forecast`** integration check — recomputes settled days from
+  `pipeline.pricing`, validates band ordering and spread consistency, bounds
+  negative-price generation by each day's forecast total, verifies the
+  absorbable/surplus split partitions it exactly, and asserts the skill guard
+  holds (no blend weight without positive skill). The TUI surfaces the week's
+  total surplus in the check's title line.
+
+### Changed
+- **Accuracy buckets are keyed on physical axes.** The old axes binned by
+  absolute forecast kWh and by slot-index within the solar day, which conflate
+  "low because it is dawn" with "low because it is overcast" — unrelated failure
+  modes with unrelated fixes. Replaced by clear-sky index (10 % bins plus a
+  ≥100 % overflow, whose population is the signature of a mis-declared array),
+  solar elevation (5° bands, isolating air-mass error) and solar azimuth
+  (15° bands, where fixed obstructions appear as bearing-specific deficits).
+  `group3` is renamed `horizon` and its data is preserved across the migration.
+- **MAPE is no longer tracked.** On PV it is dominated by near-zero slots — a
+  0.36 kWh dawn slot missed by 0.86 kWh reports 239 % — so the aggregate
+  measured how many dim slots a window held rather than forecast quality.
+- The forecast-horizon chart now marks d2–d6 as informational: the DP plans only
+  ~32 h ahead (bounded by the price series), so only d0/d1 can affect dispatch.
+- `tools/checks/forecast.py` fails the forecast-quality check when any per-slot
+  bucket's `n` exceeds a plausible per-day ingestion rate, so a re-ingestion
+  regression cannot return silently.
+
+### Notes
+- Analysis and the reproducible multi-region study behind these numbers:
+  [`docs/price_forecast_week_ahead.md`](docs/price_forecast_week_ahead.md) and
+  `tools/research/price_forecast_study.py`.
+- Nothing in this release affects dispatch. The forecast is published and
+  measured only; wiring it into the schedule's terminal value (in particular a
+  refill-cost term from `trough_3h`) is deliberately left for a later release,
+  once it has a track record on real installs.
+
 ## [0.4.4] — 2026-08-13
 
 ### Fixed
