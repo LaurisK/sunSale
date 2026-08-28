@@ -31,6 +31,7 @@ from datetime import UTC, datetime, timedelta
 from typing import TYPE_CHECKING
 
 from ..contract.const import (
+    WEATHER_REFRESH_MINUTES,
     COUNTER_SNAPSHOT_HISTORY_RETENTION_DAYS,
     SCHEDULE_MAX_DISCHARGE_TO_GRID_KW_MAX,
     SCHEDULE_MAX_DISCHARGE_TO_GRID_KW_MIN,
@@ -43,6 +44,8 @@ from ..contract.const import (
     STORAGE_KEY_DERIVED_POWER,
 )
 from ..contract.models import (
+    PriceCurveHistory,
+    WeatherForecastData,
     AcPortPowerReading,
     BackupPowerReading,
     ArrayCalibration,
@@ -73,6 +76,7 @@ from ..contract.models import (
     YesterdayPrices,
 )
 from ..inbound.consumption_daily import try_finalise_yesterday_consumption
+from ..inbound.weather import WeatherTranslator
 from ..inbound.inverter_time import (
     InverterTimeHistory,
     current_skew_seconds,
@@ -433,6 +437,46 @@ class PreRolloverSnapshotStep(CycleStep):
             await self._store.save(updated)
 
 
+class WeatherStep(CycleStep):
+    """Fetch the daily weather forecast feeding the week-ahead price forecast.
+
+    Throttled rather than fetched every cycle: the source publishes a daily
+    forecast that changes a few times a day, so re-asking every five minutes
+    would be pure overhead. The cached value is re-seeded in between, and any
+    failure leaves an empty forecast — the price forecast treats weather as an
+    optional accuracy input and falls back to its climatology baseline.
+    """
+
+    label = "weather forecast"
+
+    def __init__(self, hass: HomeAssistant, translator: WeatherTranslator, config: SunSaleConfig) -> None:
+        """Bind HA, the weather translator, and config (for the local timezone)."""
+        self._hass = hass
+        self._translator = translator
+        self._config = config
+        self._cached = WeatherForecastData()
+        self._fetched_at: datetime | None = None
+
+    def seed(self, primary: dict, now: datetime, scratch: CycleScratch) -> None:
+        """Seed the cached forecast so the key always exists."""
+        primary[WeatherForecastData] = self._cached
+
+    async def persist(self, primary: dict, now: datetime, scratch: CycleScratch) -> None:
+        """Refresh the forecast when the cache has aged out, then re-inject."""
+        stale = (
+            self._fetched_at is None
+            or (now - self._fetched_at) >= timedelta(minutes=WEATHER_REFRESH_MINUTES)
+        )
+        if stale:
+            fetched = await self._translator.fetch(self._hass, self._config.local_tz)
+            # Keep the previous forecast on a failed or empty fetch rather than
+            # blanking a usable one; the days it covers are still valid.
+            if fetched.days:
+                self._cached = fetched
+            self._fetched_at = now
+        primary[WeatherForecastData] = self._cached
+
+
 class StoredPrimariesStep(CycleStep):
     """Inject the read-only stored primaries the DAG consumes each cycle.
 
@@ -453,6 +497,7 @@ class StoredPrimariesStep(CycleStep):
         baked_store: PersistentStore,
         monthly_bill_store: PersistentStore,
         price_history_store: PersistentStore,
+        price_curve_store: PersistentStore,
         forecast_quality_store: PersistentStore,
         array_calibration_store: PersistentStore,
         mode_history_store: PersistentStore,
@@ -462,6 +507,7 @@ class StoredPrimariesStep(CycleStep):
         self._baked_store = baked_store
         self._monthly_bill_store = monthly_bill_store
         self._price_history_store = price_history_store
+        self._price_curve_store = price_curve_store
         self._forecast_quality_store = forecast_quality_store
         self._array_calibration_store = array_calibration_store
         self._mode_history_store = mode_history_store
@@ -478,6 +524,9 @@ class StoredPrimariesStep(CycleStep):
         primary[PriceHistory] = PriceHistory(
             peaks=tuple((self._price_history_store.value or []) if self._price_history_store else []),
         )
+        primary[PriceCurveHistory] = (
+            self._price_curve_store.value if self._price_curve_store else None
+        ) or PriceCurveHistory()
         primary[ForecastQualityStore] = (
             self._forecast_quality_store.value if self._forecast_quality_store else None
         ) or ForecastQualityStore()

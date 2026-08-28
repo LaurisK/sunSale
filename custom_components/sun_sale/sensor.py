@@ -38,6 +38,7 @@ from .contract.models import (
     ObservedGenerationSeries,
     ObservedGridSeries,
     ObservedLossesSeries,
+    PriceForecast,
     PriceSeries,
     PriceSlot,
     Schedule,
@@ -77,6 +78,7 @@ async def async_setup_entry(
         PricingPipelineSensor(coordinator, entry),
         ForecastPipelineSensor(coordinator, entry),
         CalculationPipelineSensor(coordinator, entry),
+        PriceForecastSensor(coordinator, entry),
         CurrentBaseloadSensor(coordinator, entry),
         BatteryRuntimeMinutesSensor(coordinator, entry),
         BatteryDrainUntilSensor(coordinator, entry),
@@ -964,8 +966,13 @@ class ForecastPipelineSensor(_BaseSensor):
         gen: GenerationSeries | None = (self.coordinator.data or {}).get("forecast")
         if not gen:
             return {}
+        price: PriceForecast | None = (self.coordinator.data or {}).get("price_forecast")
         return {
             **gen.daily_totals_kwh(4),
+            # Week-ahead price sits on the same day axis as the week-ahead
+            # generation above, so a consumer can read "how much will I make"
+            # against "how much will I generate" without a second lookup.
+            **(price.daily_price_stats(4) if price is not None else {}),
             "slots": [
                 {
                     "start": s.start.isoformat(),
@@ -974,6 +981,60 @@ class ForecastPipelineSensor(_BaseSensor):
                 }
                 for s in gen.slots
             ],
+        }
+
+
+class PriceForecastSensor(_BaseSensor):
+    """Week-ahead price forecast — peak/trough bands and negative-price exposure.
+
+    The state is tomorrow's expected 3 h peak, because that is the nearest
+    figure a hold-or-sell decision turns on; everything else (today through
+    d6, the trough bands, negative hours and the PV exposed to them) is in the
+    attributes. ``model_skill`` and ``model_weight`` are published alongside so
+    the forecast's own trustworthiness is visible: in a market where the
+    weather model earns no skill the weight sits at zero and the numbers are a
+    pure day-class climatology.
+    """
+
+    _attr_name = "sunSale Price Forecast"
+    _attr_icon = "mdi:chart-timeline-variant"
+    _attr_state_class = SensorStateClass.MEASUREMENT
+    # Placeholder rewritten to the configured display currency by _BaseSensor.
+    _attr_native_unit_of_measurement = "EUR/kWh"
+
+    def __init__(self, coordinator: SunSaleCoordinator, entry: ConfigEntry) -> None:
+        """Initialise the week-ahead price forecast sensor."""
+        super().__init__(coordinator, entry, "price_forecast")
+
+    @property
+    def native_value(self) -> float | None:
+        """Return tomorrow's expected 3 h peak price, or None when unavailable."""
+        forecast: PriceForecast | None = (self.coordinator.data or {}).get("price_forecast")
+        if forecast is None or not forecast.days:
+            return None
+        tomorrow = next((d for d in forecast.days if d.horizon_days == 1), None)
+        if tomorrow is None:
+            return None
+        return round(tomorrow.peak_3h_eur_kwh, 4)
+
+    @property
+    def extra_state_attributes(self) -> dict[str, Any]:
+        """Return per-day statistics plus the model's own skill diagnostics."""
+        forecast: PriceForecast | None = (self.coordinator.data or {}).get("price_forecast")
+        if forecast is None:
+            return {}
+        return {
+            **forecast.daily_price_stats(4),
+            "model_skill": (
+                round(forecast.model_skill, 4)
+                if forecast.model_skill is not None else None
+            ),
+            "model_weight": round(forecast.model_weight, 4),
+            "history_days": forecast.history_days,
+            "computed_at": (
+                forecast.computed_at.isoformat()
+                if forecast.computed_at is not None else None
+            ),
         }
 
 

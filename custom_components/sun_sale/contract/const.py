@@ -85,6 +85,10 @@ CONF_INVERTER_SOLIS_GRID_FEED_IN_POWER_LIMIT_SWITCH = (
 
 # Config entry keys — data sources
 CONF_NORDPOOL_ENTITY = "nordpool_entity"  # generic price sensor (all sources)
+# Optional HA ``weather.*`` entity feeding the week-ahead price forecast.
+# Left blank the coordinator auto-detects one; with no weather at all the
+# forecast degrades to its climatology baseline.
+CONF_WEATHER_ENTITY = "weather_entity"
 CONF_NORDPOOL_RESOLUTION = "nordpool_resolution"
 
 # Price source selector. Picks which price-feed translator reads the price
@@ -192,6 +196,7 @@ STORAGE_KEY_GRID_EXPORT_TOTAL = f"{DOMAIN}_grid_export_total"
 STORAGE_KEY_DERIVED_POWER = f"{DOMAIN}_derived_power"
 STORAGE_KEY_MONTHLY_BILL = f"{DOMAIN}_monthly_bill"
 STORAGE_KEY_MODE_HISTORY = f"{DOMAIN}_mode_history"
+STORAGE_KEY_PRICE_CURVE_HISTORY = f"{DOMAIN}_price_curve_history"
 STORAGE_VERSION = 1
 
 # Debounce window (seconds) for PersistentStore writes. A single coordinator
@@ -282,6 +287,68 @@ CONSUMPTION_DAILY_MIN_HOUR_COMPLETENESS = 0.8
 
 # Rolling price-history retention (days) for profitability scoring.
 PRICE_HISTORY_RETENTION_DAYS = 90
+
+# --- Week-ahead price forecast ---------------------------------------------
+
+# Rolling retention (days) of settled daily price statistics. Longer than the
+# profitability window because the forecast model needs a full seasonal cycle;
+# each record is a handful of floats, so the store stays small.
+PRICE_CURVE_RETENTION_DAYS = 400
+
+# Days ahead the price forecast covers, matching the week-ahead generation
+# view (today + tomorrow + d2..d6).
+PRICE_FORECAST_HORIZON_DAYS = 7
+
+# Lead time at which each day's model features are captured and frozen. The
+# model must be trained on the kind of input it will have when predicting, not
+# on the day's realised weather — training on realised weather flatters the fit
+# and degrades in production. Two days is the shortest horizon the day-ahead
+# auction does not already cover, so it is the one that matters most.
+PRICE_FORECAST_VINTAGE_LEAD_DAYS = 2
+
+# How often the daily weather forecast is refetched. The source publishes a
+# daily forecast that changes a few times a day, so polling it every cycle
+# would be pure overhead.
+WEATHER_REFRESH_MINUTES = 60
+
+# Settled days required before the climatology baseline is considered usable
+# at all, and before the weather model is allowed to be fitted on top of it.
+PRICE_FORECAST_MIN_CLIMATOLOGY_DAYS = 14
+PRICE_FORECAST_MIN_MODEL_DAYS = 60
+
+# Trailing window (days) used to fit both the climatology baseline and the
+# weather-anomaly model.
+PRICE_FORECAST_TRAIN_DAYS = 270
+
+# Rolling window (days) over which the model is scored against climatology.
+# The blend weight is derived from this skill, so the model can never make the
+# published forecast worse than the baseline for long.
+PRICE_FORECAST_SKILL_WINDOW_DAYS = 60
+
+# Skill a model must beat before it is granted any weight at all — a dead zone,
+# not a formality. Day-to-day price noise is large relative to any real
+# improvement: over a window this size a model with no signal whatsoever scores
+# a small positive skill about half the time, purely by chance. Trusting that
+# would be selecting on noise. Detecting a genuine 10 % improvement reliably
+# needs roughly 900 days of daily scoring, so anything this window can actually
+# resolve is comfortably above this floor.
+PRICE_FORECAST_MIN_SKILL = 0.05
+
+# Skill at which the model earns its full share of the blend.
+PRICE_FORECAST_FULL_SKILL = 0.20
+
+# Ceiling on the model's contribution. The climatology baseline always keeps a
+# stake: it is the component that is known to work in every market.
+PRICE_FORECAST_MAX_MODEL_WEIGHT = 0.8
+
+# Ridge penalty for the anomaly regression. Small, but non-zero: with ~8
+# correlated daily features and one year of data the unpenalised fit is
+# ill-conditioned in exactly the low-variance markets where it is least useful.
+PRICE_FORECAST_RIDGE_LAMBDA = 1e-3
+
+# Per-day confidence decay with horizon. Day D+n carries
+# ``PRICE_FORECAST_CONFIDENCE_DECAY ** n`` of the base confidence.
+PRICE_FORECAST_CONFIDENCE_DECAY = 0.85
 
 # Update interval (minutes). The coordinator does not free-run on this period —
 # it ticks on the wall-clock minutes that are multiples of it (:00, :05, …), so

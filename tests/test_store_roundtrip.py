@@ -33,11 +33,14 @@ from custom_components.sun_sale.contract.const import (
     STORAGE_KEY_FORECAST_QUALITY,
     STORAGE_KEY_MODE_HISTORY,
     STORAGE_KEY_MONTHLY_BILL,
+    STORAGE_KEY_PRICE_CURVE_HISTORY,
     STORAGE_KEY_PRICE_HISTORY,
     STORAGE_KEY_YESTERDAY,
 )
 from custom_components.sun_sale.pipeline import forecast_accuracy
 from custom_components.sun_sale.contract.models import (
+    PriceCurveHistory,
+    PriceDayRecord,
     FORECAST_QUALITY_STORE_VERSION,
     ArrayCalibration,
     AccuracyBucketState,
@@ -50,6 +53,7 @@ from custom_components.sun_sale.contract.models import (
     CounterSnapshotRecord,
     DailyPeak,
     DayClass,
+    DayFeatureVintage,
     ForecastQualityStore,
     InverterModeChange,
     InverterModeHistory,
@@ -129,6 +133,39 @@ def _rep_price_history() -> list[DailyPeak]:
         DailyPeak(day=date(2026, 7, 11), peak_eur_kwh=-0.014, day_class=DayClass.WEEKEND),
         DailyPeak(day=date(2026, 7, 13), peak_eur_kwh=0.0, day_class=DayClass.HOLIDAY),
     ]
+
+
+def _rep_price_curve_history() -> PriceCurveHistory:
+    """Return settled day records plus a pending vintage.
+
+    Covers every optional field in both directions: one record with the full
+    weather/solar feature set and one with none of it (an install with no
+    weather entity), so a codec that drops ``None`` handling is caught.
+    """
+    return PriceCurveHistory(
+        records=(
+            PriceDayRecord(
+                day=date(2026, 7, 9), day_class=DayClass.WEEKDAY,
+                peak_1h_eur_kwh=0.2531, peak_3h_eur_kwh=0.2104,
+                trough_1h_eur_kwh=0.0031, trough_3h_eur_kwh=0.0142,
+                negative_hours=3.25, mean_eur_kwh=0.0912,
+                wind_speed_kmh=21.4, temperature_c=17.5, solar_kwh=42.9,
+                negative_generation_kwh=8.4,
+            ),
+            PriceDayRecord(
+                day=date(2026, 7, 11), day_class=DayClass.WEEKEND,
+                peak_1h_eur_kwh=0.1, peak_3h_eur_kwh=0.08,
+                trough_1h_eur_kwh=-0.014, trough_3h_eur_kwh=0.0,
+                negative_hours=0.0, mean_eur_kwh=0.05,
+            ),
+        ),
+        vintages=(
+            DayFeatureVintage(
+                day=date(2026, 7, 15), lead_days=2,
+                wind_speed_kmh=12.0, temperature_c=19.25, solar_kwh=38.1,
+            ),
+        ),
+    )
 
 
 def _rep_forecast_quality() -> ForecastQualityStore:
@@ -225,6 +262,7 @@ def _rep_baked_observed() -> BakedObservedHistory:
 _SINGLETON_REPRESENTATIVE = {
     STORAGE_KEY_CONSUMPTION_DAILY: _rep_consumption_daily,
     STORAGE_KEY_PRICE_HISTORY: _rep_price_history,
+    STORAGE_KEY_PRICE_CURVE_HISTORY: _rep_price_curve_history,
     STORAGE_KEY_ARRAY_CALIBRATION: _rep_array_calibration,
     STORAGE_KEY_FORECAST_QUALITY: _rep_forecast_quality,
     STORAGE_KEY_MONTHLY_BILL: _rep_monthly_bill,

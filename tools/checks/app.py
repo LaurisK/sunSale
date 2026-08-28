@@ -44,6 +44,7 @@ from .observed import (
     ObservedGridCheckResult,
     ObservedGridCheckWidget,
 )
+from .price_forecast import PriceForecastCheckResult, PriceForecastCheckWidget
 from .pricing import PricingCheckResult, PricingCheckWidget
 from .profitability import ProfitabilityCheckResult, ProfitabilityCheckWidget
 from .registry import CheckResult
@@ -54,7 +55,7 @@ _DEEP_CATS: frozenset[str] = frozenset({
     "forecast", "pricing", "calculation", "schedule", "battery",
     "observed_generation", "observed_grid", "forecast_accuracy",
     "base_load", "battery_runtime",
-    "household_consumption", "profitability", "forecast_quality",
+    "household_consumption", "profitability", "price_forecast", "forecast_quality",
     "array_calibration",
     "monthly_bill", "baked_observed",
     "observed_consumption", "observed_losses",
@@ -95,6 +96,7 @@ class IntegrationCheckApp(App):
     BatteryRuntimeCheckWidget { height: auto; }
     HouseholdConsumptionCheckWidget { height: auto; }
     ProfitabilityCheckWidget { height: auto; }
+    PriceForecastCheckWidget { height: auto; }
     ForecastQualityCheckWidget { height: auto; }
     ArrayCalibrationCheckWidget { height: auto; }
     ForecastQualityBucketTable DataTable { height: 14; }
@@ -119,6 +121,7 @@ class IntegrationCheckApp(App):
         battery_runtime_results: dict[str, BatteryRuntimeCheckResult],
         household_consumption_results: dict[str, HouseholdConsumptionCheckResult],
         profitability_results: dict[str, ProfitabilityCheckResult],
+        price_forecast_results: dict[str, PriceForecastCheckResult],
         forecast_quality_results: dict[str, ForecastQualityCheckResult],
         array_calibration_results: dict[str, ArrayCalibrationCheckResult],
         monthly_bill_results: dict[str, MonthlyBillCheckResult],
@@ -145,6 +148,7 @@ class IntegrationCheckApp(App):
             battery_runtime_results: Per-entry battery runtime deep-check results.
             household_consumption_results: Per-entry household consumption deep-check results.
             profitability_results: Per-entry profitability score deep-check results.
+            price_forecast_results: Per-entry week-ahead price-forecast results.
             forecast_quality_results: Per-entry forecast quality EMA bucket deep-check results.
             array_calibration_results: Per-entry array calibration / solar health deep-check results.
             monthly_bill_results: Per-entry monthly electricity bill deep-check results.
@@ -168,6 +172,7 @@ class IntegrationCheckApp(App):
         self._battery_runtime_results = battery_runtime_results
         self._household_consumption_results = household_consumption_results
         self._profitability_results = profitability_results
+        self._price_forecast_results = price_forecast_results
         self._forecast_quality_results = forecast_quality_results
         self._array_calibration_results = array_calibration_results
         self._monthly_bill_results = monthly_bill_results
@@ -197,6 +202,7 @@ class IntegrationCheckApp(App):
             + list(self._battery_runtime_results.values())
             + list(self._household_consumption_results.values())
             + list(self._profitability_results.values())
+            + list(self._price_forecast_results.values())
             + list(self._forecast_quality_results.values())
             + list(self._array_calibration_results.values())
             + list(self._monthly_bill_results.values())
@@ -241,6 +247,7 @@ class IntegrationCheckApp(App):
                 ("observed_consumption",    ObservedConsumptionCheckWidget,     self._observed_consumption_results),
                 ("observed_losses",         ObservedLossesCheckWidget,          self._observed_losses_results),
                 ("profitability",           ProfitabilityCheckWidget,           self._profitability_results),
+                ("price_forecast",          PriceForecastCheckWidget,           self._price_forecast_results),
                 ("forecast_quality",        ForecastQualityCheckWidget,         self._forecast_quality_results),
                 ("array_calibration",       ArrayCalibrationCheckWidget,        self._array_calibration_results),
                 ("monthly_bill",            MonthlyBillCheckWidget,             self._monthly_bill_results),

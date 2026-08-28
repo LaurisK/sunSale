@@ -31,6 +31,7 @@ from .tier3 import (
     ForecastAccuracyNode,
     LockoutNode,
     MonthlyBillNode,
+    PriceForecastNode,
     SolarHealthNode,
 )
 from .tier4 import ScheduleNode
@@ -51,6 +52,7 @@ __all__ = [
     "ObservedGenerationNode",
     "ObservedGridNode",
     "ObservedLossesNode",
+    "PriceForecastNode",
     "PricingNode",
     "ProfitabilityNode",
     "ScheduleNode",

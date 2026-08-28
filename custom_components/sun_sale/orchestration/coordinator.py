@@ -29,6 +29,7 @@ from homeassistant.helpers.event import (
 from homeassistant.helpers.update_coordinator import DataUpdateCoordinator, UpdateFailed
 
 from ..contract.const import (
+    CONF_WEATHER_ENTITY,
     CAPACITY_OBS_COUNTER_RESET_EPS_KWH,
     CAPACITY_OBS_EMIT_SOC_DELTA,
     CAPACITY_OBS_MAX_WINDOW_S,
@@ -86,6 +87,7 @@ from ..contract.const import (
     DEFAULT_SELL_MODE,
     DOMAIN,
     GRID_POWER_HISTORY_RETENTION_DAYS,
+    PRICE_CURVE_RETENTION_DAYS,
     PRICE_HISTORY_RETENTION_DAYS,
     SCHEDULE_SLOT_MINUTES,
     STORAGE_KEY_BAKED_OBSERVED,
@@ -97,12 +99,14 @@ from ..contract.const import (
     STORAGE_KEY_FORECAST_QUALITY,
     STORAGE_KEY_MODE_HISTORY,
     STORAGE_KEY_MONTHLY_BILL,
+    STORAGE_KEY_PRICE_CURVE_HISTORY,
     STORAGE_KEY_PRICE_HISTORY,
     STORAGE_KEY_YESTERDAY,
     STORAGE_VERSION,
     UPDATE_INTERVAL_MINUTES,
 )
 from ..contract.models import (
+    WeatherForecastData,
     BakedObservedHistory,
     BaseLoadProfile,
     BatteryConfig,
@@ -140,6 +144,8 @@ from ..contract.models import (
     ObservedGenerationSeries,
     ObservedGridSeries,
     ObservedLossesSeries,
+    PriceCurveHistory,
+    PriceForecast,
     PriceSeries,
     ProfitabilityScore,
     PvPowerHistory,
@@ -161,6 +167,7 @@ from ..inbound.consumption_daily import (
     backfill_from_derived_history,
 )
 from ..inbound.forecast import SolarTranslator
+from ..inbound.weather import WeatherTranslator
 from ..inbound.forecast_resolver import resolve_forecast_entities
 from ..inbound.household_consumption import HouseholdConsumptionTranslator
 from ..inbound.inverter_entity_resolver import resolve_inverter_entities
@@ -207,6 +214,7 @@ from ..outbound.inverter import (
     InverterPlatform,
 )
 from ..outbound.inverter_control_module import InverterControlModule
+from ..pipeline import price_forecast as price_forecast_module
 from ..pipeline import profitability as profitability_module
 from ..pipeline import tariff as tariff_module
 from ..pipeline.battery import CapacityEstimator
@@ -227,6 +235,7 @@ from ..pipeline.nodes import (
     ObservedGridNode,
     ObservedLossesNode,
     PricingNode,
+    PriceForecastNode,
     ProfitabilityNode,
     ScheduleNode,
 )
@@ -243,6 +252,7 @@ from .cycle_steps import (
     ScheduleKnobs,
     SchedulePolicyStep,
     StoredPrimariesStep,
+    WeatherStep,
     YesterdayRotationStep,
 )
 from .history_stores import (
@@ -399,6 +409,7 @@ class SunSaleCoordinator(DataUpdateCoordinator):
         self._stores: dict[str, PersistentStore] = {}
         self._consumption_daily_store: PersistentStore[ConsumptionDailyBuckets] | None = None
         self._price_history_store: PersistentStore[list[DailyPeak]] | None = None
+        self._price_curve_store: PersistentStore[PriceCurveHistory] | None = None
         self._forecast_quality_store: PersistentStore[ForecastQualityStore] | None = None
         self._array_calibration_store: PersistentStore[ArrayCalibration] | None = None
         self._grid_import_power_entity_id: str = ""
@@ -904,6 +915,7 @@ class SunSaleCoordinator(DataUpdateCoordinator):
             ArrayCalibrationNode(),
             ForecastAccuracyNode(),
             ProfitabilityNode(),
+            PriceForecastNode(),
             LockoutNode(),
             ScheduleNode(),
         ]
@@ -1001,6 +1013,7 @@ class SunSaleCoordinator(DataUpdateCoordinator):
         # ``_async_update_data`` (and tests) keep resolving unchanged.
         self._consumption_daily_store = self._stores[STORAGE_KEY_CONSUMPTION_DAILY]
         self._price_history_store = self._stores[STORAGE_KEY_PRICE_HISTORY]
+        self._price_curve_store = self._stores[STORAGE_KEY_PRICE_CURVE_HISTORY]
         self._forecast_quality_store = self._stores[STORAGE_KEY_FORECAST_QUALITY]
         self._array_calibration_store = self._stores[STORAGE_KEY_ARRAY_CALIBRATION]
         self._monthly_bill_store = self._stores[STORAGE_KEY_MONTHLY_BILL]
@@ -1048,10 +1061,16 @@ class SunSaleCoordinator(DataUpdateCoordinator):
             RecorderResampleStep(self.hass, self._resampler, self._sun_sale_config),
             InverterTimeStep(),
             PreRolloverSnapshotStep(self._counter_snapshot_store, self._sun_sale_config),
+            WeatherStep(
+                self.hass,
+                WeatherTranslator(self._config.get(CONF_WEATHER_ENTITY, "")),
+                self._sun_sale_config,
+            ),
             StoredPrimariesStep(
                 baked_store=self._baked_observed_store,
                 monthly_bill_store=self._monthly_bill_store,
                 price_history_store=self._price_history_store,
+                price_curve_store=self._price_curve_store,
                 forecast_quality_store=self._forecast_quality_store,
                 array_calibration_store=self._array_calibration_store,
                 mode_history_store=self._mode_history_store,
@@ -1363,6 +1382,62 @@ class SunSaleCoordinator(DataUpdateCoordinator):
                     peaks = [p for p in peaks if p.day >= cutoff_day]
                     await self._price_history_store.save(peaks)
 
+        with self._guarded("price-curve-history save"):
+            await self._save_price_curve_history(primary, secondary, now)
+
+    async def _save_price_curve_history(
+        self, primary: dict, secondary: dict, now: datetime,
+    ) -> None:
+        """Freeze this cycle's feature vintage and record any settled days.
+
+        Two independent updates, both idempotent and both keyed by LOCAL date
+        so they line up with the price forecast's day boundaries: the features
+        for the day at the model's lead time are captured once and never
+        revised, and any fully-settled day missing from the history is added.
+
+        Args:
+            primary: The cycle's primary inputs.
+            secondary: The DAG's outputs.
+            now: Cycle timestamp.
+        """
+        if self._price_curve_store is None or self._sun_sale_config is None:
+            return
+        price_series: PriceSeries | None = secondary.get(PriceSeries)
+        if price_series is None:
+            return
+
+        local_tz = self._sun_sale_config.local_tz
+        today_local = now.astimezone(local_tz).date()
+        history: PriceCurveHistory = self._price_curve_store.value or PriceCurveHistory()
+        generation: GenerationSeries | None = secondary.get(GenerationSeries)
+        weather: WeatherForecastData | None = primary.get(WeatherForecastData)
+        threshold = price_forecast_module.export_break_even(
+            self._sun_sale_config.tariff.sell_distribution_fee,
+            self._sun_sale_config.tariff.sell_markup,
+        )
+
+        updated = price_forecast_module.capture_feature_vintage(
+            history, weather, generation, today_local,
+        )
+        if updated is not None:
+            history = updated
+
+        settled = price_forecast_module.settle_days(
+            history,
+            price_series,
+            generation,
+            weather,
+            today_local,
+            local_tz,
+            threshold,
+            PRICE_CURVE_RETENTION_DAYS,
+        )
+        if settled is not None:
+            history = settled
+
+        if updated is not None or settled is not None:
+            await self._price_curve_store.save(history)
+
     @staticmethod
     def _validate_driver_role_contract(
         platform: InverterPlatform, driver: object,
@@ -1640,6 +1715,7 @@ class SunSaleCoordinator(DataUpdateCoordinator):
             "base_load_profile": secondary.get(BaseLoadProfile),
             "battery_runtime": secondary.get(BatteryRuntimeEstimate),
             "profitability_score": secondary.get(ProfitabilityScore),
+            "price_forecast": secondary.get(PriceForecast),
             "consumption_today_kwh": (
                 consumption.today_total_kwh if consumption else None
             ),

@@ -32,6 +32,7 @@ from ..contract.const import (
     STORAGE_KEY_FORECAST_QUALITY,
     STORAGE_KEY_MODE_HISTORY,
     STORAGE_KEY_MONTHLY_BILL,
+    STORAGE_KEY_PRICE_CURVE_HISTORY,
     STORAGE_KEY_PRICE_HISTORY,
     STORAGE_KEY_YESTERDAY,
 )
@@ -48,7 +49,10 @@ from ..contract.models import (
     ForecastQualityStore,
     InverterModeChange,
     InverterModeHistory,
+    DayFeatureVintage,
     MonthlyBillState,
+    PriceCurveHistory,
+    PriceDayRecord,
     PriceEntry,
     SlotKwh,
     SolarEntry,
@@ -276,6 +280,93 @@ def _deserialize_price_history(d: dict) -> list[DailyPeak]:
     return result
 
 
+def _serialize_price_curve_history(history: PriceCurveHistory) -> dict:
+    """Serialise the rolling settled-day price statistics.
+
+    Keys are abbreviated because this store holds one record per day for well
+    over a year; the payload is written on every rollover and the shorthand
+    roughly halves it.
+    """
+    return {
+        "records": [
+            {
+                "day": r.day.isoformat(),
+                "cls": r.day_class.value,
+                "p1": r.peak_1h_eur_kwh,
+                "p3": r.peak_3h_eur_kwh,
+                "t1": r.trough_1h_eur_kwh,
+                "t3": r.trough_3h_eur_kwh,
+                "nh": r.negative_hours,
+                "mean": r.mean_eur_kwh,
+                "wind": r.wind_speed_kmh,
+                "temp": r.temperature_c,
+                "solar": r.solar_kwh,
+                "ngen": r.negative_generation_kwh,
+            }
+            for r in history.records
+        ],
+        "vintages": [
+            {
+                "day": v.day.isoformat(),
+                "lead": v.lead_days,
+                "wind": v.wind_speed_kmh,
+                "temp": v.temperature_c,
+                "solar": v.solar_kwh,
+            }
+            for v in history.vintages
+        ],
+    }
+
+
+def _deserialize_price_curve_history(d: dict) -> PriceCurveHistory:
+    """Deserialise settled-day price statistics, skipping malformed records."""
+    records: list[PriceDayRecord] = []
+    for r in d.get("records", []):
+        try:
+            records.append(PriceDayRecord(
+                day=date.fromisoformat(r["day"]),
+                day_class=DayClass(r["cls"]),
+                peak_1h_eur_kwh=float(r["p1"]),
+                peak_3h_eur_kwh=float(r["p3"]),
+                trough_1h_eur_kwh=float(r["t1"]),
+                trough_3h_eur_kwh=float(r["t3"]),
+                negative_hours=float(r["nh"]),
+                mean_eur_kwh=float(r["mean"]),
+                wind_speed_kmh=_opt_float(r.get("wind")),
+                temperature_c=_opt_float(r.get("temp")),
+                solar_kwh=_opt_float(r.get("solar")),
+                negative_generation_kwh=_opt_float(r.get("ngen")),
+            ))
+        except (KeyError, ValueError, TypeError):
+            continue
+    records.sort(key=lambda r: r.day)
+
+    vintages: list[DayFeatureVintage] = []
+    for v in d.get("vintages", []):
+        try:
+            vintages.append(DayFeatureVintage(
+                day=date.fromisoformat(v["day"]),
+                lead_days=int(v.get("lead", 0)),
+                wind_speed_kmh=_opt_float(v.get("wind")),
+                temperature_c=_opt_float(v.get("temp")),
+                solar_kwh=_opt_float(v.get("solar")),
+            ))
+        except (KeyError, ValueError, TypeError):
+            continue
+    vintages.sort(key=lambda v: v.day)
+    return PriceCurveHistory(records=tuple(records), vintages=tuple(vintages))
+
+
+def _opt_float(value: Any) -> float | None:
+    """Return value as a float, preserving None for absent optional fields."""
+    if value is None:
+        return None
+    try:
+        return float(value)
+    except (TypeError, ValueError):
+        return None
+
+
 def _serialize_counter_snapshot(history: CounterSnapshotHistory) -> dict:
     """Serialise the rolling pre-rollover counter snapshot history."""
     return {
@@ -498,6 +589,12 @@ SINGLETON_STORE_SPECS: tuple[SingletonStoreSpec, ...] = (
         storage_key=STORAGE_KEY_PRICE_HISTORY,
         serialize=_serialize_price_history,
         deserialize=_deserialize_price_history,
+    ),
+    SingletonStoreSpec(
+        storage_key=STORAGE_KEY_PRICE_CURVE_HISTORY,
+        serialize=_serialize_price_curve_history,
+        deserialize=_deserialize_price_curve_history,
+        default=lambda: PriceCurveHistory(records=()),
     ),
     SingletonStoreSpec(
         storage_key=STORAGE_KEY_ARRAY_CALIBRATION,

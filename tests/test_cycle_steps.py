@@ -17,6 +17,7 @@ import pytest
 
 from custom_components.sun_sale.contract.const import STORAGE_KEY_DERIVED_POWER
 from custom_components.sun_sale.contract.models import (
+    PriceCurveHistory,
     AcPortPowerReading,
     BackupPowerReading,
     ArrayCalibration,
@@ -305,6 +306,7 @@ def test_stored_primaries_seeds_all_keys_with_defaults():
         baked_store=FakeStore(value=None),
         monthly_bill_store=FakeStore(value=None),
         price_history_store=FakeStore(value=None),
+        price_curve_store=FakeStore(value=None),
         forecast_quality_store=FakeStore(value=None),
         array_calibration_store=FakeStore(value=None),
         mode_history_store=FakeStore(value=None),
@@ -313,6 +315,7 @@ def test_stored_primaries_seeds_all_keys_with_defaults():
     assert primary[BakedObservedHistory] == BakedObservedHistory(records=())
     assert primary[MonthlyBillState] is None      # None is meaningful, not defaulted
     assert primary[PriceHistory] == PriceHistory(peaks=())
+    assert primary[PriceCurveHistory] == PriceCurveHistory()
     assert primary[ForecastQualityStore] == ForecastQualityStore()
     # None is meaningful: a zero-capacity calibration would make every
     # clear-sky index infinite, so "not fitted yet" must stay distinguishable.

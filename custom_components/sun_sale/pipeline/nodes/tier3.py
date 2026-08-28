@@ -6,6 +6,8 @@ import logging
 from ...contract.models import (
     ArrayCalibration,
     BakedObservedHistory,
+    BaseLoadProfile,
+    BatteryStatus,
     BatteryState,
     CalculationResult,
     ForecastAccuracyResult,
@@ -16,11 +18,15 @@ from ...contract.models import (
     MonthlyBillState,
     ObservedGenerationSeries,
     ObservedGridSeries,
+    PriceCurveHistory,
+    PriceForecast,
     PriceSeries,
     SolarHealth,
     SunTimes,
+    WeatherForecastData,
 )
 from .. import array_calibration, calculation, forecast_accuracy, solar_health
+from .. import price_forecast as price_forecast_module
 from .. import monthly_bill as monthly_bill_module
 from ..dag_engine import DagNode, NodeContext
 
@@ -183,4 +189,46 @@ class SolarHealthNode(DagNode):
             latitude=ctx.config.latitude,
             longitude=ctx.config.longitude,
             now=ctx.now,
+        )
+
+
+class PriceForecastNode(DagNode):
+    """Week-ahead daily price statistics → PriceForecast.
+
+    Settled auction days are reported verbatim; the rest are predicted from the
+    install's own day-class climatology, corrected by a weather model only in
+    proportion to that model's measured out-of-sample skill. ``PriceCurveHistory``
+    and ``WeatherForecastData`` are primaries read via ``ctx.get`` — both are
+    optional, and the forecast degrades rather than failing when either is
+    absent (a fresh install has no history; an install with no weather
+    integration has no weather).
+
+    ``BatteryStatus`` and ``BaseLoadProfile`` size the headroom used to split
+    each day's negative-price generation into what the site could absorb and
+    what it cannot. Without a battery size the split is left unreported rather
+    than guessed.
+    """
+
+    output_type = PriceForecast
+    consumes = [PriceSeries, GenerationSeries]
+    # Battery size and baseload only refine the absorbable/surplus split; a
+    # forecast without them is still complete, so neither gates readiness.
+    consumes_optional = [BatteryStatus, BaseLoadProfile]
+
+    async def _compute(self, ctx: NodeContext) -> PriceForecast:
+        """Build the week-ahead price forecast for the configured horizon."""
+        tariff = ctx.config.tariff
+        battery = ctx.get(BatteryStatus)
+        return price_forecast_module.compute_price_forecast(
+            price_series=ctx.require(PriceSeries),
+            history=ctx.get(PriceCurveHistory),
+            weather=ctx.get(WeatherForecastData),
+            generation=ctx.require(GenerationSeries),
+            negative_threshold_eur_kwh=price_forecast_module.export_break_even(
+                tariff.sell_distribution_fee, tariff.sell_markup,
+            ),
+            now=ctx.now,
+            local_tz=ctx.config.local_tz,
+            battery_capacity_kwh=battery.total_capacity_kwh if battery else None,
+            base_load=ctx.get(BaseLoadProfile),
         )

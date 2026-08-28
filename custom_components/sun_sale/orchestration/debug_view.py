@@ -84,6 +84,7 @@ def _coordinator_to_dict(entry_id: str, coordinator: Any) -> dict:
     batt_status = data.get("battery_status")
     batt_runtime = data.get("battery_runtime")
     profitability = data.get("profitability_score")
+    price_forecast = data.get("price_forecast")
     forecast_quality = data.get("forecast_quality")
     array_calibration = data.get("array_calibration")
     solar_health = data.get("solar_health")
@@ -250,6 +251,7 @@ def _coordinator_to_dict(entry_id: str, coordinator: Any) -> dict:
             "forecast": {
                 "slot_count": len(forecast.slots),
                 **forecast.daily_totals_kwh(4),
+                **(price_forecast.daily_price_stats(4) if price_forecast is not None else {}),
                 "today_remaining_kwh": round(forecast.today_remaining_kwh, 4),
                 "slots": [
                     {
@@ -259,6 +261,20 @@ def _coordinator_to_dict(entry_id: str, coordinator: Any) -> dict:
                     for s in forecast.slots
                 ],
             } if forecast is not None else None,
+            "price_forecast": {
+                "computed_at": (
+                    price_forecast.computed_at.isoformat()
+                    if price_forecast.computed_at is not None else None
+                ),
+                "model_skill": (
+                    round(price_forecast.model_skill, 4)
+                    if price_forecast.model_skill is not None else None
+                ),
+                "model_weight": round(price_forecast.model_weight, 4),
+                "history_days": price_forecast.history_days,
+                "day_count": len(price_forecast.days),
+                "days": [d.as_dict(4) for d in price_forecast.days],
+            } if price_forecast is not None else None,
             "calculation": {
                 "slot_count": len(calculation.slots),
                 "total_negative_sale_kwh": round(calculation.total_negative_sale_kwh, 4),

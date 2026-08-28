@@ -718,6 +718,207 @@ class ProfitabilityScore:
 
 
 # ---------------------------------------------------------------------------
+# Week-ahead price forecast
+# ---------------------------------------------------------------------------
+
+# Forecast provenance, weakest → strongest evidence.
+PRICE_STAT_SOURCE_MODEL = "model"              # weather-anomaly model
+PRICE_STAT_SOURCE_CLIMATOLOGY = "climatology"  # trailing day-class median only
+PRICE_STAT_SOURCE_ACTUAL = "actual"            # settled day-ahead auction
+
+
+@dataclass(frozen=True)
+class WeatherDaily:
+    """Primary data: one day of daily-resolution weather for a forecast day.
+
+    Sourced from any Home Assistant ``weather`` entity's daily forecast, so the
+    integration stays region-agnostic and adds no cloud dependency. Fields are
+    optional because coverage differs per weather integration.
+    """
+    day: date
+    wind_speed_kmh: float | None = None
+    temperature_c: float | None = None
+    cloud_coverage_pct: float | None = None
+
+
+@dataclass(frozen=True)
+class WeatherForecastData:
+    """Primary data: daily weather forecast covering roughly the next week."""
+    days: tuple[WeatherDaily, ...] = ()   # sorted by day ascending
+    source_entity: str = ""               # provenance; "" when unavailable
+
+    def by_day(self) -> dict[date, WeatherDaily]:
+        """Return the daily entries keyed by local date."""
+        return {d.day: d for d in self.days}
+
+
+@dataclass(frozen=True)
+class PriceDayRecord:
+    """One settled local day of price statistics plus the weather that day.
+
+    Persisted rolling history. Holds the fitted targets and their features
+    together so the model can be refit from the store alone, with no need to
+    re-derive anything from raw price or weather series.
+    """
+    day: date
+    day_class: DayClass
+    peak_1h_eur_kwh: float
+    peak_3h_eur_kwh: float
+    trough_1h_eur_kwh: float
+    trough_3h_eur_kwh: float
+    negative_hours: float
+    mean_eur_kwh: float
+    wind_speed_kmh: float | None = None
+    temperature_c: float | None = None
+    solar_kwh: float | None = None       # that day's own PV total
+    negative_generation_kwh: float | None = None  # PV that landed in those hours
+
+
+@dataclass(frozen=True)
+class DayFeatureVintage:
+    """Model features for one day, captured at a fixed forecast lead time.
+
+    Stored *before* the day settles so the model can be trained on the same
+    kind of input it will have at inference. Training on the day's realised
+    weather instead would flatter the fit and degrade in production, because
+    forecast error at the serving horizon is a large part of the real
+    uncertainty.
+    """
+    day: date
+    lead_days: int
+    wind_speed_kmh: float | None = None
+    temperature_c: float | None = None
+    solar_kwh: float | None = None
+
+
+@dataclass(frozen=True)
+class PriceCurveHistory:
+    """Primary data: rolling settled-day statistics plus pending feature vintages."""
+    records: tuple[PriceDayRecord, ...] = ()      # sorted by day ascending
+    vintages: tuple[DayFeatureVintage, ...] = ()  # captured, not yet settled
+
+    def by_day(self) -> dict[date, PriceDayRecord]:
+        """Return the records keyed by local date."""
+        return {r.day: r for r in self.records}
+
+    def vintage_by_day(self) -> dict[date, DayFeatureVintage]:
+        """Return the captured feature vintages keyed by target local date."""
+        return {v.day: v for v in self.vintages}
+
+
+@dataclass(frozen=True)
+class PriceDayStats:
+    """Week-ahead price statistics for one local day.
+
+    ``source`` distinguishes a settled auction day from a modelled one, so
+    consumers can weight them differently; ``confidence`` is 1.0 for settled
+    days and decays with horizon and model skill otherwise.
+
+    ``negative_generation_kwh`` splits into ``absorbable_kwh`` and
+    ``surplus_kwh``. The split is what makes the figure actionable: surplus is
+    the PV that will be produced into loss-making prices **even if the battery
+    is completely empty by then**, so it cannot be stored and cannot be sold at
+    a profit. A day whose surplus is large says the battery must be empty
+    before it, which is a reason to sell earlier — at today's mediocre price if
+    that is the best on offer — rather than arrive full and spill.
+    """
+    day: date
+    day_class: DayClass
+    horizon_days: int                     # 0 = today, 1 = tomorrow, …
+    source: str                           # one of the PRICE_STAT_SOURCE_* values
+    peak_1h_eur_kwh: float
+    peak_3h_eur_kwh: float
+    trough_1h_eur_kwh: float
+    trough_3h_eur_kwh: float
+    negative_hours: float                 # hours at or below the export break-even
+    negative_generation_kwh: float        # PV kWh expected to land in those hours
+    confidence: float = 1.0               # 0.0–1.0
+    # Split of negative_generation_kwh into what the site could take and what it
+    # cannot. ``None`` when battery capacity is unknown and the split cannot be
+    # computed — distinct from a computed zero.
+    absorbable_kwh: float | None = None
+    surplus_kwh: float | None = None
+
+    @property
+    def spread_3h_eur_kwh(self) -> float:
+        """Return the 3 h peak-to-trough spread — the per-kWh arbitrage margin."""
+        return self.peak_3h_eur_kwh - self.trough_3h_eur_kwh
+
+    def as_dict(self, ndigits: int = 4) -> dict:
+        """Return the day's statistics keyed for serialization.
+
+        Args:
+            ndigits: Decimal places for the price and energy fields.
+
+        Returns:
+            Dict of plain JSON-safe values.
+        """
+        return {
+            "day": self.day.isoformat(),
+            "day_class": self.day_class.value,
+            "horizon_days": self.horizon_days,
+            "source": self.source,
+            "peak_1h_eur_kwh": round(self.peak_1h_eur_kwh, ndigits),
+            "peak_3h_eur_kwh": round(self.peak_3h_eur_kwh, ndigits),
+            "trough_1h_eur_kwh": round(self.trough_1h_eur_kwh, ndigits),
+            "trough_3h_eur_kwh": round(self.trough_3h_eur_kwh, ndigits),
+            "spread_3h_eur_kwh": round(self.spread_3h_eur_kwh, ndigits),
+            "negative_hours": round(self.negative_hours, 2),
+            "negative_generation_kwh": round(self.negative_generation_kwh, ndigits),
+            "absorbable_kwh": (
+                round(self.absorbable_kwh, ndigits)
+                if self.absorbable_kwh is not None else None
+            ),
+            "surplus_kwh": (
+                round(self.surplus_kwh, ndigits) if self.surplus_kwh is not None else None
+            ),
+            "confidence": round(self.confidence, 3),
+        }
+
+
+@dataclass(frozen=True)
+class PriceForecast:
+    """Secondary data: week-ahead price statistics, one entry per local day.
+
+    Days already covered by the settled day-ahead auction are reported as
+    ``actual``; the remainder are modelled. ``model_skill`` is the rolling
+    out-of-sample improvement of the weather model over the climatology
+    baseline — negative means the model is losing, and ``model_weight`` will
+    have collapsed onto climatology accordingly.
+    """
+    days: tuple[PriceDayStats, ...] = ()   # sorted by day ascending
+    computed_at: datetime | None = None
+    model_skill: float | None = None       # fraction, e.g. 0.25 = 25% better MAE
+    model_weight: float = 0.0              # 0.0 = pure climatology, 1.0 = pure model
+    history_days: int = 0                  # settled days available for fitting
+
+    def by_day(self) -> dict[date, PriceDayStats]:
+        """Return the per-day statistics keyed by local date."""
+        return {d.day: d for d in self.days}
+
+    def daily_price_stats(self, ndigits: int = 4) -> dict:
+        """Return the per-day statistics keyed like the generation day totals.
+
+        Mirrors :meth:`GenerationSeries.daily_totals_kwh` so the week-ahead
+        price view can sit directly alongside the week-ahead generation view
+        in sensor attributes and the debug API.
+
+        Args:
+            ndigits: Decimal places for the price and energy fields.
+
+        Returns:
+            Dict mapping ``price_today`` / ``price_tomorrow`` / ``price_d2`` …
+            ``price_d6`` to that day's statistics dict.
+        """
+        labels = {0: "price_today", 1: "price_tomorrow"}
+        out: dict = {}
+        for stat in self.days:
+            label = labels.get(stat.horizon_days, f"price_d{stat.horizon_days}")
+            out[label] = stat.as_dict(ndigits)
+        return out
+
+
+# ---------------------------------------------------------------------------
 # DAG secondary output wrapper types
 # ---------------------------------------------------------------------------
 
