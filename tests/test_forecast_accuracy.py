@@ -15,7 +15,6 @@ from custom_components.sun_sale.contract.models import (
     ObservedGenerationSlot,
     StorageMode,
 )
-from custom_components.sun_sale.pipeline.solar_geometry import solar_position
 from custom_components.sun_sale.pipeline.forecast_accuracy import (
     _CSI_OVERFLOW_KEY,
     STORE_VERSION,
@@ -28,6 +27,7 @@ from custom_components.sun_sale.pipeline.forecast_accuracy import (
     store_from_dict,
     store_to_dict,
 )
+from custom_components.sun_sale.pipeline.solar_geometry import solar_position
 from tests.conftest import BASE_DT
 
 NOW = BASE_DT

@@ -16,9 +16,9 @@ from .consumption import check_base_load, check_household_consumption
 from .credentials import CredentialsError, resolve_credentials
 from .derived import check_observed_consumption, check_observed_losses
 from .forecast import (
+    check_array_calibration,
     check_forecast,
     check_forecast_accuracy,
-    check_array_calibration,
     check_forecast_quality,
 )
 from .inverter import check_inverter_mode

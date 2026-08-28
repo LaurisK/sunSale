@@ -26,13 +26,13 @@ from .derived import (
     ObservedLossesCheckWidget,
 )
 from .forecast import (
+    ArrayCalibrationCheckResult,
+    ArrayCalibrationCheckWidget,
     ForecastAccuracyCheckResult,
     ForecastAccuracyCheckWidget,
     ForecastCheckResult,
     ForecastCheckWidget,
     ForecastQualityCheckResult,
-    ArrayCalibrationCheckResult,
-    ArrayCalibrationCheckWidget,
     ForecastQualityCheckWidget,
 )
 from .inverter import InverterModeCheckResult, InverterModeCheckWidget

@@ -17,10 +17,9 @@ import pytest
 
 from custom_components.sun_sale.contract.const import STORAGE_KEY_DERIVED_POWER
 from custom_components.sun_sale.contract.models import (
-    PriceCurveHistory,
     AcPortPowerReading,
-    BackupPowerReading,
     ArrayCalibration,
+    BackupPowerReading,
     BakedObservedHistory,
     BatteryReading,
     CapacityObservation,
@@ -38,6 +37,7 @@ from custom_components.sun_sale.contract.models import (
     InverterTimeReading,
     MonthlyBillState,
     NordpoolData,
+    PriceCurveHistory,
     PriceEntry,
     PriceHistory,
     PvPowerHistory,

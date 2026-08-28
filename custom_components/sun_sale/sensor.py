@@ -21,15 +21,14 @@ from .contract.const import (
     DOMAIN,
 )
 from .contract.models import (
+    ArrayCalibration,
     BakedObservedHistory,
     BaseLoadProfile,
     BatteryRuntimeEstimate,
     CalculationResult,
     DerivedPowerHistory,
     ForecastErrorSeries,
-    ArrayCalibration,
     ForecastQualityStore,
-    SolarHealth,
     GenerationSeries,
     InverterModeHistory,
     InverterModeReading,
@@ -42,6 +41,7 @@ from .contract.models import (
     PriceSeries,
     PriceSlot,
     Schedule,
+    SolarHealth,
     StorageMode,
     SunTimes,
 )

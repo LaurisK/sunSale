@@ -19,20 +19,41 @@ requests are all welcome.
 python -m venv venv && source venv/bin/activate
 pip install -r requirements_dev.txt
 
-pytest                                   # full suite (mostly HA-free)
-ruff check custom_components/sun_sale/
-mypy custom_components/sun_sale/
+git config core.hooksPath .githooks       # gate pushes on the checks below
 ```
 
 `contract/`, `pipeline/`, and the pure helpers run without Home Assistant imports, so most
 of the suite runs under plain `pytest`.
+
+## Running the checks
+
+```bash
+scripts/checks.sh            # ruff + mypy + pytest -- exactly what CI runs
+scripts/checks.sh --fast     # ruff + mypy only, skipping the suite
+```
+
+Run the script rather than the individual tools. It mirrors
+[`.github/workflows/ci.yml`](.github/workflows/ci.yml) argument for argument,
+including the **paths**: CI lints `custom_components tools tests`, so a local
+`ruff check custom_components/sun_sale/` can pass while CI fails on `tools/` or
+`tests/`. A local command that differs from CI is worse than no local command —
+it hands out confidence it has not earned.
+
+`ruff` and `mypy` are pinned exactly in `requirements_dev.txt` and in the
+workflow. Both add rules in minor releases, so floating them means an upstream
+release can turn master red with no change here. Bump the pins deliberately,
+with any resulting fixes in the same commit.
+
+With `core.hooksPath` set (above), `.githooks/pre-push` runs the same script and
+refuses a push that would fail CI. `git push --no-verify` bypasses it for a
+genuine emergency.
 
 ## Pull request checklist
 
 - Keep PRs focused; one logical change per PR.
 - Follow [`CONVENTIONS.md`](CONVENTIONS.md): Google-style docstrings on all functions, the
   comment rules, and the UI/secrets conventions.
-- Add or update tests for the behaviour you change; `pytest`, `ruff`, and `mypy` must pass.
+- Add or update tests for the behaviour you change; `scripts/checks.sh` must pass.
 - Every pipeline module that consumes or produces data needs a matching deep-check in
   `tools/checks/` (see *Integration-check coverage* in [`CONVENTIONS.md`](CONVENTIONS.md)).
 

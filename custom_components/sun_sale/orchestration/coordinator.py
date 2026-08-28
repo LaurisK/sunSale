@@ -29,7 +29,6 @@ from homeassistant.helpers.event import (
 from homeassistant.helpers.update_coordinator import DataUpdateCoordinator, UpdateFailed
 
 from ..contract.const import (
-    CONF_WEATHER_ENTITY,
     CAPACITY_OBS_COUNTER_RESET_EPS_KWH,
     CAPACITY_OBS_EMIT_SOC_DELTA,
     CAPACITY_OBS_MAX_WINDOW_S,
@@ -46,6 +45,7 @@ from ..contract.const import (
     CONF_BMS_BATTERY_POWER,
     CONF_BMS_BATTERY_SOC,
     CONF_CURRENCY,
+    CONF_FORECAST_RESERVE_ENABLED,
     CONF_INVERTER_ENTITY_HOUSEHOLD_CONSUMPTION_ENERGY,
     CONF_INVERTER_ENTITY_INVERTER_CLOCK,
     CONF_INVERTER_EXPORT_LIMIT_KW,
@@ -53,7 +53,6 @@ from ..contract.const import (
     CONF_NORDPOOL_ENTITY,
     CONF_NORDPOOL_RESOLUTION,
     CONF_PRICE_EXPORT_ENTITY,
-    CONF_FORECAST_RESERVE_ENABLED,
     CONF_PRICE_SOURCE,
     CONF_PRICE_TOU_BANDS,
     CONF_SOLAR_FORECAST_DEVICE_IDS,
@@ -69,12 +68,13 @@ from ..contract.const import (
     CONF_TARIFF_TAX_RATE,
     CONF_TARIFF_WEEKDAY_BANDS,
     CONF_TARIFF_WEEKEND_BANDS,
+    CONF_WEATHER_ENTITY,
     DEFAULT_BATTERY_NOMINAL_VOLTAGE,
     DEFAULT_CURRENCY,
     DEFAULT_EXPORT_LIMIT_W,
+    DEFAULT_FORECAST_RESERVE_ENABLED,
     DEFAULT_INVERTER_EXPORT_LIMIT_KW,
     DEFAULT_INVERTER_MAX_POWER_KW,
-    DEFAULT_FORECAST_RESERVE_ENABLED,
     DEFAULT_PRICE_SOURCE,
     DEFAULT_SCHEDULE_ALLOW_DISCHARGE_TO_GRID,
     DEFAULT_SCHEDULE_ALLOW_FEED_IN,
@@ -90,12 +90,12 @@ from ..contract.const import (
     PRICE_CURVE_RETENTION_DAYS,
     PRICE_HISTORY_RETENTION_DAYS,
     SCHEDULE_SLOT_MINUTES,
+    STORAGE_KEY_ARRAY_CALIBRATION,
     STORAGE_KEY_BAKED_OBSERVED,
     STORAGE_KEY_CAPACITY,
     STORAGE_KEY_CONSUMPTION_DAILY,
     STORAGE_KEY_COUNTER_SNAPSHOT,
     STORAGE_KEY_DERIVED_POWER,
-    STORAGE_KEY_ARRAY_CALIBRATION,
     STORAGE_KEY_FORECAST_QUALITY,
     STORAGE_KEY_MODE_HISTORY,
     STORAGE_KEY_MONTHLY_BILL,
@@ -106,7 +106,7 @@ from ..contract.const import (
     UPDATE_INTERVAL_MINUTES,
 )
 from ..contract.models import (
-    WeatherForecastData,
+    ArrayCalibration,
     BakedObservedHistory,
     BaseLoadProfile,
     BatteryConfig,
@@ -121,10 +121,8 @@ from ..contract.models import (
     DailyPeak,
     DegradationCost,
     DerivedPowerHistory,
-    ArrayCalibration,
     ForecastAccuracyResult,
     ForecastQualityStore,
-    SolarHealth,
     GenerationReading,
     GenerationSeries,
     GridExportPowerHistory,
@@ -150,10 +148,12 @@ from ..contract.models import (
     ProfitabilityScore,
     PvPowerHistory,
     Schedule,
+    SolarHealth,
     StorageMode,
     SunSaleConfig,
     SunTimes,
     TariffConfig,
+    WeatherForecastData,
 )
 from ..ha_state import normalize_power_to_kw, power_unit_scale
 from ..inbound.battery import BatteryTranslator
@@ -167,7 +167,6 @@ from ..inbound.consumption_daily import (
     backfill_from_derived_history,
 )
 from ..inbound.forecast import SolarTranslator
-from ..inbound.weather import WeatherTranslator
 from ..inbound.forecast_resolver import resolve_forecast_entities
 from ..inbound.household_consumption import HouseholdConsumptionTranslator
 from ..inbound.inverter_entity_resolver import resolve_inverter_entities
@@ -207,6 +206,7 @@ from ..inbound.telemetry import (
     TelemetrySignal,
     signed_polarity,
 )
+from ..inbound.weather import WeatherTranslator
 from ..outbound.driver_factory import make_inverter_driver
 from ..outbound.entity_control import InverterContext
 from ..outbound.inverter import (
@@ -220,12 +220,12 @@ from ..pipeline import tariff as tariff_module
 from ..pipeline.battery import CapacityEstimator
 from ..pipeline.dag_engine import DagEngine, run_translators
 from ..pipeline.nodes import (
+    ArrayCalibrationNode,
     BaseLoadProfileNode,
     BatteryRuntimeNode,
     BatteryStateNode,
     BatteryStatusNode,
     DegradationNode,
-    ArrayCalibrationNode,
     ForecastAccuracyNode,
     GenerationNode,
     LockoutNode,
@@ -234,8 +234,8 @@ from ..pipeline.nodes import (
     ObservedGenerationNode,
     ObservedGridNode,
     ObservedLossesNode,
-    PricingNode,
     PriceForecastNode,
+    PricingNode,
     ProfitabilityNode,
     ScheduleNode,
 )
@@ -1530,11 +1530,13 @@ class SunSaleCoordinator(DataUpdateCoordinator):
             Tuple of (latitude, longitude) in degrees, or (None, None) when the
             location is unset or unreadable.
         """
-        lat = getattr(self.hass.config, "latitude", None)
-        lon = getattr(self.hass.config, "longitude", None)
+        raw_lat = getattr(self.hass.config, "latitude", None)
+        raw_lon = getattr(self.hass.config, "longitude", None)
+        if raw_lat is None or raw_lon is None:
+            return None, None
         try:
-            lat = float(lat)
-            lon = float(lon)
+            lat = float(raw_lat)
+            lon = float(raw_lon)
         except (TypeError, ValueError):
             return None, None
         if lat == 0.0 and lon == 0.0:

@@ -14,10 +14,10 @@ import pytest
 
 from custom_components.sun_sale.contract.models import (
     PRICE_STAT_SOURCE_ACTUAL,
-    BaseLoadProfile,
-    BaseLoadSlot,
     PRICE_STAT_SOURCE_CLIMATOLOGY,
     PRICE_STAT_SOURCE_MODEL,
+    BaseLoadProfile,
+    BaseLoadSlot,
     DayClass,
     GenerationSeries,
     GenerationSlot,

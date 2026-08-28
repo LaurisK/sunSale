@@ -7,8 +7,8 @@ from ...contract.models import (
     ArrayCalibration,
     BakedObservedHistory,
     BaseLoadProfile,
-    BatteryStatus,
     BatteryState,
+    BatteryStatus,
     CalculationResult,
     ForecastAccuracyResult,
     ForecastQualityStore,
@@ -22,12 +22,11 @@ from ...contract.models import (
     PriceForecast,
     PriceSeries,
     SolarHealth,
-    SunTimes,
     WeatherForecastData,
 )
 from .. import array_calibration, calculation, forecast_accuracy, solar_health
-from .. import price_forecast as price_forecast_module
 from .. import monthly_bill as monthly_bill_module
+from .. import price_forecast as price_forecast_module
 from ..dag_engine import DagNode, NodeContext
 
 _LOGGER = logging.getLogger(__name__)

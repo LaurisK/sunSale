@@ -28,7 +28,6 @@ at the exact SoC to keep rewards and projected SoC continuous.
 from __future__ import annotations
 
 from dataclasses import replace
-
 from datetime import datetime, tzinfo
 from statistics import median
 

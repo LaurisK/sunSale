@@ -61,7 +61,7 @@ def air_mass(elevation_deg: float) -> float:
     if elevation_deg <= 0.0:
         return math.inf
     h = elevation_deg
-    return 1.0 / (math.sin(math.radians(h)) + 0.50572 * (h + 6.07995) ** -1.6364)
+    return float(1.0 / (math.sin(math.radians(h)) + 0.50572 * (h + 6.07995) ** -1.6364))
 
 
 def clear_sky_dni_wm2(elevation_deg: float) -> float:
@@ -76,7 +76,9 @@ def clear_sky_dni_wm2(elevation_deg: float) -> float:
     """
     if elevation_deg < MIN_MODELLED_ELEVATION_DEG:
         return 0.0
-    return _SOLAR_CONSTANT_WM2 * _TRANSMITTANCE ** (air_mass(elevation_deg) ** _AIR_MASS_EXPONENT)
+    return float(
+        _SOLAR_CONSTANT_WM2 * _TRANSMITTANCE ** (air_mass(elevation_deg) ** _AIR_MASS_EXPONENT)
+    )
 
 
 def incidence_cosine(

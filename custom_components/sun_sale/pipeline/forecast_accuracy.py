@@ -70,25 +70,25 @@ from typing import TYPE_CHECKING
 if TYPE_CHECKING:
     from datetime import tzinfo  # pragma: no cover
 
+from ..contract.models import (
+    FORECAST_QUALITY_STORE_VERSION,
+    AccuracyBucketState,
+    ArrayCalibration,
+    ForecastAccuracyResult,
+    ForecastErrorSeries,
+    ForecastErrorSlot,
+    ForecastQualityStore,
+    GenerationSeries,
+    InverterModeHistory,
+    ObservedGenerationSeries,
+    StorageMode,
+)
 from .clear_sky import (
     MIN_MODELLED_ELEVATION_DEG,
     clear_sky_index,
     clear_sky_power_kw,
 )
 from .solar_geometry import solar_position
-from ..contract.models import (
-    FORECAST_QUALITY_STORE_VERSION,
-    AccuracyBucketState,
-    ForecastAccuracyResult,
-    ForecastErrorSeries,
-    ForecastErrorSlot,
-    ForecastQualityStore,
-    GenerationSeries,
-    ArrayCalibration,
-    InverterModeHistory,
-    ObservedGenerationSeries,
-    StorageMode,
-)
 
 _EMA_ALPHA = 0.1
 
@@ -615,7 +615,6 @@ def _update_quality(
     # commit once per (target_date, horizon) via the pending list below.
     watermark = store.last_ingested_slot_utc
     newest_ingested = watermark
-    have_site = latitude is not None and longitude is not None
 
     for slot in error_series.slots:
         if slot.observed_kwh < 0:
@@ -630,7 +629,7 @@ def _update_quality(
             newest_ingested = slot_key
         if slot.censored:
             continue  # curtailment-suspect = untrustworthy potential-generation
-        if not have_site:
+        if latitude is None or longitude is None:
             continue  # every remaining axis is a function of solar position
 
         err = slot.error_kwh
@@ -818,12 +817,12 @@ def forecast_reserve_soc(
     if store is None or usable_capacity_kwh <= 0:
         return None
 
-    spreads = [
-        bucket.metrics()["rmse_wh"] / 1000.0
+    spreads: list[float] = [
+        float(rmse) / 1000.0
         for key in _RESERVE_HORIZONS
         if (bucket := store.horizon.get(key)) is not None
         and bucket.n >= _RESERVE_MIN_SAMPLES
-        and bucket.metrics()["rmse_wh"] is not None
+        and (rmse := bucket.metrics()["rmse_wh"]) is not None
     ]
     if not spreads:
         return None

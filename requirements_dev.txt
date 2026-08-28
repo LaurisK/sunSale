@@ -1,7 +1,11 @@
 pytest>=7.0
 pytest-asyncio>=0.21
-ruff>=0.1
-mypy>=1.0
+# ruff and mypy are pinned exactly, not floated. Both are run as CI gates, and
+# both add rules in minor releases -- floating them means a new upstream release
+# turns master red with no change on our side, which is how a green branch stops
+# meaning anything. Bump these deliberately, with the fixes in the same commit.
+ruff==0.15.21
+mypy==2.2.0
 pytest-homeassistant-custom-component>=2024.1.0
 # TUI stack for tools/checks (the integration-check harness); also pulled in at
 # test collection via test_baked_observed_check.py → tools.integration_check.

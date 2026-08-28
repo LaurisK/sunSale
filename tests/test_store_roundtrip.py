@@ -26,9 +26,9 @@ from pathlib import Path
 import pytest
 
 from custom_components.sun_sale.contract.const import (
+    STORAGE_KEY_ARRAY_CALIBRATION,
     STORAGE_KEY_BAKED_OBSERVED,
     STORAGE_KEY_CONSUMPTION_DAILY,
-    STORAGE_KEY_ARRAY_CALIBRATION,
     STORAGE_KEY_COUNTER_SNAPSHOT,
     STORAGE_KEY_FORECAST_QUALITY,
     STORAGE_KEY_MODE_HISTORY,
@@ -37,13 +37,10 @@ from custom_components.sun_sale.contract.const import (
     STORAGE_KEY_PRICE_HISTORY,
     STORAGE_KEY_YESTERDAY,
 )
-from custom_components.sun_sale.pipeline import forecast_accuracy
 from custom_components.sun_sale.contract.models import (
-    PriceCurveHistory,
-    PriceDayRecord,
     FORECAST_QUALITY_STORE_VERSION,
-    ArrayCalibration,
     AccuracyBucketState,
+    ArrayCalibration,
     BakedDayRecord,
     BakedObservedHistory,
     CapacityObservation,
@@ -58,6 +55,8 @@ from custom_components.sun_sale.contract.models import (
     InverterModeChange,
     InverterModeHistory,
     MonthlyBillState,
+    PriceCurveHistory,
+    PriceDayRecord,
     PriceEntry,
     SlotKwh,
     SolarEntry,
@@ -68,6 +67,7 @@ from custom_components.sun_sale.orchestration.store_codecs import (
     SINGLETON_STORE_SPECS,
     YesterdayBuckets,
 )
+from custom_components.sun_sale.pipeline import forecast_accuracy
 from custom_components.sun_sale.pipeline.battery import (
     _CAPACITY_SCHEMA_VERSION,
     CapacityEstimator,

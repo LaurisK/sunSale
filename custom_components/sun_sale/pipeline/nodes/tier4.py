@@ -5,12 +5,12 @@ import logging
 from dataclasses import replace
 
 from ...contract.models import (
-    ForecastQualityStore,
     BaseLoadProfile,
     BatteryConfig,
     BatteryState,
     CalculationResult,
     DegradationCost,
+    ForecastQualityStore,
     GenerationSeries,
     InverterModeReading,
     PriceSeries,
