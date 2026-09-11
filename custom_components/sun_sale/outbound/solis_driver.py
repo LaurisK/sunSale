@@ -63,6 +63,23 @@ _ROLE_DISCHARGE_CURRENT = "battery_max_discharge_current"
 _ROLE_EXPORT_LIMIT = "backflow_power"
 _ROLE_RC_SETPOINT = "rc_setpoint"
 
+# Readbacks captured by ``diagnostic_snapshot`` — everything that describes what
+# the inverter is doing, including the undocumented 33122 working mode.
+_DIAGNOSTIC_ROLES: tuple[str, ...] = (
+    "operating_mode",
+    "dispatch_running_status",
+    "storage_control_readback",
+    "battery_max_charge_current",
+    "battery_max_discharge_current",
+    "backflow_power",
+    "rc_setpoint",
+    "rc_grid_adjustment_select",
+    "battery_soc",
+    "battery_power_signed",
+    "grid_power",
+    "pv_power",
+)
+
 
 def _amps_to_kw(amps: float | None, voltage_v: float) -> float | None:
     """Convert a DC current ceiling to kW at ``voltage_v`` (``None`` passes through).
@@ -409,6 +426,15 @@ class SolisDriver:
     def get_grid_power(self) -> float:
         """Return grid power in kW (positive = importing)."""
         return self._inverter.get_grid_power()
+
+    def diagnostic_snapshot(self) -> dict[str, str | None]:
+        """Return the raw readbacks that describe what the inverter is doing.
+
+        Captured by the battery-export guard at a trip, before anything is
+        written, so an undocumented state (e.g. 33122 = 4096) is recorded as the
+        integration published it.
+        """
+        return self._inverter.raw_states(_DIAGNOSTIC_ROLES)
 
     def observed_raw_state(self) -> int | None:
         """Return the live register 43110 readback (the ``raw_state`` code), or ``None``.

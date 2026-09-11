@@ -25,6 +25,7 @@ from .derived import (
     ObservedLossesCheckResult,
     ObservedLossesCheckWidget,
 )
+from .export_guard import ExportGuardCheckResult, ExportGuardCheckWidget
 from .forecast import (
     ArrayCalibrationCheckResult,
     ArrayCalibrationCheckWidget,
@@ -59,7 +60,7 @@ _DEEP_CATS: frozenset[str] = frozenset({
     "array_calibration",
     "monthly_bill", "baked_observed",
     "observed_consumption", "observed_losses",
-    "inverter_mode", "capability",
+    "inverter_mode", "capability", "export_guard",
 })
 
 
@@ -79,6 +80,7 @@ class IntegrationCheckApp(App):
     CalculationSlotsTable DataTable { height: 22; }
     ScheduleCheckWidget { height: auto; }
     CapabilityCheckWidget { height: auto; }
+    ExportGuardCheckWidget { height: auto; }
     _SocSparkline Sparkline { height: 5; }
     ScheduleSlotsTable DataTable { height: 18; }
     BatteryCheckWidget { height: auto; }
@@ -129,6 +131,7 @@ class IntegrationCheckApp(App):
         observed_losses_results: dict[str, ObservedLossesCheckResult],
         inverter_mode_results: dict[str, InverterModeCheckResult],
         capability_results: dict[str, CapabilityCheckResult],
+        export_guard_results: dict[str, ExportGuardCheckResult] | None = None,
     ) -> None:
         """Initialise with validator report and all deep-check results.
 
@@ -155,6 +158,7 @@ class IntegrationCheckApp(App):
             observed_consumption_results: Per-entry observed consumption deep-check results.
             observed_losses_results: Per-entry observed losses deep-check results.
             inverter_mode_results: Per-entry stitched history+plan band deep-check results.
+            export_guard_results: Per-entry battery-export guard deep-check results.
         """
         super().__init__()
         self._report = report
@@ -179,6 +183,7 @@ class IntegrationCheckApp(App):
         self._observed_consumption_results = observed_consumption_results
         self._observed_losses_results = observed_losses_results
         self._inverter_mode_results = inverter_mode_results
+        self._export_guard_results = export_guard_results or {}
         self.exit_code = 0
 
     def _all_deep(self) -> list:
@@ -209,6 +214,7 @@ class IntegrationCheckApp(App):
             + list(self._observed_consumption_results.values())
             + list(self._observed_losses_results.values())
             + list(self._inverter_mode_results.values())
+            + list(self._export_guard_results.values())
         )
 
     def compose(self) -> ComposeResult:
@@ -236,6 +242,7 @@ class IntegrationCheckApp(App):
                 ("schedule",                ScheduleCheckWidget,                self._schedule_results),
                 ("inverter_mode",           InverterModeCheckWidget,            self._inverter_mode_results),
                 ("capability",              CapabilityCheckWidget,              self._capability_results),
+                ("export_guard",            ExportGuardCheckWidget,             self._export_guard_results),
                 ("battery",                 BatteryCheckWidget,                 self._battery_results),
                 ("observed_generation",     ObservedGenerationCheckWidget,      self._observed_gen_results),
                 ("observed_grid",           ObservedGridCheckWidget,            self._observed_grid_results),

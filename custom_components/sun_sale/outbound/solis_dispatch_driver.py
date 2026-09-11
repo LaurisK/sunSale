@@ -106,6 +106,8 @@ class SolisDispatchDriver:
         base: SolisDriver,
         hass: HomeAssistant,
         entity_ids: dict[str, str] | None = None,
+        soc_min_pct: int | None = None,
+        grid_charge_permitted: Callable[[], bool] | None = None,
     ) -> None:
         """Wrap a register driver with the dispatch write path.
 
@@ -119,10 +121,20 @@ class SolisDispatchDriver:
                 ``dispatch_power_target`` / ``dispatch_failsafe_interval``) are
                 read from it for the control surface. Missing roles degrade to
                 ``unknown`` rows, exactly like any other unreadable readback.
+            soc_min_pct: SoC floor (whole percent) written into the dispatch
+                block's SOC window with every command, so the inverter itself
+                stops a forced discharge there. ``None`` leaves the service
+                default (0 %).
+            grid_charge_permitted: Returns whether the operator allows grid
+                charging; mirrored into the dispatch function field's
+                grid-charge permission on every non-GridCharge command.
+                ``None`` leaves the field untouched (firmware default).
         """
         self._base = base
         self._hass = hass
         self._entity_ids = dict(entity_ids or {})
+        self._soc_min_pct = soc_min_pct
+        self._grid_charge_permitted = grid_charge_permitted
         # What the last dispatch commanded, so ``control_surface`` can compare
         # the readback against it. ``None`` while no forced mode is held.
         self._commanded: tuple[int, int] | None = None
@@ -210,12 +222,42 @@ class SolisDispatchDriver:
         return self._base.capability(now)
 
     def decode_observed(self) -> StorageMode:
-        """Decode the live StorageMode (delegated)."""
-        return self._base.decode_observed()
+        """Decode the live StorageMode, reporting a running dispatch as its forced mode."""
+        return self._dispatch_mode() or self._base.decode_observed()
 
     def observe(self, now: datetime) -> InverterModeReading:
-        """Return this cycle's observation (delegated)."""
-        return self._base.observe(now)
+        """Return this cycle's observation, with a running dispatch decoded as such.
+
+        The register decoder sees only the 43110 family a forced mode runs
+        under — Feed-in priority for Discharge — so without this every
+        dispatch-driven discharge was recorded in the mode history as
+        ``feed_in``.
+
+        Args:
+            now: Cycle timestamp recorded as the reading's timestamp.
+
+        Returns:
+            The base observation, its ``mode`` replaced by Discharge /
+            GridCharge while Remote Dispatch holds a power target.
+        """
+        reading = self._base.observe(now)
+        mode = self._dispatch_mode()
+        if mode is None or reading.raw_state is None:
+            return reading
+        return replace(reading, mode=mode)
+
+    def diagnostic_snapshot(self) -> dict[str, str | None]:
+        """Return the register driver's capture plus the dispatch block readbacks."""
+        snapshot = dict(self._base.diagnostic_snapshot())
+        for role in (
+            "dispatch_active", "dispatch_control_mode",
+            "dispatch_power_target", "dispatch_failsafe_interval",
+        ):
+            entity_id = self._entity_ids.get(role, "")
+            if entity_id:
+                state = self._hass.states.get(entity_id)
+                snapshot[role] = state.state if state is not None else None
+        return snapshot
 
     def observed_raw_state(self) -> int | None:
         """Return the raw 43110 readback (delegated)."""
@@ -253,11 +295,18 @@ class SolisDispatchDriver:
             await self._base.apply_mode(mode, spec, force=force)
             return
         watts = self._dispatch_watts(mode)
-        payload = {
+        payload: dict[str, Any] = {
             "mode": dispatch_mode,
             "power_watts": watts,
             "failsafe_minutes": _FAILSAFE_MINUTES,
         }
+        # The block's SOC window defaults to 0–100 %, so without a floor a
+        # forced discharge that overruns its slot drains straight past min_soc.
+        if self._soc_min_pct is not None:
+            payload["soc_min"] = self._soc_min_pct
+        allow_grid_charge = self._allow_grid_charge(mode)
+        if allow_grid_charge is not None:
+            payload["allow_grid_charge"] = allow_grid_charge
         await self._call(SERVICE_DISPATCH, payload)
         if force:
             self._schedule_reconfirm(payload)
@@ -376,6 +425,44 @@ class SolisDispatchDriver:
             The same spec with ``rc_setpoint_w`` set to 0.
         """
         return replace(spec, rc_setpoint_w=0)
+
+    def _allow_grid_charge(self, mode: StorageMode) -> bool | None:
+        """Return the dispatch grid-charge permission to send with ``mode``.
+
+        GridCharge is an explicit request to import into the battery and always
+        permits it. Every other forced mode mirrors the operator's "allow grid
+        charging" switch: the dispatch block otherwise inherits the firmware
+        default (read back as ``0x55`` — grid charge allowed), so a battery
+        falling to its force-charge SoC mid-dispatch could pull from the grid
+        against the operator's choice.
+
+        Args:
+            mode: The forced mode being commanded.
+
+        Returns:
+            The permission, or ``None`` to leave the field untouched when no
+            switch reader was wired.
+        """
+        if mode is StorageMode.GridCharge:
+            return True
+        if self._grid_charge_permitted is None:
+            return None
+        return bool(self._grid_charge_permitted())
+
+    def _dispatch_mode(self) -> StorageMode | None:
+        """Return the forced mode Remote Dispatch is holding, or ``None``.
+
+        Read from the dispatch readbacks: running, in PCC-target mode, with a
+        non-zero power target — positive exports (Discharge), negative imports
+        (GridCharge). Anything else — released, unreadable, or a foreign
+        controller in another dispatch mode — defers to the register decoder.
+        """
+        active = self._read("dispatch_active")
+        control_mode = self._read("dispatch_control_mode")
+        target = self._read("dispatch_power_target")
+        if active != 1 or control_mode != _MODE_PCC_TARGET or not target:
+            return None
+        return StorageMode.Discharge if target > 0 else StorageMode.GridCharge
 
     def _dispatch_watts(self, mode: StorageMode) -> int:
         """Return the magnitude in watts to command for ``mode``.

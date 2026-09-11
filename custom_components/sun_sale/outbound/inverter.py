@@ -601,6 +601,28 @@ class InverterController:
         """
         await self._actuator.set_select(role, option, force=force)
 
+    def raw_states(self, roles: tuple[str, ...]) -> dict[str, str | None]:
+        """Return the current HA state string of each mapped role, for diagnostics.
+
+        Unmapped roles are omitted; a mapped role whose entity is missing reads
+        ``None``. Values are left as raw strings so a capture shows exactly what
+        the integration published.
+
+        Args:
+            roles: Entity-ID map keys to capture.
+
+        Returns:
+            Role → state string (or ``None``).
+        """
+        out: dict[str, str | None] = {}
+        for role in roles:
+            entity_id = self._entity_ids.get(role, "")
+            if not entity_id:
+                continue
+            state = self._hass.states.get(entity_id)
+            out[role] = state.state if state is not None else None
+        return out
+
     def limit_for(self, role: str) -> Limit:
         """Return the live writable bound advertised for one actuator ``role``.
 

@@ -51,6 +51,7 @@ from .derived import (
     check_observed_consumption,
     check_observed_losses,
 )
+from .export_guard import ExportGuardCheckResult, check_export_guard
 from .forecast import (
     ArrayCalibrationCheckResult,
     ForecastAccuracyCheckResult,
@@ -98,6 +99,7 @@ __all__ = [
     "PricingCheckResult",
     "CalculationCheckResult",
     "CapabilityCheckResult",
+    "ExportGuardCheckResult",
     "ScheduleCheckResult",
     "InverterModeCheckResult",
     "BatteryCheckResult",
@@ -122,6 +124,7 @@ __all__ = [
     "check_pricing",
     "check_calculation",
     "check_capability",
+    "check_export_guard",
     "check_schedule",
     "check_inverter_mode",
     "check_battery",

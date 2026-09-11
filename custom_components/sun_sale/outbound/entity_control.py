@@ -92,11 +92,15 @@ class InverterContext:
             mapping form.
         get_grid_power: Callable returning grid power in kW (positive = import),
             ``0.0`` when unavailable.
+        grid_charge_permitted: Callable returning the operator's "allow grid
+            charging" choice, for drivers that pass it on to the hardware.
+            ``None`` when the coordinator does not wire it.
     """
 
     hass: HomeAssistant
     entity_ids: Mapping[str, str]
     get_grid_power: Callable[[], float]
+    grid_charge_permitted: Callable[[], bool] | None = None
 
 
 @dataclass(frozen=True)

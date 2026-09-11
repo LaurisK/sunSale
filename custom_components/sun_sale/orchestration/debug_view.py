@@ -109,6 +109,10 @@ def _coordinator_to_dict(entry_id: str, coordinator: Any) -> dict:
         # without this a support question has no way to tell which control path
         # a capture came from.
         "control_path": getattr(coordinator, "control_path", None),
+        # Monitor-only battery-export guard + SoC-floor watch (see
+        # docs/battery_export_guard.md). ``None`` on builds without them.
+        "export_guard": getattr(coordinator, "export_guard_status", None),
+        "soc_floor_guard": getattr(coordinator, "soc_floor_status", None),
         "mode_override": (
             coordinator.mode_override.value
             if coordinator.mode_override is not None

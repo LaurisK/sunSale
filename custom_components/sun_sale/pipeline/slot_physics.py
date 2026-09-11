@@ -162,7 +162,10 @@ def simulate_slot(
         )
 
     soc_out = _new_soc(soc_in, flows.batt_charge, flows.batt_discharge, cap_kwh, eff)
-    soc_out = _clamp(soc_out, battery_cfg.min_soc, battery_cfg.max_soc)
+    # A battery already below min_soc (an inverter over-discharge) is lifted only
+    # by the energy actually charged — clamping to min_soc would report a free
+    # refill to the floor and hide the deficit from the planner.
+    soc_out = _clamp(soc_out, min(battery_cfg.min_soc, soc_in), battery_cfg.max_soc)
 
     throughput_storage = flows.batt_charge + (
         flows.batt_discharge / eff if eff > 0 else 0.0

@@ -15,6 +15,7 @@ from .client import HAClient
 from .consumption import check_base_load, check_household_consumption
 from .credentials import CredentialsError, resolve_credentials
 from .derived import check_observed_consumption, check_observed_losses
+from .export_guard import check_export_guard
 from .forecast import (
     check_array_calibration,
     check_forecast,
@@ -113,6 +114,7 @@ def main(argv: list[str] | None = None) -> int:
     observed_losses_results        = {s.entry_id: check_observed_losses(s)           for s in snapshots}
     inverter_mode_results          = {s.entry_id: check_inverter_mode(s)             for s in snapshots}
     capability_results             = {s.entry_id: check_capability(s)                for s in snapshots}
+    export_guard_results           = {s.entry_id: check_export_guard(s)              for s in snapshots}
     price_forecast_results         = {s.entry_id: check_price_forecast(s)            for s in snapshots}
     app = IntegrationCheckApp(
         report,
@@ -131,6 +133,7 @@ def main(argv: list[str] | None = None) -> int:
         inverter_mode_results,
         capability_results,
         price_forecast_results,
+        export_guard_results=export_guard_results,
     )
     app.run(inline=True)
     return app.exit_code

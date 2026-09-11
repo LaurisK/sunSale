@@ -618,6 +618,10 @@ class ObservedInverterModeSensor(_BaseSensor):
             # is commanded or the observed bitmask maps to no named mode.
             "observed_mode": self.coordinator.observed_mode,
             "register_panel": self.coordinator.register_panel,
+            # Monitor-only watchers (docs/battery_export_guard.md): battery
+            # export under a passive mode, and discharge at/below min_soc.
+            "export_guard": self.coordinator.export_guard_status,
+            "soc_floor_guard": self.coordinator.soc_floor_status,
         }
 
     def _reading(self) -> InverterModeReading | None:

@@ -179,6 +179,15 @@ _SENSOR_SUFFIXES: dict[str, tuple[str, str]] = {
         "solis_modbus_inverter_dispatch_failsafe_interval",
         "dispatch_failsafe_interval",
     ),
+    # Diagnostics only — captured by the battery-export guard when it trips.
+    # 33122 is undocumented ("Reserved" in the public protocol) but tracks the
+    # working mode (2 self-use, 8 feed-in, 2048 dispatch, 4096 the 2026-09-09
+    # export state); 34504 says whether anything is dispatching the inverter.
+    "operating_mode":              ("solis_modbus_inverter_operating_mode", "operating_mode"),
+    "dispatch_running_status":     (
+        "solis_modbus_inverter_remote_dispatch_running_status",
+        "remote_dispatch_running_status",
+    ),
     # Export-side numbers (regs 43073/43074 area).
     "backflow_power":              ("solis_modbus_inverter_backflow_power", "backflow_power"),
     "peak_max_usable_grid_power":  ("solis_modbus_inverter_peak_max_usable_grid_power", "peak_max_usable_grid_power"),
@@ -275,6 +284,10 @@ _OPTIONAL_ROLES: frozenset[str] = frozenset({
     "dispatch_control_mode",
     "dispatch_power_target",
     "dispatch_failsafe_interval",
+    # Diagnostic captures for the battery-export guard; nothing reads them for
+    # control, so an older solis_modbus without them loses only detail.
+    "operating_mode",
+    "dispatch_running_status",
 })
 
 

@@ -13,6 +13,7 @@ the (untested-against-hardware) entity-driven platform modules, and vice versa.
 from __future__ import annotations
 
 import importlib
+import math
 
 from ..contract.models import BatteryConfig
 from .driver import InverterControlDriver
@@ -90,4 +91,25 @@ def make_inverter_driver(
     # RC path until the next restart. See ``SolisDispatchDriver._supported``.
     from .solis_dispatch_driver import SolisDispatchDriver
 
-    return SolisDispatchDriver(base, context.hass, dict(context.entity_ids))
+    return SolisDispatchDriver(
+        base,
+        context.hass,
+        dict(context.entity_ids),
+        soc_min_pct=soc_percent_ceil(battery_config.min_soc),
+        grid_charge_permitted=context.grid_charge_permitted,
+    )
+
+
+def soc_percent_ceil(soc: float) -> int:
+    """Return an SoC fraction as whole percent, rounded up and clamped to 0..100.
+
+    Rounds to 6 decimals first so a float such as ``0.06 * 100 = 6.000000000000001``
+    does not ceil to 7.
+
+    Args:
+        soc: SoC as a fraction (0..1).
+
+    Returns:
+        The smallest whole percent at or above ``soc``.
+    """
+    return max(0, min(100, math.ceil(round(soc * 100.0, 6))))

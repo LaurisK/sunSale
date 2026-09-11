@@ -250,3 +250,46 @@ and runs one immediately. Useful for confirming engagement right after a manual 
 without waiting on the next verify-tick. Implementation: `InverterControlModule.force_verify_now`
 cancels any pending verify and re-runs the same `_on_verify_tick` body the scheduled callback
 would have.
+
+## Remote Dispatch payload guards (v0.5.1)
+
+Every `solis_dispatch` command carries two fields beyond mode / power / failsafe:
+
+- **`soc_min`** — the planner's `min_soc` as whole percent, rounded up
+  (`driver_factory.soc_percent_ceil`). The block's SOC window otherwise defaults
+  to 0–100 %, so a forced discharge that outlives its slot would drain past the
+  floor; with the window set the inverter stops it itself.
+- **`allow_grid_charge`** — GridCharge always sends `true`; every other forced mode
+  mirrors the "Allow grid charging" switch, read at write time through
+  `InverterContext.grid_charge_permitted`, so a toggle reaches the next hold
+  without a reload. Without it the firmware default (grid charge allowed, read back
+  as function bits `0x55`) applied.
+
+Passive modes run with dispatch released, so neither field reaches them — the
+43110 "allow grid charge" bit governs there (and the inverter's force-charge below
+its Force Charge SOC ignores it; see `battery_export_guard.md`).
+
+`SolisDispatchDriver.decode_observed` / `observe` report Discharge / GridCharge while
+the dispatch readbacks show it running in PCC-target mode with a non-zero target;
+otherwise they defer to the register decoder (which alone would call a dispatch
+Discharge `feed_in`).
+
+## Battery-export guard (monitor only, v0.5.1)
+
+The verify loop checks what sunSale *wrote*; it cannot see an inverter that accepts
+the writes and then exports anyway (2026-09-09: operating mode 4096 for 91 min
+after a dispatch release, every row `match`). `outbound/export_guard.py` watches the
+behaviour instead:
+
+- **`ExportGuard`** — fed on every grid / PV state change (not the 5-min cycle).
+  Condition: a passive mode is commanded and `grid export − PV ≥ 1 kW`. Held for
+  120 s it trips; 60 s false clears it. On a trip the coordinator captures
+  `driver.diagnostic_snapshot()` (Solis: 33122, 34504, 43110, currents, dispatch
+  block), logs a warning and raises a persistent notification.
+- **`SocFloorWatch`** — per cycle, flags discharge ≥ 0.2 kW at or below `min_soc`
+  under a passive mode (the planner's floor is not a hardware limit).
+
+Both are observation only — no writes. Exposed as `export_guard` /
+`soc_floor_guard` on `sensor.sunsale_observed_inverter_mode` and in the debug view;
+`tools/checks/export_guard.py` validates their consistency. Evidence, the 10-day
+replay and the phase-2 (act) plan are in [`battery_export_guard.md`](battery_export_guard.md).

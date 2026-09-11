@@ -20,6 +20,7 @@ try:
 except ImportError:    # pragma: no cover — Python < 3.9 fallback
     from backports.zoneinfo import ZoneInfo  # type: ignore[no-redef]
 
+from homeassistant.components import persistent_notification
 from homeassistant.config_entries import ConfigEntry
 from homeassistant.core import Event, HomeAssistant, callback
 from homeassistant.helpers.event import (
@@ -155,7 +156,7 @@ from ..contract.models import (
     TariffConfig,
     WeatherForecastData,
 )
-from ..ha_state import normalize_power_to_kw, power_unit_scale
+from ..ha_state import normalize_power_to_kw, power_unit_scale, read_power_kw
 from ..inbound.battery import BatteryTranslator
 from ..inbound.battery_source import (
     BatterySource,
@@ -209,6 +210,12 @@ from ..inbound.telemetry import (
 from ..inbound.weather import WeatherTranslator
 from ..outbound.driver_factory import make_inverter_driver
 from ..outbound.entity_control import InverterContext
+from ..outbound.export_guard import (
+    TRANSITION_CLEARED,
+    TRANSITION_TRIPPED,
+    ExportGuard,
+    SocFloorWatch,
+)
 from ..outbound.inverter import (
     InverterController,
     InverterPlatform,
@@ -484,6 +491,14 @@ class SunSaleCoordinator(DataUpdateCoordinator):
         # ``async_setup``): pushes a fresh observed-mode/register readout to the
         # panel whenever a decoded inverter register changes, between ticks.
         self._unsub_mode_registers: Callable[[], None] | None = None
+        # Battery-export guard (monitor only): fed on every grid / PV state
+        # change, not the 5-min cycle, so its 120 s persistence is meaningful.
+        # See outbound/export_guard.py and docs/battery_export_guard.md.
+        self._export_guard = ExportGuard()
+        self._soc_floor_watch = SocFloorWatch()
+        self._unsub_export_guard: Callable[[], None] | None = None
+        # Latest SoC from the cycle's BatteryState, recorded at an episode onset.
+        self._last_soc: float | None = None
         # Unsubscribe for the wall-clock-aligned cycle tick (set in
         # ``async_setup``), and its re-entrancy guard — unlike the base class's
         # interval, which only re-arms once a refresh has finished, the aligned
@@ -685,6 +700,157 @@ class SunSaleCoordinator(DataUpdateCoordinator):
             return
         self._on_control_state_change()
 
+    def _subscribe_export_guard(self) -> None:
+        """Feed the battery-export guard on every grid / PV state change.
+
+        The guard's 120 s persistence only means something at the sensors'
+        own update rate (~10 s on Solis); the 5-min cycle would miss or
+        misjudge most episodes. Read-only: the guard never writes.
+        """
+        entity_ids = [
+            e for e in (
+                self._inverter_entity_ids.get("grid_power", ""),
+                self._pv_power_entity_id,
+            ) if e
+        ]
+        if not entity_ids:
+            return
+        self._unsub_export_guard = async_track_state_change_event(
+            self.hass, entity_ids, self._on_export_guard_input,
+        )
+
+    @callback
+    def _on_export_guard_input(self, event: Event) -> None:
+        """Evaluate the export guard against the live grid / PV readings.
+
+        Args:
+            event: The HA state-change event (unused; live state is re-read).
+        """
+        self._evaluate_export_guard(datetime.now(UTC))
+
+    def _evaluate_export_guard(self, now: datetime) -> None:
+        """Run one export-guard sample and act on a trip / clear transition.
+
+        Grid power comes from the driver (platform sign convention already
+        applied) but only when its sensor is actually readable — the driver's
+        getter reports an outage as 0.0, which would read as "no export".
+
+        Args:
+            now: Sample time.
+        """
+        module = self._control_module
+        driver = getattr(self, "_inverter_driver", None)
+        if module is None or driver is None:
+            return
+        grid_entity = self._inverter_entity_ids.get("grid_power", "")
+        grid_kw = (
+            driver.get_grid_power()
+            if grid_entity and read_power_kw(self.hass, grid_entity) is not None
+            else None
+        )
+        pv_kw = (
+            read_power_kw(self.hass, self._pv_power_entity_id)
+            if self._pv_power_entity_id else None
+        )
+        transition = self._export_guard.update(
+            now, module.last_commanded_mode, grid_kw, pv_kw, self._last_soc,
+        )
+        if transition == TRANSITION_TRIPPED:
+            self._on_export_guard_tripped()
+        elif transition == TRANSITION_CLEARED:
+            trip = self._export_guard.last_trip
+            _LOGGER.info(
+                "export guard: battery export ended (%.2f kWh, peak %.1f kW)",
+                trip.export_kwh if trip else 0.0, trip.peak_kw if trip else 0.0,
+            )
+            self.async_update_listeners()
+
+    def _on_export_guard_tripped(self) -> None:
+        """Capture the inverter state, log it, and raise a persistent notification.
+
+        Monitor-only (phase 1): nothing is written to the inverter. The capture
+        is taken first so an undocumented state is recorded as it was.
+        """
+        snapshot: dict[str, Any] = {}
+        capture = getattr(self._inverter_driver, "diagnostic_snapshot", None)
+        if capture is not None:
+            try:
+                snapshot = dict(capture())
+            except Exception:  # noqa: BLE001 — a diagnostic read must never raise
+                _LOGGER.debug("export guard: diagnostic snapshot failed", exc_info=True)
+        self._export_guard.attach_snapshot(snapshot)
+        episode = self._export_guard.episode
+        if episode is None:
+            return
+        _LOGGER.warning(
+            "export guard TRIPPED: battery exporting to grid (peak %.1f kW) while "
+            "sunSale commands %s — onset %s, SoC at onset %s. Inverter state: %s",
+            episode.peak_kw, episode.commanded_mode, episode.onset.isoformat(),
+            episode.soc_at_onset, snapshot,
+        )
+        persistent_notification.async_create(
+            self.hass,
+            (
+                f"The battery has been exporting to the grid for over "
+                f"{int(self._export_guard.as_dict()['persist_s'])} s (peak "
+                f"{episode.peak_kw:.1f} kW) while sunSale commands "
+                f"`{episode.commanded_mode}`, which never exports battery energy. "
+                "sunSale is only monitoring this — check the inverter. "
+                "Inverter state at the trip is on the observed-inverter-mode "
+                "sensor (`export_guard` attribute)."
+            ),
+            title="sunSale: battery exporting to grid",
+            notification_id=f"{DOMAIN}_export_guard_{self._entry.entry_id}",
+        )
+        self.async_update_listeners()
+
+    @property
+    def export_guard_status(self) -> dict[str, Any]:
+        """Return the battery-export guard's state for sensors and the debug view."""
+        return self._export_guard.as_dict()
+
+    @property
+    def soc_floor_status(self) -> dict[str, Any]:
+        """Return the SoC-floor watch's state for sensors and the debug view."""
+        return self._soc_floor_watch.as_dict()
+
+    def _watch_soc_floor(self, primary: dict, secondary: dict, now: datetime) -> None:
+        """Feed the SoC-floor watch from this cycle's battery data (monitor only).
+
+        Also records the cycle's SoC, which the export guard stamps on an
+        episode's onset between cycles.
+
+        Args:
+            primary: The cycle's primary inputs (supplies ``BatteryReading``).
+            secondary: DAG outputs (supplies ``BatteryState``).
+            now: Cycle timestamp.
+        """
+        reading: BatteryReading | None = primary.get(BatteryReading)
+        state: BatteryState | None = secondary.get(BatteryState)
+        soc = state.soc if state is not None else (reading.soc if reading else None)
+        self._last_soc = soc
+        module = self._control_module
+        config = self._sun_sale_config
+        if module is None or config is None:
+            return
+        commanded = module.last_commanded_mode
+        min_soc = config.battery.min_soc
+        transition = self._soc_floor_watch.update(
+            now, commanded, soc,
+            reading.power_kw if reading is not None else None,
+            min_soc,
+        )
+        if transition == "breach" and soc is not None:
+            _LOGGER.warning(
+                "SoC-floor watch: battery still discharging at %.0f %% (min_soc "
+                "%.0f %%) while sunSale commands %s — min_soc is a planning floor, "
+                "the inverter drains to its own over-discharge SoC",
+                soc * 100.0, min_soc * 100.0,
+                commanded.value if commanded is not None else None,
+            )
+        elif transition == "recovered":
+            _LOGGER.info("SoC-floor watch: discharge below min_soc has stopped")
+
     async def async_shutdown(self) -> None:
         """Tear down the coordinator and its control module on entry unload.
 
@@ -700,6 +866,9 @@ class SunSaleCoordinator(DataUpdateCoordinator):
         if self._unsub_mode_registers is not None:
             self._unsub_mode_registers()
             self._unsub_mode_registers = None
+        if self._unsub_export_guard is not None:
+            self._unsub_export_guard()
+            self._unsub_export_guard = None
         if self._control_module is not None:
             self._control_module.shutdown()
         await super().async_shutdown()
@@ -830,6 +999,9 @@ class SunSaleCoordinator(DataUpdateCoordinator):
             hass=self.hass,
             entity_ids=resolved.inverter_entity_ids,
             get_grid_power=inverter.get_grid_power,
+            # Read at write time, so toggling the switch reaches the next
+            # dispatch command without a reload.
+            grid_charge_permitted=lambda: self.allow_grid_charging,
         )
         driver = make_inverter_driver(
             inverter,
@@ -937,6 +1109,7 @@ class SunSaleCoordinator(DataUpdateCoordinator):
         # RC function expiring — surfaces within one solis_modbus poll rather
         # than lagging up to a full cycle.
         self._subscribe_mode_register_changes()
+        self._subscribe_export_guard()
 
         # round_trip_efficiency lets the estimator normalise charge (AC-in,
         # over-reads) and discharge (AC-out, under-reads) samples to a single
@@ -1249,6 +1422,7 @@ class SunSaleCoordinator(DataUpdateCoordinator):
         )
         if updated_history.samples != history_before.samples:
             await self._mode_history_store.save(updated_history)
+        self._watch_soc_floor(primary, secondary, now)
         target = self._control_module.current_target(
             now, schedule, mode_override=self.mode_override,
         )

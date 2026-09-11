@@ -75,6 +75,54 @@ DEFAULT_PROFITABILITY_TILT_ALPHA = 0.5
 # certain, which makes it hoard charge past every horizon boundary.
 DEFAULT_TERMINAL_VALUE_DISCOUNT = 0.5
 
+# Modes that deliberately send energy to the grid. Neither is offered while the
+# battery is below min_soc, and Discharge is not offered below the cycle cost.
+_EXPORT_MODES: frozenset[StorageMode] = frozenset({
+    StorageMode.Discharge, StorageMode.FeedIn,
+})
+
+# Tolerance for "SoC below min_soc" — keeps a battery sitting exactly on the
+# floor from being treated as over-discharged by float noise.
+_SOC_EPS = 1e-9
+
+
+def _cycle_cost_per_kwh(deg_cost: float, eff: float) -> float:
+    """Return the sell price below which discharging to grid cannot pay for itself.
+
+    Every kWh sold from the battery was charged and discharged once — two legs
+    of wear — and needed ``1 / eff`` storage kWh to deliver. This is the floor
+    independent of what the charge cost, so it holds even when the planner
+    expects a free solar refill.
+
+    Args:
+        deg_cost: Wear cost per storage kWh per leg (EUR/kWh).
+        eff: Round-trip efficiency (storage → AC).
+
+    Returns:
+        Minimum sell price (EUR/kWh) at which Discharge may be scheduled.
+    """
+    return 2.0 * deg_cost / eff if eff > 0 else 2.0 * deg_cost
+
+
+def _refill_mode(price: PriceSlot, actions: tuple[StorageMode, ...]) -> StorageMode:
+    """Return the mode to run instead of an export mode while below min_soc.
+
+    Self-use puts solar into the battery first; at a negative sell price
+    NoExport is preferred so the surplus the battery cannot absorb is curtailed
+    rather than paid away.
+
+    Args:
+        price: The slot's prices.
+        actions: The DP action set (policy-filtered).
+
+    Returns:
+        NoExport at a negative sell price when allowed, otherwise SelfUse
+        (always in the action set).
+    """
+    if price.sell_eur_kwh < 0 and StorageMode.NoExport in actions:
+        return StorageMode.NoExport
+    return StorageMode.SelfUse
+
 
 def optimize_schedule(
     price_series: PriceSeries,
@@ -145,6 +193,12 @@ def optimize_schedule(
             a battery already below the raised floor is not stranded (the
             bucketer clamps such a state to its lowest bucket). 0 disables it.
 
+    Two export guards apply regardless of policy: Discharge is never scheduled
+    in a slot selling below the battery cycle cost (``2 × deg / eff``), and
+    while the battery sits below ``min_soc`` (an inverter over-discharge) the
+    forward roll replaces Discharge / FeedIn with a refilling mode and reports
+    the SoC as measured rather than lifted to the floor.
+
     Returns:
         Schedule with one ScheduleSlot per future price slot.
     """
@@ -213,11 +267,19 @@ def optimize_schedule(
         terminal_value_discount,
     )
 
+    # Battery energy sold below the wear of cycling it loses money on every kWh,
+    # whatever the forecast says about refilling for free — so Discharge is not
+    # offered in such slots at all. Feed-in is unaffected: it exports solar.
+    cycle_cost = _cycle_cost_per_kwh(
+        degradation_cost, battery_config.round_trip_efficiency,
+    )
+    discharge_blocked = [p.sell_eur_kwh < cycle_cost for p in future_slots]
+
     choice = _run_dp(
         future_slots, baseload_kwh, solar_kwh, slot_hours,
         planning_config, cap_kwh, degradation_cost, export_limit_kw,
         bucketer, terminal_per_kwh, mode_change_penalty, actions,
-        max_discharge_to_grid_kw, floor_soc,
+        max_discharge_to_grid_kw, floor_soc, discharge_blocked,
     )
 
     return _forward_roll(
@@ -459,6 +521,7 @@ def _run_dp(
     actions: tuple[StorageMode, ...],
     max_discharge_to_grid_kw: float | None = None,
     floor_soc: float | None = None,
+    discharge_blocked: list[bool] | None = None,
 ) -> list[list[list[StorageMode]]]:
     """Backward DP — compute the optimal mode for every (slot, soc_bucket, prev_mode) cell.
 
@@ -488,6 +551,9 @@ def _run_dp(
             measured from this same floor so held charge is not double-counted
             as being "above minimum". ``None`` falls back to the battery's own
             minimum.
+        discharge_blocked: Per-slot flags; ``True`` removes Discharge from that
+            slot's choices (its sell price is below the battery cycle cost).
+            ``None`` blocks nothing.
 
     Returns:
         ``choice[t][b][m]`` — the optimal StorageMode for slot ``t`` when the
@@ -557,10 +623,13 @@ def _run_dp(
                 throughput = _storage_throughput(outcome, battery_config.round_trip_efficiency)
                 per_action.append((outcome, lo, hi, frac, throughput))
 
+            blocked = discharge_blocked is not None and discharge_blocked[t]
             for prev_m in range(n_prev):
                 best_total = float("-inf")
                 best_mode = fallback_mode
                 for action_idx, action in enumerate(actions):
+                    if blocked and action is StorageMode.Discharge:
+                        continue
                     outcome, lo, hi, frac, throughput = per_action[action_idx]
                     # Penalty applies only when the chosen action differs from
                     # the previous mode and the battery actually moves energy.
@@ -647,7 +716,10 @@ def _forward_roll(
         Schedule with per-slot StorageMode, projected SoC, reward, and reason.
         Per-slot reward includes any mode-change penalty already deducted.
     """
-    soc = max(battery_config.min_soc, min(battery_config.max_soc, battery_state.soc))
+    # Start from the measured SoC even when it sits below min_soc (an inverter
+    # over-discharge). Lifting it to the floor made the planner believe in
+    # energy the battery does not hold; only the upper bound is clamped.
+    soc = max(0.0, min(battery_config.max_soc, battery_state.soc))
     schedule_slots: list[ScheduleSlot] = []
     total_profit = 0.0
     sentinel_prev = len(actions)
@@ -656,6 +728,13 @@ def _forward_roll(
     for t, price in enumerate(future_slots):
         bucket = bucketer.to_index(soc)
         mode = choice[t][bucket][prev_idx]
+        refilling = soc < battery_config.min_soc - _SOC_EPS and mode in _EXPORT_MODES
+        if refilling:
+            # The DP's lowest bucket is min_soc, where an export mode moves no
+            # battery energy and looks like "export the solar". Below the floor
+            # that solar belongs in the battery, and a forced mode would only
+            # hand the inverter an export target it cannot meet from storage.
+            mode = _refill_mode(price, actions)
         outcome = simulate_slot(
             soc_in=soc,
             mode=mode,
@@ -680,6 +759,11 @@ def _forward_roll(
         adjusted_reward = outcome.reward_eur - penalty
         schedule_slots.append(_make_schedule_slot(
             price, mode, outcome, slot_hours, adjusted_reward,
+            reason=(
+                f"Below min SoC — refilling; solar→batt "
+                f"{outcome.batt_charge_kwh:.2f} kWh, no export mode"
+                if refilling else None
+            ),
         ))
         total_profit += adjusted_reward
         soc = outcome.soc_out
@@ -729,6 +813,7 @@ def _make_schedule_slot(
     outcome: SlotOutcome,
     slot_hours: float,
     expected_profit_eur: float | None = None,
+    reason: str | None = None,
 ) -> ScheduleSlot:
     """Pack a per-slot outcome into the public ScheduleSlot record.
 
@@ -745,6 +830,9 @@ def _make_schedule_slot(
         expected_profit_eur: Optional override (e.g. when the caller has
             already subtracted a mode-change penalty); when ``None`` the
             raw ``outcome.reward_eur`` is reported.
+        reason: Optional override of the dashboard reason (e.g. when the
+            forward roll replaced the DP's pick); ``None`` derives it from the
+            mode.
 
     Returns:
         ScheduleSlot ready for downstream consumers.
@@ -759,7 +847,7 @@ def _make_schedule_slot(
         power_kw=power_kw,
         expected_soc_after=outcome.soc_out,
         expected_profit_eur=profit,
-        reason=_reason_for(mode, price_slot, outcome),
+        reason=reason if reason is not None else _reason_for(mode, price_slot, outcome),
     )
 
 
