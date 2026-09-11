@@ -10,6 +10,50 @@ Any behavior-affecting change bumps the `version` in
 
 ## [Unreleased]
 
+## [0.5.1] — 2026-09-11
+
+Fixes for the 2026-09-09/10 over-discharge incident (analysis:
+[`docs/battery_export_guard.md`](docs/battery_export_guard.md)).
+
+### Fixed
+- **Planner no longer hides a battery below `min_soc`.** The schedule's forward
+  roll started from `max(min_soc, soc)` and every slot clamped its end SoC up
+  to `min_soc`, so at a real 3 % the planner planned from 6 % and could command
+  Discharge (a 10 kW export target) into an over-discharged battery. It now
+  starts from the measured SoC and only lifts it by energy actually charged.
+- **No export modes below `min_soc`.** While the battery sits under the floor,
+  the forward roll replaces Discharge / Feed-in with Self-use (No-export at a
+  negative sell price) so solar refills the battery.
+- **Observed mode during Remote Dispatch.** A dispatch-driven Discharge /
+  GridCharge was decoded from register 43110 alone and recorded as `feed_in`;
+  it is now reported as the forced mode while the dispatch block holds a power
+  target.
+
+### Changed
+- **Discharge cycle-cost gate.** Discharge is never scheduled in a slot whose
+  sell price is below the battery cycle cost `2 × degradation / efficiency`
+  (≈ 2 c/kWh on the reference install), independent of any forecast refill.
+  Feed-in is unaffected.
+- **Remote Dispatch carries a SoC floor.** Every `solis_dispatch` command sends
+  `soc_min` = `min_soc` (rounded up), so the inverter itself stops a forced
+  discharge at the planner's floor instead of the service default 0 %.
+- **Remote Dispatch honours "Allow grid charging".** Every non-GridCharge
+  dispatch command sends `allow_grid_charge` mirroring the switch (read at write
+  time); GridCharge always permits it. Previously the firmware default
+  (grid charge allowed) applied.
+
+### Added
+- **Battery-export guard (monitor only).** Trips when grid export exceeds PV
+  by ≥ 1 kW for 120 s while a passive mode is commanded — battery energy
+  leaving without being asked for. On a trip it captures the inverter's raw
+  state (incl. the undocumented 33122 working mode), logs a warning and raises
+  a persistent notification; nothing is written. A companion SoC-floor watch
+  flags discharge at/below `min_soc` in passive modes. State is exposed as
+  `export_guard` / `soc_floor_guard` on the observed-inverter-mode sensor and
+  in the debug view, and validated by the new `check_export_guard` deep-check.
+  Solis roles `operating_mode` (33122) and `dispatch_running_status` (34504)
+  are resolved for the capture.
+
 ## [0.5.0] — 2026-08-27
 
 ### Fixed
