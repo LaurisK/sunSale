@@ -8,7 +8,7 @@ Any behavior-affecting change bumps the `version` in
 `custom_components/sun_sale/manifest.json` and adds an entry here — see
 [`docs/RELEASING.md`](docs/RELEASING.md).
 
-## [Unreleased]
+## [0.6.0] — 2026-09-20
 
 ### Added
 - **Forecast sensors are detected, and what each integration resolved to is

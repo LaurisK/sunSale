@@ -6,7 +6,7 @@ End-to-end description of the tiered DAG that drives every sunSale update cycle.
 |---|---|
 | **Status** | Implemented |
 | **Pattern** | Translation layer + inbound normalisers + tiered DAG + post-DAG inverter control module |
-| **HA boundary** | HA imports confined to root entry points (`__init__.py`, `config_flow.py`, `sensor.py`, `switch.py`, `select.py`, `number.py`), `orchestration/`, and `outbound/inverter.py`. Inbound translators (`inbound/**`) do not import HA — each accepts a duck-typed `hass` at runtime to read `hass.states`. All other modules are pure Python. |
+| **HA boundary** | HA imports confined to root entry points (`__init__.py`, `config_flow.py` + its `setup_flow/` package, `sensor.py`, `switch.py`, `select.py`, `number.py`), `orchestration/`, and `outbound/inverter.py`. Inbound **translators** do not import HA — each accepts a duck-typed `hass` at runtime to read `hass.states`. The inbound **resolvers** (entity/device-registry scans, setup-time detection) do, and `tests/test_architecture.py:HA_IMPORT_ALLOWLIST` pins exactly which. All other modules are pure Python. |
 
 ## Contents
 
@@ -30,7 +30,7 @@ HA state machine
       ▼
 ┌─ Translation Layer — inbound/**
 │   PriceFeedTranslator                     → PriceFeedData
-│     (Nordpool / ENTSO-e / Octopus / Amber / TOU; NordpoolData = alias)
+│     (Nordpool / ENTSO-e / Octopus / Amber / Fixed; NordpoolData = alias)
 │   SolarTranslator                         → SolarData
 │   BatteryTranslator (via BatterySource)   → BatteryReading
 │   Generation / PvPower    (observer/)     → GenerationReading / PvPowerReading
@@ -104,9 +104,10 @@ custom_components/sun_sale/
 │   └── models.py                All dataclasses (configs, primary types, secondary types)
 │
 ├── inbound/                     HA-read translators + pure-Python normalisers
-│   ├── pricing.py               Price-feed translators (Nordpool/ENTSO-e/Octopus/Amber/TOU) + 72h PriceSeries assembly
+│   ├── pricing.py               Price-feed translators (Nordpool/ENTSO-e/Octopus/Amber/Fixed) + detection + 72h PriceSeries assembly
 │   ├── forecast.py              SolarTranslator + GenerationSeries assembly
-│   ├── forecast_resolver.py     Auto-resolve forecast-device entity IDs from config entries
+│   ├── forecast_resolver.py     Forecast integrations → base sensor, plus sensor-level detection
+│   ├── weather.py               WeatherTranslator (daily forecast) + weather-entity detection
 │   ├── battery.py               BatteryTranslator (reads via BatterySource) + BatteryStatus
 │   ├── battery_source.py        BatterySource seam (Inverter/JkBms/Chained) — SoC/power/energy
 │   ├── household_consumption.py HouseholdConsumptionTranslator (today-total kWh)
@@ -118,6 +119,8 @@ custom_components/sun_sale/
 │   ├── platform_profiles.py     Declarative role→pattern profiles for entity-driven vendors
 │   ├── solis_entity_resolver.py SolisEntityDiscovery (auto-resolve solis_modbus entity IDs)
 │   ├── inverter_entity_resolver.py Vendor-neutral front door — delegates to discovery_for()
+│   ├── inverter_sources.py      Setup-time candidates for the inverter's optional sources + BMS
+│   ├── holiday_calendar.py      Public-holiday predicate for the tariff / profitability day class
 │   ├── telemetry/               Read-side seam mirroring outbound/driver.py
 │   │   ├── binding.py           TelemetrySignal / SignalRole / SignalBinding (pure vocabulary)
 │   │   ├── codec.py             TelemetryCodec — per-vendor sign/unit transforms (pure)
@@ -169,8 +172,6 @@ custom_components/sun_sale/
 
 Layering rule: `contract` imports nothing from the integration. `inbound`/`pipeline`/`outbound` import only `contract` (plus the deliberate inbound→outbound back-edges in §3). `orchestration` may import from all four. Violations surface as circular-import errors.
 
-> There is no `contract/events.py` any more. The old `ControlEvent` / `InverterActionEvent` event types and the `outbound/event_router.py` that consumed them have been removed — dispatch reads the `Schedule`'s per-slot `StorageMode` directly (§5).
-
 ---
 
 ## 3. Layer 1 — Translation (inbound)
@@ -185,7 +186,7 @@ Each translator lives in its own module — there is no monolithic `translators.
 
 | Translator | Output type | Module | Source |
 |---|---|---|---|
-| `NordpoolTranslator` (+ `Entsoe`/`OctopusAgile`/`Amber`/`TouSchedule`) | `PriceFeedData` (`NordpoolData` alias) | `pricing.py` | Selected by `build_price_translator` per `CONF_PRICE_SOURCE`. Nordpool prefers `raw_today`/`raw_tomorrow` (15-min or hourly; resolution auto-detected), falls back to legacy `today`/`tomorrow`; the others read their integration's documented schema. |
+| `NordpoolTranslator` (+ `Entsoe`/`OctopusAgile`/`Amber`/`FixedPrice`) | `PriceFeedData` (`NordpoolData` alias) | `pricing.py` | Selected by `build_price_translator` per `CONF_PRICE_SOURCE`. Nordpool prefers `raw_today`/`raw_tomorrow` (15-min or hourly; resolution auto-detected), falls back to legacy `today`/`tomorrow`; the others read their integration's documented schema. |
 | `SolarTranslator` | `SolarData` | `forecast.py` | Open-Meteo `watts` dict preferred; Forecast.Solar / Solcast `forecast` attribute fallback. Sums multi-panel / today+tomorrow sources. |
 | `BatteryTranslator` | `BatteryReading` | `battery.py` | `BatterySource` for SoC/power (BMS-or-inverter); grid via the telemetry reader; household-load sensor read inline (with default fallback). |
 | `PvPowerTranslator` / `GenerationTranslator` | `PvPowerReading` / `GenerationReading` | `observer/generation.py` | Instantaneous PV power + daily-resetting generation counter. |
@@ -194,6 +195,7 @@ Each translator lives in its own module — there is no monolithic `translators.
 | `AcPortPowerTranslator` / `BackupPowerTranslator` | `DerivedPowerSample` parts | `observer/derived.py` | AC-port and backup-load power for the synthetic consumption/losses series. |
 | `HouseholdConsumptionTranslator` | `HouseholdConsumptionReading` | `household_consumption.py` | Today-total household-load kWh counter. |
 | `InverterModeTranslator` | `InverterModeReading` | `inverter_mode.py` | Reads + decodes the live mode via `InverterControlDriver.observe` (Solis: register 43110 + currents + RC setpoint → `StorageMode`); carries no register knowledge itself. |
+| `WeatherTranslator` | `WeatherForecastData` | `weather.py` | One `weather` entity's **daily** forecast (wind / temperature / cloud cover) for the week-ahead price model. Optional: every failure path yields empty data, and the entity is auto-detected when unset. |
 
 All translators run in parallel via `asyncio.gather` (`run_translators` in `pipeline/dag_engine.py`) before the DAG starts.
 
@@ -291,7 +293,7 @@ A **mode override** (`select.sunsale_mode_override`) is the single source of ope
 1. Build `TariffConfig`, `BatteryConfig`, `SunSaleConfig` from the config entry.
 2. Instantiate `InverterController`, select the `BatterySource`, and build the `InverterControlDriver` via `driver_factory.make_inverter_driver` (Solis register driver / entity-driven vendor driver / telemetry-only fallback).
 3. Build the translator list, DAG node list, `DagEngine`, and `InverterControlModule` (injected with the driver).
-4. Load all `PersistentStore[T]` instances. The rolling sample histories (generation, PV power, both grid-power directions, both grid today-totals, derived cross-stream sample) are declared once via `history_stores.py:HistoryStoreSpec`; the rest (capacity, yesterday prices, price-peak history, inverter-mode history, monthly-bill state, forecast-quality EMAs, baked-observed history, consumption-daily buckets, inverter-time samples) are declared individually.
+4. Load all `PersistentStore[T]` instances. The rolling sample histories (generation, PV power, both grid-power directions, both grid today-totals, derived cross-stream sample) are declared once via `history_stores.py:HistoryStoreSpec`; the rest (capacity, yesterday prices, price-peak history, inverter-mode history, monthly-bill state, forecast-quality EMAs, baked-observed history, consumption-daily buckets) are declared individually.
 
 `_async_update_data()` (every cycle):
 
@@ -378,7 +380,7 @@ All types are dataclasses in `contract/models.py`. Frozen unless they're mutated
 
 ## 9. Key design decisions
 
-**HA boundary.** HA imports are confined to the root entry points (`__init__.py`, `config_flow.py`, `sensor.py`, `switch.py`, `select.py`, `number.py`), `orchestration/`, and the outbound writers (`outbound/inverter.py`, `entity_control.py`, the entity-driven `*_driver.py` modules). Inbound translators read `hass.states` but never import `homeassistant` — they work on a duck-typed `hass`. Every other module is pure Python and testable with plain `pytest`.
+**HA boundary.** HA imports are confined to the root entry points (`__init__.py`, `config_flow.py` + `setup_flow/`, `sensor.py`, `switch.py`, `select.py`, `number.py`), `orchestration/`, and the outbound writers (`outbound/inverter.py`, `entity_control.py`, the entity-driven `*_driver.py` modules). Inbound translators read `hass.states` but never import `homeassistant` — they work on a duck-typed `hass`. The inbound resolvers that scan the entity / device registry (`forecast_resolver`, `inverter_discovery`, `inverter_entity_resolver`, `inverter_sources`, `platform_profiles`, `solis_entity_resolver`, `observer/recorder_resample`) are the deliberate exceptions, allowlisted in `tests/test_architecture.py`. Every other module is pure Python and testable with plain `pytest`.
 
 **Sub-package layering enforces direction.** `contract` depends on nothing. `inbound` / `pipeline` / `outbound` depend only on `contract`. `orchestration` is the only layer allowed to glue them. Enforced by convention (a violation surfaces as a circular import).
 
@@ -386,7 +388,7 @@ All types are dataclasses in `contract/models.py`. Frozen unless they're mutated
 
 **Tiers derived at construction, cycles caught there.** Tiers are computed by topological longest-path layering over the `consumes`/`consumes_optional`/`output_type` graph (`DagEngine._assign_tiers`), not hand-assigned. A dependency cycle raises `DependencyCycleError` at startup.
 
-**Dispatch is post-DAG and event-free.** Pipeline nodes emit nothing; the `Schedule` carries the target `StorageMode` per slot and `InverterControlModule.tick()` actuates after the DAG. The old `ControlEvent` types and `event_router.py` are gone.
+**Dispatch is post-DAG and event-free.** Pipeline nodes emit nothing; the `Schedule` carries the target `StorageMode` per slot and `InverterControlModule.tick()` actuates after the DAG.
 
 **Write-once → verify → reconcile, not blind re-assert.** The control module writes only when the resolved target changes, then verifies the registers took and reconciles a later drift — instead of re-asserting the same mode every cycle (which wears flash and never confirmed engagement). RC-backed modes are the one exception, refreshed each cycle so the inverter doesn't expire them. See [`control_loop.md`](control_loop.md).
 

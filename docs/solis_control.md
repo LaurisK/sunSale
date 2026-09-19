@@ -3,6 +3,13 @@
 Reference for redesigning `outbound/inverter.py` away from per-cycle TOU-slot
 rewrites and toward a register-level state machine.
 
+> **Status: implemented** (§6). This document keeps the research and the
+> register evidence behind the design. Its operating-state names are the
+> research names; in code they are `StorageMode` members (`contract/models.py`):
+> SELL = `FeedIn`, STORE = `SelfUse`, HOARD = `NoExport`, DUMP = `Discharge`,
+> GULP = `GridCharge`, STBY = `StandBy`, TRACK = `TRACK`. The driver-neutral
+> dispatch contract is in [`control_loop.md`](control_loop.md).
+
 Target inverter on this deployment: **Solis S6 3-Phase LV Hybrid (10–15 kW)**,
 type 8562, exposed in Home Assistant under the `namai_inv_*` entity prefix
 through the `solis_modbus` integration.
@@ -253,22 +260,31 @@ credentials resolved by `tools/checks/credentials.py` (CLI arg, the `HA_URL` /
 
 ---
 
-## 6. Next step
+## 6. As built
 
-Refactor `InverterController` to expose a single primitive:
+The single primitive this section proposed landed, with the register targets
+bundled into a spec rather than passed as loose arguments:
 
 ```python
-def apply_mode(
-    mode: StorageMode,            # SELL | STORE | HOARD | DUMP | GULP | STBY | TRACK
-    export_limit_w: int,
-    charge_a: float,
-    discharge_a: float,
-    rc_setpoint_w: int = 0,
-) -> None: ...
+async def apply_mode(mode: StorageMode, spec: StorageModeSpec, force: bool = False) -> None: ...
 ```
 
-`StorageMode` resolves to a `43110` bitmask via the table in §3. The dispatcher
-composes the writes (bit switches → export limit → currents → RC setpoint),
-verifies via `_switch_value_2` readback, and skips writes when the readback
-already matches the target (idempotency = fewer Modbus transactions and zero
-flash wear when nothing changes).
+- **Mode → targets.** `outbound/storage_mode_specs.py:build_specs` turns each
+  `StorageMode` into a `StorageModeSpec` — the `43110` value from the §3 table,
+  charge / discharge current, export limit and RC setpoint — from the
+  deployment's battery and inverter limits (`None` leaves a register as it is).
+  `SolisDriver.effective_spec` then clamps it to what the hardware accepts (see
+  [`capability_seam.md`](capability_seam.md)).
+- **Writes.** `outbound/inverter.py:InverterController.apply_mode` composes them
+  in order — `43110` bits → charge current → discharge current → export limit
+  (`backflow_power`) → the RC selector / timeout / setpoint — and each step
+  compares its readback first and skips the write when it already matches
+  (idempotent: no Modbus traffic or flash wear when nothing changes).
+  `force=True` skips that comparison; the verify loop uses it on a commanded
+  change and on retry after a mismatch, where the cached readback could hide a
+  failed write.
+- **Driver.** `outbound/solis_driver.py:SolisDriver.apply_mode` wraps it with
+  the write lock and starts or stops the RC keep-alive heartbeat.
+- **Verify and drift.** The commanded-mode verify loop, slow drift
+  reconciliation and the Remote Dispatch path are specified in
+  [`control_loop.md`](control_loop.md).

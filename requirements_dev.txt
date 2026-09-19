@@ -10,6 +10,9 @@ pytest-homeassistant-custom-component>=2024.1.0
 # TUI stack for tools/checks (the integration-check harness); also pulled in at
 # test collection via test_baked_observed_check.py → tools.integration_check.
 textual>=0.50
+# Public-holiday calendars (the integration's one runtime requirement, see
+# manifest.json); tests that need the real package skip without it.
+holidays>=0.35
 # Parses upstream solis_modbus's services.yaml in the contract guard
 # (tests/test_solis_modbus_contract.py); that module skips without it.
 pyyaml>=6.0

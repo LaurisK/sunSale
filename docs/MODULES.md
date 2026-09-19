@@ -69,9 +69,9 @@ flowchart TB
     end
 
     subgraph INBOUND["inbound/  —  HA-state → typed readings"]
-        I_price["pricing.py<br/>price-feed translators<br/>(Nordpool/ENTSO-e/Octopus/Amber/TOU)"]:::inbound
+        I_price["pricing.py<br/>price-feed translators<br/>(Nordpool/ENTSO-e/Octopus/Amber/Fixed)"]:::inbound
         I_fc["forecast.py<br/>SolarTranslator"]:::inbound
-        I_fcr["forecast_resolver.py"]:::inbound
+        I_fcr["forecast_resolver.py<br/>devices + sensor detection"]:::inbound
         I_weather["weather.py<br/>WeatherTranslator + detection"]:::inbound
         I_bat["battery.py<br/>BatteryTranslator"]:::inbound
         I_btsrc["battery_source.py<br/>BatterySource (BMS/inverter)"]:::inbound
@@ -102,7 +102,7 @@ flowchart TB
         subgraph NODES["nodes/  —  DAG node tiers"]
             P_t1["tier1.py<br/>Pricing / BatteryState /<br/>BatteryStatus / BaseLoadProfile"]:::pipe
             P_t2["tier2.py<br/>PriceLevel / Generation / Observed{Gen,<br/>Grid,Consumption,Losses} / Degradation /<br/>BatteryRuntime / Profitability"]:::pipe
-            P_t3["tier3.py<br/>Lockout / ForecastAccuracy /<br/>MonthlyBill"]:::pipe
+            P_t3["tier3.py<br/>Lockout / ForecastAccuracy / MonthlyBill /<br/>ArrayCalibration / SolarHealth / PriceForecast"]:::pipe
             P_t4["tier4.py<br/>ScheduleNode"]:::pipe
         end
         P_tariff["tariff.py"]:::pipe
@@ -193,8 +193,8 @@ flowchart TB
 - **Both vendor seams are symmetric.** The **outbound** control path goes through `driver.py` (`InverterDriver` / `InverterControlDriver`), dispatched by `driver_factory.make_inverter_driver`; the **inbound** read path goes through `telemetry/` (`HaTelemetryReader` + per-vendor `TelemetryCodec`) and the `inverter_discovery` / `platform_profiles` registry. The control module and the observer translators name a `StorageMode` / `TelemetrySignal`, never a register or a vendor entity.
 - **`storage_mode_specs.py` is Solis register detail in the outbound driver layer** — imported only by `outbound/{solis_driver,inverter,entity_control}.py`. `pipeline/slot_physics.py` *mirrors* its per-mode export caps independently (no import).
 - **Inbound-on-outbound back-edges** (deliberate): `inbound/battery_source.py` wraps `InverterController` (the inverter-backed `BatterySource`); `inbound/inverter_mode.py` reads/decodes via `InverterControlDriver.observe`; `inbound/pricing.py` calls `pipeline/tariff.py` to apply buy/sell formulas before data enters the DAG.
-- **Outbound roles:** `inverter.py` (low-level Solis register read/write), `solis_driver.py` (the register-level `InverterControlDriver`), `entity_control.py` + the `*_driver.py` modules (entity-driven vendors), `inverter_control_module.py` (observe→plan→act→verify→reconcile after the DAG). The historical `event_router.py` is gone.
-- **`contract/` is a sink** — zero internal imports, depended on by every other layer. It holds `const.py` + `models.py` only (no `events.py`).
+- **Outbound roles:** `inverter.py` (low-level Solis register read/write), `solis_driver.py` (the register-level `InverterControlDriver`), `entity_control.py` + the `*_driver.py` modules (entity-driven vendors), `inverter_control_module.py` (observe→plan→act→verify→reconcile after the DAG).
+- **`contract/` is a sink** — zero internal imports, depended on by every other layer. It holds `const.py` + `models.py` only.
 
 ---
 
@@ -213,8 +213,6 @@ Flat catalogue of every immutable dataclass — configs, primary types, secondar
 - **Exposes (selected):** `SunSaleConfig`, `BatteryConfig`, `TariffConfig`, `SchedulePolicy`, `PriceEntry`, `PriceSlot`, `PriceSeries`, `PriceFeedData`/`NordpoolData` (alias), `YesterdayPrices`, `SolarData`, `GenerationSeries`, `ObservedGenerationSeries`, `ObservedGridSeries`, `ObservedConsumptionSeries`, `ObservedLossesSeries`, `DerivedPowerSample`, `BatteryReading`, `BatteryState`, `BatteryStatus`, `EstimatedCapacity`, `DegradationCost`, `CalculationResult`, `Schedule`, `ScheduleSlot`, `StorageMode`, `StorageModeSpec`, `InverterModeReading`, `InverterModeChange`, `InverterModeHistory`, grid/`*History` types, `MonthlyBillState`/`Result`, `BaseLoadProfile`, `BatteryRuntimeEstimate`, `ForecastAccuracyResult`, `DailyPeak`, `PriceHistory`, `ProfitabilityScore`, baked/consumption-daily types, … (single source of truth — see file).
 - **Depends on:** none.
 - **Tests:** `tests/test_models.py`.
-
-> There is no `contract/events.py`. The old `ControlEvent` / `InverterActionEvent` types were removed when dispatch moved fully into `outbound/inverter_control_module.py`.
 
 ---
 
@@ -384,7 +382,7 @@ Per-slot delta between `GenerationSeries` (forecast) and `ObservedGenerationSeri
 - **Tests:** `tests/test_forecast_accuracy.py`.
 
 ### `pipeline/profitability.py`
-Day-class-normalised rolling 30d percentile of daily peaks (weekday / weekend / holiday). Wired as `ProfitabilityNode` (Tier 2); `PriceHistory` is supplied by the coordinator from a persistent store of `DailyPeak`s.
+Day-class-normalised rolling 30d percentile of daily peaks (weekday / weekend / holiday). Wired as `ProfitabilityNode` (Tier 2); `PriceHistory` is supplied by the coordinator from a persistent store of `DailyPeak`s. Holidays come from `inbound/holiday_calendar.py` (the `holidays` package for `hass.config.country`, carried as `SunSaleConfig.holiday_country`); stored WEEKDAY peaks the calendar marks as holidays are promoted on read (`promote_holidays`), so older history needs no migration.
 - **Exposes:** `compute_profitability_score`, `daily_peak_from_entries`, `classify_day`.
 - **Tests:** `tests/test_profitability.py`.
 
@@ -448,7 +446,7 @@ The platform-neutral control seam. `InverterDriver` — minimal surface (`apply_
 - **Depends on:** `contract.{const, models}`, `outbound.driver`.
 - **Tests:** `tests/test_inverter_control_module.py`, `tests/test_coordinator.py`.
 
-> Replaces the historical `outbound/event_router.py` (gone). Dispatch is not event-driven.
+> Dispatch is not event-driven: the module reads the `Schedule`'s per-slot `StorageMode` directly.
 
 ---
 

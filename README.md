@@ -19,8 +19,8 @@ Everything flows through other HA integrations — sunSale calls no external API
 
 - Home Assistant 2024.x+ (Python 3.12+)
 - A price source — [Nordpool](https://github.com/custom-components/nordpool) (default), or ENTSO-e /
-  Octopus Agile / Amber / a synthetic TOU schedule, selectable in setup. Currency follows the source
-  (EUR/SEK/NOK/DKK/GBP/AUD/…); the optimisation math is currency-neutral.
+  Octopus Agile / Amber, selectable in setup — or none when both your buy and sell prices are fixed.
+  Currency follows the source (EUR/SEK/NOK/DKK/GBP/AUD/…); the optimisation math is currency-neutral.
 - An inverter/battery integration — for Solis: [Pho3niX90/solis_modbus](https://github.com/Pho3niX90/solis_modbus)
 - *(optional)* a solar forecast integration (Forecast.Solar, Solcast, Open-Meteo, …)
 
@@ -35,21 +35,29 @@ Then **Settings → Devices & Services → Add Integration → sunSale**.
 
 ## Configure
 
-The flow runs **tariff → weekday bands → weekend bands → battery → inverter (platform + power
-ratings) → entity mapping → data sources**. For Solis, the `solis_modbus` config entry is
+Setup opens on one menu listing the sections — **Electricity prices**, **Inverter and battery**
+and **Solar forecast** (once an inverter is set up). Open a section to add it to the installation;
+each section is a menu of pages (price source and sensor, buy price, sell price, price level,
+price-forecast weather; platform and power ratings, battery, entity mapping, dedicated BMS, power
+sensors, energy counters). Every page is saved with its **Confirm** button, whose last field is a
+dropdown offering **✓ save and go back** or **✕ discard and go back**. **✓ Finish configuration**
+saves once every section you added is complete. For Solis, the `solis_modbus` config entry is
 auto-detected and all entity IDs are resolved from the HA registry — manual mapping is only a
-fallback. Parameters are editable later via **Configure** on the integration card. Effective
-prices used by the scheduler:
+fallback. **Configure** on the integration card opens the same menus later. Effective prices used
+by the scheduler:
 
 ```
-buy  = (spot + distribution_fee + markup) * (1 + tax_rate)
-sell = (spot - sell_distribution_fee - sell_markup) * (1 - sell_tax_rate)
+buy  = (energy + markup + grid_fee) × (1 + VAT)
+sell = (energy − deduction − grid_fee) × (1 − tax)
 ```
 
-The two distribution fees are **time-of-use**: the weekday/weekend band steps let you define up
-to four daily time windows (start time, 24h, wrapping past midnight), each with its own buy/sell
-distribution fee. Tax rates and markups stay global. Leave the band steps blank to apply the flat
-distribution fees above to every hour.
+Buy and sell are set up independently. *energy* is the market price from the price source (a
+market-based sell price uses a separate live export feed where the source has one) or a fixed
+price you enter. The grid fee has **1, 2 or 4 tariffs**: with one it applies at all times; with 2
+or 4 you enter a fee per tariff and, per day type, which tariff is active from what time (up to
+six "from HH:MM → tariff" rows, 24 h, wrapping past midnight). Workdays always have a schedule;
+weekends and public holidays (the national calendar of Home Assistant's country) can get their
+own, and summer and winter can have separate schedules with configurable start dates.
 
 A trade is taken only when `sell × efficiency − buy − 2 × degradation > 0`, where degradation =
 `purchase_price / (rated_cycle_life × estimated_capacity × 2)`. Capacity is learned over days
@@ -108,7 +116,6 @@ the `HA_URL`/`HA_TOKEN` env vars, or a local `tools/secrets.json` (gitignored �
 - Only `solis_modbus` is hardware-verified; the other vendor drivers are implemented but untested
   against hardware (verify on first connect), and Fronius / SMA / Kostal are telemetry-only.
 - The SoC-bucketed DP introduces small discretisation error vs. a continuous optimum.
-- No post-setup GUI for entity mappings — remove and re-add to change them.
 
 ## License
 

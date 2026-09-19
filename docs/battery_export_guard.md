@@ -1,7 +1,7 @@
-# Battery-export guard — evidence, detector, monitoring plan
+# Battery-export guard — evidence and detector
 
-Status: **Phase 1 (monitor only) implemented in v0.5.1** (2026-09-11) —
-`outbound/export_guard.py`, wired in the coordinator. Phase 2 (act) is not.
+The guard **detects and reports**; it does not intervene. `outbound/export_guard.py`,
+wired in the coordinator. Acting on a trip is designed but not built (§5.2).
 Companion to [`control_loop.md`](control_loop.md).
 
 ## 1. The incident this guards against
@@ -108,7 +108,7 @@ removed by persistence). The 1 kW threshold sits ~50× above normal operation.
 
 The replay was an ad-hoc script over HA recorder history (REST
 `/api/history/period`, 10 s forward-filled grid); it is not kept in the repo —
-the Phase 1 `tools/checks` deep-check below is its permanent form.
+the `tools/checks` deep-check in §5.1 is its permanent form.
 
 ## 4. Companion rule — hard floor at `min_soc`
 
@@ -121,9 +121,9 @@ Recorder history, SoC < 6 % (`min_soc`): 09-04 03:27–10:05 (min 5 %, battery
 (min 3 %, ~1.35 kWh still discharged in the BMS-A view). It would have acted
 only on the incident.
 
-## 5. Rollout
+## 5. Behaviour
 
-### Phase 1 — monitor only (no writes)
+### 5.1 What the guard does
 
 * State machine `idle → suspect (condition true) → tripped (≥ 120 s)`,
   held on the control module.
@@ -131,17 +131,14 @@ only on the incident.
   `debug_view`: `export_guard_state`, `export_guard_onset`,
   `export_guard_kwh`, `export_guard_operating_mode` (33122 raw),
   `export_guard_soc_at_onset`.
-* On `tripped`: log WARNING with the register snapshot above, and raise an HA
+* On `tripped`: logs WARNING with the register snapshot above and raises an HA
   persistent notification ("Battery is exporting to grid while sunSale
   commands <mode>").
-* Also log (not act on) the §4 floor rule.
-* `tools/checks`: a deep-check replaying the rule over the snapshot's
-  histories and cross-checking the exposed state.
+* The §4 floor rule is logged, not acted on.
+* `tools/checks` replays the rule over the snapshot's histories and
+  cross-checks the exposed state.
 
-Exit criterion: no false trips over ≥ 2 weeks, and — if 4096 recurs — the
-register capture from §2.
-
-### Phase 2 — act
+### 5.2 Acting on a trip — designed, not built
 
 Escalation on `tripped`, each step verified by the detector clearing:
 
@@ -150,8 +147,8 @@ Escalation on `tripped`, each step verified by the detector clearing:
 3. SoC ≤ `min_soc` at any point → StandBy immediately (§4).
 
 Unknown until observed: whether the 4096 state honours a 0 A discharge limit.
-Phase 1's capture answers that; if it does not, step 2 becomes a user alert
-only.
+The register capture the guard takes on a trip answers that; if it does not,
+step 2 becomes a user alert only.
 
 ## 6. Limits
 
