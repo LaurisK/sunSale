@@ -11,6 +11,7 @@ from homeassistant.components.http import HomeAssistantView
 from ..contract.const import (
     CONF_NORDPOOL_ENTITY,
     CONF_SOLAR_FORECAST_DEVICE_IDS,
+    CONF_SOLAR_FORECAST_ENTITIES,
     CONF_SOLAR_FORECAST_ENTITY,
     CONF_SOLAR_FORECAST_ENTITY_2,
     DEFAULT_EXPORT_LIMIT_W,
@@ -140,6 +141,7 @@ def _coordinator_to_dict(entry_id: str, coordinator: Any) -> dict:
             ),
             "solar_forecast_entity": cfg.get(CONF_SOLAR_FORECAST_ENTITY, ""),
             "solar_forecast_entity_2": cfg.get(CONF_SOLAR_FORECAST_ENTITY_2, ""),
+            "solar_forecast_entities": list(cfg.get(CONF_SOLAR_FORECAST_ENTITIES) or []),
             # Device-based forecast selection: chosen forecast-integration
             # config-entry IDs and the base "today" sensors they resolved to.
             "solar_forecast_device_ids": cfg.get(CONF_SOLAR_FORECAST_DEVICE_IDS, []),

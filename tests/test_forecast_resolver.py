@@ -186,3 +186,84 @@ def test_resolve_missing_entry_skipped():
 def test_resolve_empty_input():
     hass = _make_hass([], {})
     assert r.resolve_forecast_entities(hass, []) == []
+
+
+# ---------------------------------------------------------------------------
+# Sensor-level detection (the long tail no forecast integration covers)
+# ---------------------------------------------------------------------------
+
+class _State:
+    """Minimal HA state stub."""
+
+    def __init__(self, entity_id: str, **attributes) -> None:
+        self.entity_id = entity_id
+        self.attributes = attributes
+
+
+def _states_hass(states: list[_State]) -> MagicMock:
+    """Return a hass mock whose sensor states are ``states``."""
+    hass = MagicMock()
+    hass.states.async_all.side_effect = lambda domain: [s for s in states if s.entity_id.startswith(f"{domain}.")]
+    return hass
+
+
+# The shapes the live install publishes: Open-Meteo carries both `watts` and
+# `wh_period`; a derived "yesterday" template sensor carries only `wh_period`.
+_OPEN_METEO = {"watts": {"2026-09-16T09:00:00+00:00": 1200}, "wh_period": {"2026-09-16T09:00:00+00:00": 300}}
+_SOLCAST = {"forecast": [{"time": "2026-09-16T09:00:00+00:00", "pv_estimate": 1.2}]}
+
+
+def test_a_sensor_is_detected_by_the_data_its_translator_actually_parses():
+    assert r.is_forecast_sensor("sensor.energy_production_today", _OPEN_METEO)
+    assert r.is_forecast_sensor("sensor.pv_forecast_today", _SOLCAST)
+
+
+@pytest.mark.parametrize("entity_id, attributes", [
+    # Only wh_period: looks like a forecast, but SolarTranslator cannot read it.
+    ("sensor.yesterday_forecast_namas", {"wh_period": {"2026-09-16T09:00:00+00:00": 300}}),
+    ("sensor.energy_production_today", {"watts": []}),        # wrong type
+    ("sensor.energy_production_today", {"forecast": []}),     # empty
+    ("sensor.energy_production_today", {}),
+    ("sensor.grid_power", {"unit_of_measurement": "W"}),
+])
+def test_a_sensor_the_translator_could_not_read_is_not_detected(entity_id, attributes):
+    assert not r.is_forecast_sensor(entity_id, attributes)
+
+
+@pytest.mark.parametrize("entity_id", [
+    "sensor.energy_production_tomorrow",
+    "sensor.energy_production_d3",
+    "sensor.energy_production_d7_2",
+])
+def test_only_a_today_sensor_is_detected(entity_id):
+    """The other days are reached by substituting "today", so a dN base is unusable."""
+    assert not r.is_forecast_sensor(entity_id, _OPEN_METEO)
+
+
+def test_detection_lists_the_today_sensors_only():
+    hass = _states_hass([
+        _State("sensor.energy_production_today", **_OPEN_METEO),
+        _State("sensor.energy_production_tomorrow", **_OPEN_METEO),
+        _State("sensor.energy_production_d3", **_OPEN_METEO),
+        _State("sensor.energy_production_today_2", friendly_name="Namai today", **_OPEN_METEO),
+        _State("sensor.grid_power"),
+    ])
+    found = r.detect_forecast_sensors(hass)
+    assert [(s.entity_id, s.name) for s in found] == [
+        ("sensor.energy_production_today", ""),
+        ("sensor.energy_production_today_2", "Namai today"),
+    ]
+
+
+def test_a_sensor_a_device_already_resolves_is_excluded():
+    """The form must not offer the same array as both a device and a sensor."""
+    hass = _states_hass([
+        _State("sensor.energy_production_today", **_OPEN_METEO),
+        _State("sensor.shed_today", **_OPEN_METEO),
+    ])
+    found = r.detect_forecast_sensors(hass, exclude=["sensor.energy_production_today"])
+    assert [s.entity_id for s in found] == ["sensor.shed_today"]
+
+
+def test_detection_without_hass_finds_nothing():
+    assert r.detect_forecast_sensors(None) == []

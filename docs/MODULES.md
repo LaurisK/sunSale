@@ -242,10 +242,10 @@ Vendor-neutral read seam mirroring `outbound/driver.py`. `binding.py` is the pur
 - **Tests:** `tests/test_telemetry_codec.py`, `tests/test_telemetry_reader.py`.
 
 ### `inbound/forecast_resolver.py`
-Resolves operator-picked forecast-integration **config entries** into the base "today" forecast sensor `SolarTranslator` consumes (best-effort per-integration registry scan; manual mapping remains a fallback).
-- **Exposes:** `resolve_forecast_entities`.
+Two ways to name a solar array without hunting for entities. `discover_forecast_entries` lists the installed forecast **integrations** and `resolve_forecast_entities` turns each chosen config entry into the base "today" sensor `SolarTranslator` consumes (best-effort per-domain registry scan). `detect_forecast_sensors` covers the long tail no integration does — recognising a sensor by the per-slot data the translator actually parses (`is_forecast_sensor`: a `watts` dict or a `forecast` list, never `wh_period`) and only offering "today" sensors, since the other days are reached by substituting that word. Sensors a chosen device already resolves to are excluded, so an array is never offered twice. `combine_forecast_entities` merges both paths for the runtime.
+- **Exposes:** `discover_forecast_entries`, `resolve_forecast_entities`, `detect_forecast_sensors`, `is_forecast_sensor`, `DetectedForecast`, `manual_forecast_entities`, `combine_forecast_entities`.
 - **Depends on:** `contract.const`, HA entity registry directly.
-- **Tests:** `tests/test_forecast_resolver.py`.
+- **Tests:** `tests/test_forecast_resolver.py`, `tests/test_config_flow.py`.
 
 ### `inbound/household_consumption.py`
 `HouseholdConsumptionTranslator` snapshots the today-total household-load kWh counter (resets at local midnight) — used to display "consumption so far today".

@@ -55,8 +55,6 @@ from ..contract.const import (
     CONF_PRICE_EXPORT_ENTITY,
     CONF_PRICE_SOURCE,
     CONF_SOLAR_FORECAST_DEVICE_IDS,
-    CONF_SOLAR_FORECAST_ENTITY,
-    CONF_SOLAR_FORECAST_ENTITY_2,
     CONF_WEATHER_ENTITY,
     DEFAULT_BATTERY_NOMINAL_VOLTAGE,
     DEFAULT_CURRENCY,
@@ -157,7 +155,7 @@ from ..inbound.consumption_daily import (
     backfill_from_derived_history,
 )
 from ..inbound.forecast import SolarTranslator
-from ..inbound.forecast_resolver import resolve_forecast_entities
+from ..inbound.forecast_resolver import combine_forecast_entities, resolve_forecast_entities
 from ..inbound.holiday_calendar import holiday_predicate
 from ..inbound.household_consumption import HouseholdConsumptionTranslator
 from ..inbound.inverter_entity_resolver import resolve_inverter_entities
@@ -1623,11 +1621,10 @@ class SunSaleCoordinator(DataUpdateCoordinator):
     def _resolve_forecast_base_entities(self, data: dict) -> list[str]:
         """Resolve the base forecast entities SolarTranslator should read.
 
-        Prefers device-based selection: when ``CONF_SOLAR_FORECAST_DEVICE_IDS``
-        is configured, each chosen forecast-integration config entry is resolved
-        to its base "today" sensor. Falls back to the two legacy entity keys
-        (``CONF_SOLAR_FORECAST_ENTITY`` / ``_2``) when no device IDs are set or
-        none resolve, so existing configs keep working unchanged.
+        Each chosen forecast device (``CONF_SOLAR_FORECAST_DEVICE_IDS``) is
+        resolved to its base "today" sensor, then combined with the manually
+        picked sensors by :func:`combine_forecast_entities` — which keeps the
+        legacy two-key behaviour for entries saved before the sensor list.
 
         Args:
             data: The merged config-entry data dict.
@@ -1636,18 +1633,8 @@ class SunSaleCoordinator(DataUpdateCoordinator):
             List of base forecast entity IDs (possibly empty).
         """
         device_ids = data.get(CONF_SOLAR_FORECAST_DEVICE_IDS) or []
-        if device_ids:
-            resolved = resolve_forecast_entities(self.hass, list(device_ids))
-            if resolved:
-                return resolved
-        return [
-            e
-            for e in (
-                data.get(CONF_SOLAR_FORECAST_ENTITY, ""),
-                data.get(CONF_SOLAR_FORECAST_ENTITY_2, ""),
-            )
-            if e
-        ]
+        resolved = resolve_forecast_entities(self.hass, list(device_ids)) if device_ids else []
+        return combine_forecast_entities(resolved, data)
 
     def _resolve_local_tz(self):
         """Return the HA-configured local timezone, falling back to UTC.

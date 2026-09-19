@@ -18,11 +18,60 @@ still fall back to manual entity mapping in the config flow.
 from __future__ import annotations
 
 import logging
+from collections.abc import Collection, Mapping
+from typing import Any, NamedTuple
 
 from homeassistant.core import HomeAssistant
 from homeassistant.helpers import entity_registry as er
 
+from ..contract.const import (
+    CONF_SOLAR_FORECAST_ENTITIES,
+    CONF_SOLAR_FORECAST_ENTITY,
+    CONF_SOLAR_FORECAST_ENTITY_2,
+)
+
 _LOGGER = logging.getLogger(__name__)
+
+
+def manual_forecast_entities(config: Mapping[str, Any]) -> list[str]:
+    """Return the manually picked base forecast sensors from a config dict.
+
+    The ``CONF_SOLAR_FORECAST_ENTITIES`` list wins whenever it is stored — even
+    empty — because the options flow cannot delete the two legacy keys from an
+    entry's ``data``; without this rule they would resurface after the user
+    cleared or replaced them. Entries without the list fall back to the pair.
+
+    Args:
+        config: Merged config-entry data + options (or a flow's accumulator).
+
+    Returns:
+        The non-empty sensor entity IDs, in stored order.
+    """
+    if CONF_SOLAR_FORECAST_ENTITIES in config:
+        return [e for e in config.get(CONF_SOLAR_FORECAST_ENTITIES) or [] if e]
+    return [e for e in (config.get(CONF_SOLAR_FORECAST_ENTITY), config.get(CONF_SOLAR_FORECAST_ENTITY_2)) if e]
+
+
+def combine_forecast_entities(resolved: list[str], config: Mapping[str, Any]) -> list[str]:
+    """Merge device-resolved and manually picked base forecast sensors.
+
+    Entries saved with the sensor list use both sources together — one array
+    per device or sensor, de-duplicated in order. Older entries keep their exact
+    previous behaviour (resolved devices if any, else the legacy pair): their
+    leftover manual keys must not be added on top of a device selection, or
+    the same array would be counted twice.
+
+    Args:
+        resolved: Base sensors resolved from the chosen forecast devices.
+        config: Merged config-entry data + options.
+
+    Returns:
+        Base forecast entity IDs for ``SolarTranslator`` (possibly empty).
+    """
+    manual = manual_forecast_entities(config)
+    if CONF_SOLAR_FORECAST_ENTITIES not in config:
+        return list(resolved) or manual
+    return list(dict.fromkeys([*resolved, *manual]))
 
 # Recognised forecast-integration domains. Adding support for another
 # integration is a one-line edit here plus its base-sensor tails below.
@@ -63,6 +112,76 @@ def discover_forecast_entries(hass: HomeAssistant) -> list[dict[str, str]]:
             options.append({"value": entry.entry_id, "label": entry.title or domain})
     options.sort(key=lambda o: o["label"].casefold())
     return options
+
+
+class DetectedForecast(NamedTuple):
+    """A forecast sensor on this system that ``SolarTranslator`` could read."""
+
+    entity_id: str
+    name: str
+
+
+# The word the translator substitutes to reach the other forecast days. A sensor
+# without it is unusable as a base even when its attributes parse.
+_TODAY = "today"
+
+
+def is_forecast_sensor(entity_id: str, attributes: Mapping[str, Any]) -> bool:
+    """Return True when ``SolarTranslator`` could use this sensor as a base entity.
+
+    Two conditions, both load-bearing:
+
+    * The attributes carry a shape the translator actually parses — a ``watts``
+      dict (Open Meteo / Forecast.Solar) or a ``forecast`` list (Solcast). A
+      sensor carrying only ``wh_period`` is *not* readable, however much it
+      looks like a forecast.
+    * The entity id says "today". ``_tomorrow_entity`` / ``_day_entity`` reach
+      the other days by substituting that word, so a "d3" sensor would send the
+      translator hunting for entities that cannot exist.
+
+    Keep this in sync with what :class:`..forecast.SolarTranslator` reads, the
+    way ``pricing.price_source_of`` tracks the price translators.
+
+    Args:
+        entity_id: The sensor's entity id.
+        attributes: Its state attributes.
+
+    Returns:
+        True when the sensor is usable as a base "today" forecast entity.
+    """
+    if _TODAY not in entity_id.casefold():
+        return False
+    if isinstance(attributes.get("watts"), dict):
+        return True
+    forecast = attributes.get("forecast")
+    return isinstance(forecast, list) and bool(forecast)
+
+
+def detect_forecast_sensors(hass: HomeAssistant, exclude: Collection[str] = ()) -> list[DetectedForecast]:
+    """Return the forecast sensors on this system, minus the ones already covered.
+
+    Complements :func:`discover_forecast_entries`: that finds whole
+    integrations, this finds the leftovers — a forecast integration sunSale does
+    not recognise, or a template sensor built by hand. Sensors a discovered
+    device already resolves to are excluded so the form never offers the same
+    array twice, once as a device and once as a sensor.
+
+    Args:
+        hass: Home Assistant instance, or None (nothing is detected then).
+        exclude: Entity ids already reachable another way.
+
+    Returns:
+        The usable base sensors, by entity id. Empty when every forecast on the
+        system is already covered by a device.
+    """
+    if hass is None:
+        return []
+    found = [
+        DetectedForecast(state.entity_id, str(state.attributes.get("friendly_name") or ""))
+        for state in hass.states.async_all("sensor")
+        if state.entity_id not in exclude and is_forecast_sensor(state.entity_id, state.attributes)
+    ]
+    return sorted(found, key=lambda sensor: sensor.entity_id)
 
 
 def _matches(uid: str, entity_id: str, tail: str) -> bool:

@@ -179,6 +179,10 @@ CONF_SOLAR_FORECAST_ENTITY_2 = "solar_forecast_entity_2"
 # "today" forecast sensor automatically. The two legacy entity keys above remain
 # as the manual fallback (used when no forecast devices are discovered).
 CONF_SOLAR_FORECAST_DEVICE_IDS = "solar_forecast_device_ids"
+# Any number of manually picked base "today" forecast sensors (one per array),
+# used alongside the devices above. Supersedes the two legacy entity keys: once
+# this list is stored they are ignored (see ``forecast_resolver``).
+CONF_SOLAR_FORECAST_ENTITIES = "solar_forecast_entities"
 # Price level (cheap / normal / expensive) published to HA for automations and
 # other integrations. Shares are percentages of each local day's slots by
 # buy-price rank; the absolute limits (per kWh, buy price) are optional and

@@ -11,6 +11,18 @@ Any behavior-affecting change bumps the `version` in
 ## [Unreleased]
 
 ### Added
+- **Forecast sensors are detected, and what each integration resolved to is
+  shown.** *Solar forecast* now has three disjoint pickers: the integrations
+  (unchanged), a list of forecast sensors **no integration covers** — the long
+  tail of an unrecognised integration or a hand-built sensor — and the by-hand
+  picker for the rest. All three merge into one de-duplicated list, so an array
+  can never count twice. `detect_forecast_sensors` recognises a sensor by the
+  per-slot data `SolarTranslator` actually parses (a `watts` dict or a
+  `forecast` list — *not* `wh_period`, which it cannot read) and only offers
+  "today" sensors, since the other days are reached by substituting that word.
+  The form also names each chosen integration's resolved sensor, and says so
+  when one resolved to nothing — previously a silent log line, so an array
+  could contribute no forecast at all without anyone noticing.
 - **Price sensors are detected.** *Price source and sensor* now lists the
   sensors on the system that a price translator can read — recognised by the
   attributes each translator parses (Nord Pool `raw_today` / `today` +
