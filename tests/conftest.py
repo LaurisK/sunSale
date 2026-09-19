@@ -137,6 +137,9 @@ class _ConfigFlowStub:
     def async_show_form(self, **kwargs):
         return kwargs
 
+    def async_show_menu(self, **kwargs):
+        return {"type": "menu", **kwargs}
+
     def async_create_entry(self, **kwargs):
         return kwargs
 
@@ -144,6 +147,9 @@ class _ConfigFlowStub:
 class _OptionsFlowStub:
     def async_show_form(self, **kwargs):
         return kwargs
+
+    def async_show_menu(self, **kwargs):
+        return {"type": "menu", **kwargs}
 
     def async_create_entry(self, **kwargs):
         return kwargs

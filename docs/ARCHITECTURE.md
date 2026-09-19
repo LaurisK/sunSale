@@ -90,7 +90,8 @@ The coordinator (`orchestration/coordinator.py`) owns the update schedule, feeds
 ```
 custom_components/sun_sale/
 ├── __init__.py                  HA entry point (panel, debug view, services)
-├── config_flow.py               Config + options flow (solis auto-detect)
+├── config_flow.py               Config + options flow classes (bind setup_flow.SetupHub to HA)
+├── setup_flow/                  Setup menu tree: per-section forms, step mixins, hub
 ├── sensor.py                    HA sensor entities
 ├── switch.py                    Automation + scheduler-policy switches
 ├── select.py                    Mode-override select (operator intent)

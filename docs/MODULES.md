@@ -488,10 +488,21 @@ HTTP view at `/api/sun_sale/debug` exposing the most recent `primary`, `secondar
 - **Tests:** `tests/test_init.py`.
 
 ### `config_flow.py`
-Multi-step `ConfigFlow` + `OptionsFlow`: `user`/`init` (currency + flat tariff/tax) → `tariff_weekday` → `tariff_weekend` (time-of-use distribution bands) → `battery` → `inverter` (platform) → `inverter_solis` (auto-detect/picker) **or** `inverter_generic` (declarative role picker) **or** `inverter_entities` (manual mapping) → `forecast` (→ `forecast_manual`) → `sources` (price source) → `price_tou` (only when the source is the synthetic TOU schedule). Calls `hass.config_entries.async_entries("solis_modbus")` to decide the Solis branch.
-- **Exposes:** `SunSaleConfigFlow`, `SunSaleOptionsFlow`.
-- **Depends on:** `outbound.inverter` (`InverterPlatform`), `inbound.{solis_entity_resolver, inverter_entity_resolver, platform_profiles}`, `contract.const`.
+Binds the setup menu tree to HA: `SunSaleConfigFlow` (root step `hub`, creates the entry) and `SunSaleOptionsFlow` (root step `init`, seeds from the entry and writes options). All steps come from `setup_flow.SetupHub`.
+- **Exposes:** `SunSaleConfigFlow`, `SunSaleOptionsFlow` (re-exports `INVERTER_PLATFORMS`, `IMPLEMENTED_INVERTER_PLATFORMS`).
+- **Depends on:** `setup_flow`, `contract.const`.
 - **Tests:** `tests/test_config_flow.py`.
+
+### `setup_flow/`
+The setup menu tree (root → section menus → one-module pages), shared by both flows.
+- `fields.py` — shared selectors, `req`/`opt`/`suggest`, the Confirm dropdown (`go_to`, `with_next`), `missing_required`, and the detected-source list (`detected_selector`, `detected_options`, the reserved `OTHER` / `NONE` rows).
+- `prices.py`, `tariffs.py`, `inverter.py`, `forecast.py` — each section's form schemas, validators and placeholder defaults (no flow state). `tariffs.py` holds the buy / sell formula, grid-fee and schedule forms.
+- `sections.py` — section / page ids, labels, `BACK_NAMES` window names, optional-page hints.
+- `core.py` — `HubCore`: accumulated data, confirmed pages, status lines, menu navigation, Solis / profile auto-detect (`hass.config_entries.async_entries`), device-name lookup.
+- `price_steps.py`, `inverter_steps.py` — per-section step handlers as `HubCore` mixins.
+- `hub.py` — `SetupHub`: the mixins composed, plus installation name, solar forecast and Finish.
+- **Source pickers.** Wherever a page names a data source it offers what was found rather than every entity: detected price sensors and export feeds (`inbound.pricing`), forecast integrations and sensors (`inbound.forecast_resolver`), weather entities (`inbound.weather`), the inverter's optional sources and a battery BMS (`inbound.inverter_sources`). Each degrades to a plain entity picker when nothing is detected, and keeps an **Other** escape to the whole system.
+- **Depends on:** `contract.{const, install_capabilities}`, `inbound.{forecast_resolver, inverter_sources, platform_profiles, pricing, weather}`, `outbound.inverter`.
 
 ### `sensor.py`
 All HA sensor entities; reads from the string-keyed `coordinator.data` dict.

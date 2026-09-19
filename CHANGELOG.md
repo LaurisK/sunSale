@@ -93,6 +93,17 @@ Any behavior-affecting change bumps the `version` in
   the completed setup sections. Entries created before have no stored
   capabilities and read as having everything, so existing installs behave
   exactly as before — no migration.
+- **Seven config keys that no form could reach.** These were read at runtime but
+  written by no setup page, so unless the Solis resolver happened to auto-fill
+  them the features behind them silently did nothing:
+  `inverter_entity_ac_port_power` + `..._backup_power` (without both, the
+  observed **consumption and losses** series never run),
+  `inverter_entity_battery_charge_energy` + `..._discharge_energy` (the
+  **battery-capacity estimate** had no input and stayed at nominal),
+  `inverter_entity_grid_import_power` + `..._grid_export_power`, and the three
+  `inverter_entity_*_yesterday` totals (the **end-of-day bake-in** fell back to
+  the pre-rollover snapshot). All are now rows on the new pages, so these work
+  on every platform rather than Solis alone.
 
 ### Removed
 - **The HA↔inverter clock-skew tracker.** `inbound/inverter_time.py`,
@@ -116,6 +127,53 @@ Any behavior-affecting change bumps the `version` in
 
 ### Changed
 
+- **Setup is one menu tree instead of a fixed step ladder.** Home Assistant's
+  setup dialog has one button per form and none on a menu, so navigation lives
+  in menu rows. The first screen lists every section — *Electricity prices →*,
+  *Inverter and battery →*, *Solar forecast →* (once an inverter is set up),
+  *Installation name →* — with its ✓ / · / ○ state, plus an always-present
+  **✓ Finish configuration**. When something is missing, Finish stays on the
+  menu and says what. Confirming a page of a section adds it to the
+  installation, and **✕ Remove** inside the section takes it out again (its
+  values are kept).
+- Each section is a menu of one-module pages. Prices: price source and sensor,
+  buy price, sell price, price level, price-forecast weather. Inverter:
+  platform and power ratings, battery, entity mapping, dedicated BMS, power
+  sensors, energy counters. Every form's button reads **Confirm** and returns
+  to the menu it was opened from; every menu has a **← Back** row.
+- **Every form has a way back** — its last field is a *Confirm dropdown*
+  (HA allows a form only one button): **✓ save and go back** (the default) or
+  **✕ discard and go back** to the menu it came from, with nothing on that page
+  saved, instead of cancelling the whole setup. So that discarding is never
+  blocked by HA's "fill in all required fields" check, fields with no
+  pre-filled value (battery capacity / price, manual entity mapping) are
+  checked by sunSale itself and marked "Fill in this field."
+- Only pages without a working default are required: the price source (while a
+  price follows the market), each direction's formula, its grid fees and every
+  schedule its structure needs, and the inverter's platform + battery +
+  mapping. Price level, the price-forecast weather, the BMS, both source pages
+  and the solar forecast are optional and never block Finish.
+- A single auto-detected solis_modbus / vendor inverter is mapped as soon as
+  the platform is confirmed, and the *Entity mapping* row is hidden.
+- **Config flow and options flow share one implementation**, replacing the two
+  near-duplicate step ladders. The options flow is the same menu tree opened on
+  the entry: existing entries open in **Configure** with their sections already
+  ✓ and can be saved straight away, and editing one page keeps every other
+  stored value (the flow is seeded from the entry's data + options). The stored
+  config is unchanged; no migration.
+- **Solar forecast takes any number of arrays.** One form with a multi-select
+  of forecast devices *and* a multi-select of forecast sensors, replacing the
+  device picker / two-sensor fallback split. All selected forecasts are summed.
+  Once saved, the sensor list (`solar_forecast_entities`) supersedes the two
+  legacy keys; entries saved before keep their exact previous behaviour.
+- **Setup errors are specific and land on the offending field.** Separate
+  messages for each battery field (cycle life, charge / discharge power,
+  voltage, min / max SoC, inverted SoC range) and for the currency code; the
+  price-sensor error names the chosen source, and the unsupported-platform
+  error names the platform.
+- Internal: the setup menus live in a `setup_flow/` package — per-section form
+  modules, per-section step mixins and a small hub. `config_flow.py` only binds
+  them to Home Assistant.
 - **Electricity prices: one simple formula per direction.** The tariff is now two
   independently configured price formulas — buy `(energy + markup + grid fee) × (1 + VAT)`
   and sell `(energy − deduction − grid fee) × (1 − tax)`. The energy is the market price

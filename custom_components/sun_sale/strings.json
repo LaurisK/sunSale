@@ -1,59 +1,327 @@
 {
   "config": {
     "step": {
-      "user": {
-        "title": "Tariff Configuration",
-        "description": "Configure the electricity tariff formula for your provider. The distribution fees here are the fallback used outside any time-of-use band you define next.",
+      "hub": {
+        "title": "sunSale setup",
+        "description": "{status}\n\n✓ set · still needed ○ optional or not used\n\nOpen a section (→) to add it to this installation or change it. Every page ends with a dropdown: **✓ save and go back** (the default) or **✕ discard and go back**. **✓ Finish configuration** saves everything once every section you added is complete.",
+        "menu_options": {
+          "prices": "Electricity prices →",
+          "inverter": "Inverter and battery →",
+          "forecast": "Solar forecast →",
+          "installation_name": "Installation name →",
+          "finish": "✓ Finish configuration"
+        },
+        "menu_option_descriptions": {
+          "prices": "Market price feed and tariff. sunSale values energy in money and publishes a cheap / normal / expensive price level for automations.",
+          "inverter": "Battery control: platform, battery, entity mapping and energy counters.",
+          "forecast": "Solar forecast for every array — sharpens the charge / discharge plan.",
+          "installation_name": "Names this installation in the Home Assistant sidebar."
+        }
+      },
+      "installation_name": {
+        "title": "Installation name",
+        "description": "Names this installation in the Home Assistant sidebar.",
         "data": {
+          "panel_title": "Installation name (optional)",
+          "go_to": "On Confirm"
+        },
+        "data_description": {
+          "panel_title": "Leave blank for \"sunSale\".",
+          "go_to": "Confirm saves this page and returns to the menu; the ✕ option leaves it unchanged."
+        },
+        "submit": "Confirm"
+      },
+      "prices": {
+        "title": "Electricity prices",
+        "description": "{status}\n\nSet the **Buy price** and the **Sell price** — each is an energy price (market or fixed) plus markup and grid fee, with VAT or tax on top. **Price source and sensor** is needed while either price follows the market. Price level is optional. **← Back** keeps everything you confirmed.",
+        "menu_options": {
+          "price_feed": "Price source and sensor →",
+          "price_buy": "Buy price →",
+          "price_sell": "Sell price →",
+          "price_levels": "Price level →",
+          "price_forecast": "Price forecast weather →",
+          "prices_remove": "✕ Remove electricity prices from this installation",
+          "hub": "← Back to setup"
+        }
+      },
+      "price_feed": {
+        "title": "Price source and sensor",
+        "description": "Where the market price comes from, and the currency prices are shown in. {detected} A price sensor is only needed while the buy or sell price follows the market — with both prices fixed, choose **Other** and leave it blank.",
+        "data": {
+          "price_sensor": "Price sensor",
+          "price_export_sensor": "Export-price feed",
+          "price_source": "Price source / market",
+          "nordpool_entity": "Price sensor",
+          "price_export_entity": "Separate export-price sensor (optional)",
+          "nordpool_resolution": "Price resolution",
           "currency": "Display currency code (e.g. EUR, SEK, NOK, DKK, GBP)",
-          "distribution_fee": "Distribution fee (per kWh, buy)",
-          "tax_rate": "Tax/VAT rate on buy (%)",
-          "markup": "Retailer markup (per kWh, buy)",
-          "sell_distribution_fee": "Distribution fee (per kWh, sell)",
-          "sell_tax_rate": "Tax rate on sell revenue (%)",
-          "sell_markup": "Retailer deduction (per kWh, sell)",
-          "sell_mode": "Sell-price model",
-          "fixed_sell_price": "Fixed/feed-in sell price (per kWh)"
+          "go_to": "On Confirm"
+        },
+        "data_description": {
+          "price_sensor": "Sensors from Nord Pool, ENTSO-e, Octopus Agile or Amber whose attributes hold today's and tomorrow's prices. Nord Pool is verified on a live install; the others follow each integration's documented format but are untested. **Other** lets you pick the source and sensor yourself.",
+          "price_export_sensor": "Separate live export-price feeds found on this system (Octopus export rates, Amber feed-in). The one from the price sensor's integration is pre-selected; a market-based sell price then uses it instead of the import price. **None** keeps the sell price on the price sensor.",
+          "price_source": "Nord Pool is verified on a live install. ENTSO-e, Octopus and Amber follow each integration's documented format but are untested.",
+          "nordpool_entity": "The sensor from your price integration (Nord Pool, ENTSO-e, Octopus Agile or Amber) whose attributes hold today's and tomorrow's prices — for Octopus, the `…_current_day_rates` event entity. Leave blank when both prices are fixed.",
+          "price_export_entity": "Only for a separate live export price (Octopus Outgoing — its `…_export_current_day_rates` event entity — or Amber feed-in). A market-based sell price then uses it instead of the import price. Leave blank otherwise.",
+          "nordpool_resolution": "15-minute is recommended where the market publishes it. With both prices fixed it sets the slot length.",
+          "currency": "Only changes labels — prices stay per kWh in the price source's unit.",
+          "go_to": "Confirm saves this page and returns to the menu (with **Other**, it opens the page for the source and sensor first); the ✕ option leaves it unchanged."
+        },
+        "submit": "Confirm"
+      },
+      "price_feed_manual": {
+        "title": "Price source and sensor: other",
+        "description": "Pick the price integration and its sensor yourself.",
+        "data": {
+          "price_source": "Price source / market",
+          "nordpool_entity": "Price sensor",
+          "price_export_entity": "Separate export-price sensor (optional)",
+          "go_to": "On Confirm"
+        },
+        "data_description": {
+          "price_source": "Nord Pool is verified on a live install. ENTSO-e, Octopus and Amber follow each integration's documented format but are untested.",
+          "nordpool_entity": "The sensor from your price integration whose attributes hold today's and tomorrow's prices — for Octopus, the `…_current_day_rates` event entity. Leave blank when both prices are fixed.",
+          "price_export_entity": "Only for a separate live export price from the same integration (Octopus Outgoing — its `…_export_current_day_rates` event entity — or Amber feed-in). A market-based sell price then uses it instead of the import price. Leave blank otherwise.",
+          "go_to": "Confirm saves the price source page and returns to the menu; the ✕ option leaves it unchanged."
+        },
+        "submit": "Confirm"
+      },
+      "price_buy": {
+        "title": "Buy price",
+        "description": "{status}\n\nWhat you pay per kWh: **(energy + markup + grid fee) × (1 + VAT)**. Start with **Price formula**. With 2 or 4 grid-fee tariffs, each schedule below says which tariff applies when.",
+        "menu_options": {
+          "price_buy_formula": "Price formula →",
+          "price_buy_fees": "Grid fees →",
+          "price_buy_all_workday": "Workday schedule →",
+          "price_buy_all_weekend": "Weekend schedule →",
+          "price_buy_all_holiday": "Holiday schedule →",
+          "price_buy_summer_workday": "Summer workday schedule →",
+          "price_buy_summer_weekend": "Summer weekend schedule →",
+          "price_buy_summer_holiday": "Summer holiday schedule →",
+          "price_buy_winter_workday": "Winter workday schedule →",
+          "price_buy_winter_weekend": "Winter weekend schedule →",
+          "price_buy_winter_holiday": "Winter holiday schedule →",
+          "prices": "← Back to electricity prices"
         }
       },
-      "tariff_weekday": {
-        "title": "Weekday Tariff Bands (Mon\u2013Fri)",
-        "description": "Optional time-of-use distribution fees for weekdays. Each band's start time (24h HH:MM, local) runs until the next band's start, wrapping past midnight. Leave a band's start blank to skip it; leave all blank to use the flat fees from the previous step.",
+      "price_buy_formula": {
+        "title": "Price formula — buy price",
+        "description": "Buy price = **(energy + markup + grid fee) × (1 + VAT)**. The energy is the market price from the price source, or a fixed price. The grid fee can have 1, 2 or 4 tariffs; with more than one, set their fees and schedules in the Buy price menu.",
         "data": {
-          "band0_start": "Band 1 start (HH:MM)",
-          "band0_buy_fee": "Band 1 distribution fee (EUR/kWh, buy)",
-          "band0_sell_fee": "Band 1 distribution fee (EUR/kWh, sell)",
-          "band1_start": "Band 2 start (HH:MM)",
-          "band1_buy_fee": "Band 2 distribution fee (EUR/kWh, buy)",
-          "band1_sell_fee": "Band 2 distribution fee (EUR/kWh, sell)",
-          "band2_start": "Band 3 start (HH:MM)",
-          "band2_buy_fee": "Band 3 distribution fee (EUR/kWh, buy)",
-          "band2_sell_fee": "Band 3 distribution fee (EUR/kWh, sell)",
-          "band3_start": "Band 4 start (HH:MM)",
-          "band3_buy_fee": "Band 4 distribution fee (EUR/kWh, buy)",
-          "band3_sell_fee": "Band 4 distribution fee (EUR/kWh, sell)"
+          "energy": "Energy price",
+          "fixed_price": "Fixed energy price (per kWh)",
+          "markup": "Retailer markup (per kWh)",
+          "vat": "VAT (%)",
+          "tariffs": "Grid-fee tariffs",
+          "weekends": "Weekends have their own schedule",
+          "holidays": "Public holidays have their own schedule",
+          "seasons": "Summer and winter have their own schedules",
+          "summer_start": "Summer starts (MM-DD)",
+          "winter_start": "Winter starts (MM-DD)",
+          "go_to": "On Confirm"
+        },
+        "data_description": {
+          "energy": "The market price follows the price source slot by slot; a fixed price is entered below.",
+          "fixed_price": "Used only with a fixed price.",
+          "markup": "Added to the energy price.",
+          "vat": "Applied to the sum of energy, markup and grid fee.",
+          "tariffs": "1 = the same grid fee at all times. 2 or 4 = the fee depends on the time of day.",
+          "weekends": "Only with 2 or 4 tariffs. Off: Saturdays and Sundays follow the workday schedule.",
+          "holidays": "Only with 2 or 4 tariffs. The national public holidays of the country set in Home Assistant; they take precedence over weekends.",
+          "seasons": "Only with 2 or 4 tariffs. Every day type then gets a summer and a winter schedule.",
+          "summer_start": "Only with seasons. The first day of the summer schedule.",
+          "winter_start": "Only with seasons. The first day of the winter schedule.",
+          "go_to": "Confirm saves this page and returns to the menu; the ✕ option leaves it unchanged."
+        },
+        "submit": "Confirm"
+      },
+      "price_buy_fees": {
+        "title": "Grid fees — buy price",
+        "description": "The grid (distribution) fee of each of your {count} tariff(s), per kWh. It is added to the energy price.",
+        "data": {
+          "fee_1": "T1 grid fee (per kWh)",
+          "fee_2": "T2 grid fee (per kWh)",
+          "fee_3": "T3 grid fee (per kWh)",
+          "fee_4": "T4 grid fee (per kWh)",
+          "go_to": "On Confirm"
+        },
+        "data_description": {
+          "go_to": "Confirm saves this page and returns to the menu; the ✕ option leaves it unchanged."
+        },
+        "submit": "Confirm"
+      },
+      "price_buy_schedule": {
+        "title": "{schedule} — buy price",
+        "description": "Which grid-fee tariff applies when. Each row switches to its tariff at its time (local, 24 h); the tariff runs until the next row's time, wrapping past midnight — a single row at 00:00 means one tariff all day. Leave unused rows blank.\n\nTariffs: {fees}",
+        "data": {
+          "from_1": "Row 1 — from (HH:MM)",
+          "tariff_1": "Row 1 — tariff",
+          "from_2": "Row 2 — from (HH:MM)",
+          "tariff_2": "Row 2 — tariff",
+          "from_3": "Row 3 — from (HH:MM)",
+          "tariff_3": "Row 3 — tariff",
+          "from_4": "Row 4 — from (HH:MM)",
+          "tariff_4": "Row 4 — tariff",
+          "from_5": "Row 5 — from (HH:MM)",
+          "tariff_5": "Row 5 — tariff",
+          "from_6": "Row 6 — from (HH:MM)",
+          "tariff_6": "Row 6 — tariff",
+          "go_to": "On Confirm"
+        },
+        "data_description": {
+          "go_to": "Confirm saves this page and returns to the menu; the ✕ option leaves it unchanged."
+        },
+        "submit": "Confirm"
+      },
+      "price_sell": {
+        "title": "Sell price",
+        "description": "{status}\n\nWhat you are paid per kWh: **(energy − deduction − grid fee) × (1 − tax)**. Start with **Price formula**. With 2 or 4 grid-fee tariffs, each schedule below says which tariff applies when.",
+        "menu_options": {
+          "price_sell_formula": "Price formula →",
+          "price_sell_fees": "Grid fees →",
+          "price_sell_all_workday": "Workday schedule →",
+          "price_sell_all_weekend": "Weekend schedule →",
+          "price_sell_all_holiday": "Holiday schedule →",
+          "price_sell_summer_workday": "Summer workday schedule →",
+          "price_sell_summer_weekend": "Summer weekend schedule →",
+          "price_sell_summer_holiday": "Summer holiday schedule →",
+          "price_sell_winter_workday": "Winter workday schedule →",
+          "price_sell_winter_weekend": "Winter weekend schedule →",
+          "price_sell_winter_holiday": "Winter holiday schedule →",
+          "prices": "← Back to electricity prices"
         }
       },
-      "tariff_weekend": {
-        "title": "Weekend Tariff Bands (Sat/Sun)",
-        "description": "Optional time-of-use distribution fees for weekends. Same rules as the weekday bands. Leave all blank to reuse the flat fees.",
+      "price_sell_formula": {
+        "title": "Price formula — sell price",
+        "description": "Sell price = **(energy − deduction − grid fee) × (1 − tax)**. The energy is the market price from the price source — or the separate live export price where the source has one — or a fixed feed-in price. The grid fee can have 1, 2 or 4 tariffs; with more than one, set their fees and schedules in the Sell price menu.",
         "data": {
-          "band0_start": "Band 1 start (HH:MM)",
-          "band0_buy_fee": "Band 1 distribution fee (EUR/kWh, buy)",
-          "band0_sell_fee": "Band 1 distribution fee (EUR/kWh, sell)",
-          "band1_start": "Band 2 start (HH:MM)",
-          "band1_buy_fee": "Band 2 distribution fee (EUR/kWh, buy)",
-          "band1_sell_fee": "Band 2 distribution fee (EUR/kWh, sell)",
-          "band2_start": "Band 3 start (HH:MM)",
-          "band2_buy_fee": "Band 3 distribution fee (EUR/kWh, buy)",
-          "band2_sell_fee": "Band 3 distribution fee (EUR/kWh, sell)",
-          "band3_start": "Band 4 start (HH:MM)",
-          "band3_buy_fee": "Band 4 distribution fee (EUR/kWh, buy)",
-          "band3_sell_fee": "Band 4 distribution fee (EUR/kWh, sell)"
+          "energy": "Energy price",
+          "fixed_price": "Fixed sell price, e.g. a feed-in tariff (per kWh)",
+          "markup": "Retailer deduction (per kWh)",
+          "vat": "Tax on sell revenue (%)",
+          "tariffs": "Grid-fee tariffs",
+          "weekends": "Weekends have their own schedule",
+          "holidays": "Public holidays have their own schedule",
+          "seasons": "Summer and winter have their own schedules",
+          "summer_start": "Summer starts (MM-DD)",
+          "winter_start": "Winter starts (MM-DD)",
+          "go_to": "On Confirm"
+        },
+        "data_description": {
+          "energy": "The market price follows the price source slot by slot; a fixed price is entered below.",
+          "fixed_price": "Used only with a fixed price.",
+          "markup": "Deducted from the energy price.",
+          "vat": "Deducted from what is left after the deduction and grid fee. 0 when you are not taxed on it.",
+          "tariffs": "1 = the same grid fee at all times. 2 or 4 = the fee depends on the time of day.",
+          "weekends": "Only with 2 or 4 tariffs. Off: Saturdays and Sundays follow the workday schedule.",
+          "holidays": "Only with 2 or 4 tariffs. The national public holidays of the country set in Home Assistant; they take precedence over weekends.",
+          "seasons": "Only with 2 or 4 tariffs. Every day type then gets a summer and a winter schedule.",
+          "summer_start": "Only with seasons. The first day of the summer schedule.",
+          "winter_start": "Only with seasons. The first day of the winter schedule.",
+          "go_to": "Confirm saves this page and returns to the menu; the ✕ option leaves it unchanged."
+        },
+        "submit": "Confirm"
+      },
+      "price_sell_fees": {
+        "title": "Grid fees — sell price",
+        "description": "The grid fee deducted for each of your {count} tariff(s), per kWh. Use 0 when selling carries no grid fee.",
+        "data": {
+          "fee_1": "T1 grid fee (per kWh)",
+          "fee_2": "T2 grid fee (per kWh)",
+          "fee_3": "T3 grid fee (per kWh)",
+          "fee_4": "T4 grid fee (per kWh)",
+          "go_to": "On Confirm"
+        },
+        "data_description": {
+          "go_to": "Confirm saves this page and returns to the menu; the ✕ option leaves it unchanged."
+        },
+        "submit": "Confirm"
+      },
+      "price_sell_schedule": {
+        "title": "{schedule} — sell price",
+        "description": "Which grid-fee tariff applies when. Each row switches to its tariff at its time (local, 24 h); the tariff runs until the next row's time, wrapping past midnight — a single row at 00:00 means one tariff all day. Leave unused rows blank.\n\nTariffs: {fees}",
+        "data": {
+          "from_1": "Row 1 — from (HH:MM)",
+          "tariff_1": "Row 1 — tariff",
+          "from_2": "Row 2 — from (HH:MM)",
+          "tariff_2": "Row 2 — tariff",
+          "from_3": "Row 3 — from (HH:MM)",
+          "tariff_3": "Row 3 — tariff",
+          "from_4": "Row 4 — from (HH:MM)",
+          "tariff_4": "Row 4 — tariff",
+          "from_5": "Row 5 — from (HH:MM)",
+          "tariff_5": "Row 5 — tariff",
+          "from_6": "Row 6 — from (HH:MM)",
+          "tariff_6": "Row 6 — tariff",
+          "go_to": "On Confirm"
+        },
+        "data_description": {
+          "go_to": "Confirm saves this page and returns to the menu; the ✕ option leaves it unchanged."
+        },
+        "submit": "Confirm"
+      },
+      "price_levels": {
+        "title": "Price level",
+        "description": "sunSale publishes whether the current price is cheap, normal or expensive — as the \"Price level\" sensor and the \"Cheap price\" / \"Expensive price\" binary sensors — so your automations and other integrations can react, e.g. heat extra hot water while it is cheap, or put heating and air conditioning in energy-saving mode while it is expensive. sunSale itself does not control anything with it.\n\nEach slot's buy price (with fees and tax) is ranked within its day.",
+        "data": {
+          "price_level_cheap_share": "Cheapest part of the day counted as cheap (%)",
+          "price_level_expensive_share": "Dearest part of the day counted as expensive (%)",
+          "price_level_cheap_below": "Always cheap at or below (per kWh, optional)",
+          "price_level_expensive_above": "Always expensive at or above (per kWh, optional)",
+          "go_to": "On Confirm"
+        },
+        "data_description": {
+          "price_level_cheap_share": "25 % means the cheapest 6 hours of each day are \"cheap\".",
+          "price_level_expensive_share": "25 % means the dearest 6 hours of each day are \"expensive\". The rest is \"normal\".",
+          "price_level_cheap_below": "Overrides the ranking — any buy price at or below this is cheap, even on an expensive day. Leave blank to rank only.",
+          "price_level_expensive_above": "Overrides the ranking — any buy price at or above this is expensive, even on a cheap day. Leave blank to rank only.",
+          "go_to": "Confirm saves this page and returns to the menu; the ✕ option leaves it unchanged."
+        },
+        "submit": "Confirm"
+      },
+      "price_forecast": {
+        "title": "Price forecast weather (optional)",
+        "description": "{detected}\n\nThe week-ahead price forecast predicts each unsettled day from this install's own price history, corrected by weather only as far as that correction has measurably helped. This page says which weather entity it reads.",
+        "data": {
+          "weather_entity": "Weather entity",
+          "go_to": "On Confirm"
+        },
+        "data_description": {
+          "weather_entity": "Its **daily** forecast is used (wind, temperature and, where published, cloud cover), so the horizon is whatever your weather integration publishes — six days for met.no. Days beyond it fall back to history alone.",
+          "go_to": "Confirm saves this page and returns to the menu; the ✕ option leaves it unchanged."
+        },
+        "submit": "Confirm"
+      },
+      "inverter": {
+        "title": "Inverter and battery",
+        "description": "{status}\n\nStart with **Inverter and power ratings**. A single solis_modbus (or other supported vendor) inverter is detected automatically, so **Entity mapping** only appears when it is needed.",
+        "menu_options": {
+          "inverter_platform": "Inverter and power ratings →",
+          "battery": "Battery →",
+          "inverter_mapping": "Entity mapping →",
+          "bms": "Dedicated battery BMS →",
+          "sources": "Inverter power sensors →",
+          "sources_energy": "Energy counters →",
+          "inverter_remove": "✕ Remove inverter and battery from this installation",
+          "hub": "← Back to setup"
+        }
+      },
+      "inverter_platform": {
+        "title": "Inverter and power ratings",
+        "description": "Select your inverter and enter its power ratings. Solis is fully supported. Huawei, SolaX, Sungrow, GoodWe and Deye are wired but untested — verify control on first connect. Fronius, SMA and Kostal are not selectable yet. \"No inverter — metering only\" keeps just the optional energy counters.",
+        "data": {
+          "inverter_platform": "Inverter platform",
+          "inverter_max_power_kw": "Inverter rated AC power (kW)",
+          "inverter_export_limit_kw": "Max export / backflow power (kW)",
+          "go_to": "On Confirm"
+        },
+        "submit": "Confirm",
+        "data_description": {
+          "go_to": "Confirm saves this page and returns to the menu; the ✕ option leaves it unchanged."
         }
       },
       "battery": {
-        "title": "Battery Configuration",
+        "title": "Battery",
         "data": {
           "nominal_capacity_kwh": "Nominal capacity (kWh)",
           "purchase_price_eur": "Battery purchase price (EUR)",
@@ -63,46 +331,22 @@
           "min_soc": "Minimum SoC (%)",
           "max_soc": "Maximum SoC (%)",
           "round_trip_efficiency": "Round-trip efficiency (%)",
-          "nominal_voltage_v": "Nominal DC bus voltage (V)"
-        }
-      },
-      "inverter": {
-        "title": "Inverter Setup",
-        "description": "Select your inverter platform and enter its power ratings. Solis is fully supported. Huawei, SolaX, Sungrow, GoodWe and Deye are wired but untested \u2014 verify control on first connect. Fronius, SMA and Kostal are not selectable yet.",
-        "data": {
-          "inverter_platform": "Inverter platform",
-          "inverter_max_power_kw": "Inverter rated AC power (kW)",
-          "inverter_export_limit_kw": "Max export / backflow power (kW)"
-        }
-      },
-      "inverter_generic": {
-        "title": "Inverter Entity Mapping",
-        "description": "If the vendor integration is installed, its inverter is auto-detected (pick which one when several exist). Otherwise map each control + telemetry entity manually. These platforms are untested against hardware: if control doesn't take effect, check Home Assistant logs for the resolver's 'missing roles' warning and confirm the mapped entities.",
-        "data": {
-          "solax_modbus_config_entry_id": "Inverter",
-          "huawei_solar_config_entry_id": "Inverter",
-          "goodwe_config_entry_id": "Inverter",
-          "deye_config_entry_id": "Inverter"
-        }
-      },
-      "inverter_entities": {
-        "title": "Inverter Entity Mapping",
-        "description": "Map the four entities your inverter integration exposes.",
-        "data": {
-          "inverter_entity_battery_soc": "Battery SoC entity",
-          "inverter_entity_battery_power": "Battery power entity (kW)",
-          "inverter_entity_grid_power": "Grid power entity (kW)",
-          "inverter_entity_charge_control": "Charge control entity"
+          "nominal_voltage_v": "Nominal DC bus voltage (V)",
+          "go_to": "On Confirm"
+        },
+        "submit": "Confirm",
+        "data_description": {
+          "go_to": "Confirm saves this page and returns to the menu; the ✕ option leaves it unchanged."
         }
       },
       "inverter_solis": {
-        "title": "Solis Inverter Setup",
-        "description": "If solis_modbus is installed with multiple inverters, select which one sunSale should control. If only one inverter is detected this step is skipped automatically. If solis_modbus is not installed, map the entities manually.",
+        "title": "Solis entity mapping",
+        "description": "Several solis_modbus inverters were found — pick the one sunSale should control. If solis_modbus is not installed, map the entities manually.",
         "data": {
           "solis_config_entry_id": "Solis inverter",
           "inverter_entity_battery_soc": "Battery SoC entity",
           "inverter_entity_battery_power": "Battery power entity (kW)",
-          "inverter_entity_grid_power": "Grid net power entity (kW, +import / \u2212export)",
+          "inverter_entity_grid_power": "Grid net power entity (kW, +import / −export)",
           "inverter_solis_storage_control_readback": "Storage control readback sensor (register 43110)",
           "inverter_solis_battery_max_charge_current": "Battery max charge current (number, A)",
           "inverter_solis_battery_max_discharge_current": "Battery max discharge current (number, A)",
@@ -114,124 +358,536 @@
           "inverter_solis_allow_grid_charge_switch": "Allow-grid-charge switch",
           "inverter_solis_feed_in_priority_switch": "Feed-In priority mode switch",
           "inverter_solis_allow_export_under_self_use_switch": "Allow export under Self-Use switch",
-          "inverter_solis_grid_feed_in_power_limit_switch": "Grid feed-in power limit switch"
+          "inverter_solis_grid_feed_in_power_limit_switch": "Grid feed-in power limit switch",
+          "go_to": "On Confirm"
+        },
+        "submit": "Confirm",
+        "data_description": {
+          "go_to": "Confirm saves this page and returns to the menu; the ✕ option leaves it unchanged."
         }
       },
-      "forecast": {
-        "title": "Solar Forecast",
-        "description": "Select your solar forecast device(s). Each device's forecast sensors are detected automatically; pick more than one if you have several arrays (e.g. one per roof).",
+      "inverter_generic": {
+        "title": "Inverter Entity Mapping",
+        "description": "If the vendor integration is installed, its inverter is auto-detected (pick which one when several exist). Otherwise map each control + telemetry entity manually. These platforms are untested against hardware: if control doesn't take effect, check Home Assistant logs for the resolver's 'missing roles' warning and confirm the mapped entities.",
         "data": {
-          "solar_forecast_device_ids": "Forecast devices"
+          "solax_modbus_config_entry_id": "Inverter",
+          "huawei_solar_config_entry_id": "Inverter",
+          "goodwe_config_entry_id": "Inverter",
+          "deye_config_entry_id": "Inverter",
+          "go_to": "On Confirm"
+        },
+        "submit": "Confirm",
+        "data_description": {
+          "go_to": "Confirm saves this page and returns to the menu; the ✕ option leaves it unchanged."
         }
       },
-      "forecast_manual": {
-        "title": "Solar Forecast (manual)",
-        "description": "No forecast integration was detected. Map up to two forecast sensor entities manually (Open Meteo, Forecast.Solar, or Solcast).",
+      "inverter_entities": {
+        "title": "Inverter Entity Mapping",
+        "description": "Map the four entities your inverter integration exposes.",
         "data": {
-          "solar_forecast_entity": "Solar forecast entity (optional)",
-          "solar_forecast_entity_2": "Solar forecast entity 2 (optional, second array)"
+          "inverter_entity_battery_soc": "Battery SoC entity",
+          "inverter_entity_battery_power": "Battery power entity (kW)",
+          "inverter_entity_grid_power": "Grid power entity (kW)",
+          "inverter_entity_charge_control": "Charge control entity",
+          "go_to": "On Confirm"
+        },
+        "submit": "Confirm",
+        "data_description": {
+          "go_to": "Confirm saves this page and returns to the menu; the ✕ option leaves it unchanged."
         }
+      },
+      "bms": {
+        "title": "Dedicated battery BMS (optional)",
+        "description": "A pack-level BMS usually reports state of charge more accurately and more often than the inverter does. Pick the battery device and sunSale finds its sensors on the next page; its readings are then preferred, falling back to the inverter for anything the BMS does not publish.\n\nLeave this empty to read the battery from the inverter alone.",
+        "data": {
+          "bms_device": "Battery device",
+          "go_to": "On Confirm"
+        },
+        "data_description": {
+          "bms_device": "Only devices publishing a state of charge are listed. Confirming with this empty removes a BMS set earlier.",
+          "go_to": "Confirm opens the device's sensors for you to check; the ✕ option leaves this page unchanged."
+        },
+        "submit": "Confirm"
+      },
+      "bms_details": {
+        "title": "Battery BMS sensors",
+        "description": "These are the sensors found on **{device}**. Check them and correct any that look wrong.",
+        "data": {
+          "bms_battery_soc": "State of charge",
+          "bms_battery_power": "Pack power",
+          "go_to": "On Confirm"
+        },
+        "data_description": {
+          "bms_battery_soc": "Required for the BMS to be used at all: sunSale will not plan against a state of charge it cannot read, so without this one the inverter stays the battery source.",
+          "bms_battery_power": "Signed, positive while charging. A BMS that reports discharge as positive needs a template sensor that flips the sign. Left unset, pack power comes from the inverter.",
+          "go_to": "Confirm saves this page and returns to the menu; the ✕ option leaves it unchanged."
+        },
+        "submit": "Confirm"
       },
       "sources": {
-        "title": "Data Sources",
-        "description": "Select the electricity price source and entities. Only Nord Pool is validated against a live install; ENTSO-e / Octopus / Amber / TOU are untested \u2014 verify the sensor's attributes after setup. Household baseload is derived from inverter telemetry \u2014 no dedicated load sensor is required.",
+        "title": "Inverter power sensors (optional)",
+        "description": "{detected}\n\nEvery sensor here is optional and each one only sharpens a chart or a correction — sunSale falls back to its own estimate for anything left unset.",
         "data": {
-          "price_source": "Electricity price source / market",
-          "nordpool_entity": "Electricity price sensor (import; leave blank for TOU schedule)",
-          "price_export_entity": "Separate export-price sensor (optional; Octopus Outgoing / Amber feed-in)",
-          "nordpool_resolution": "Nordpool price resolution",
-          "inverter_entity_solar_energy": "Solar energy counter entity (optional, kWh, for chart)",
-          "inverter_entity_pv_power": "PV power sensor (optional, kW)",
-          "inverter_entity_household_consumption_energy": "Household consumption today-total energy counter (optional, kWh, daily-resetting)",
-          "inverter_entity_grid_import_energy": "Grid import energy counter (optional, kWh)",
-          "inverter_entity_grid_export_energy": "Grid export energy counter (optional, kWh)",
-          "bms_battery_soc": "Dedicated BMS battery SoC (optional, e.g. JK-BMS)",
-          "bms_battery_power": "Dedicated BMS battery power (optional, signed kW)",
-          "panel_title": "Sidebar panel name (optional; blank = \"sunSale\")"
-        }
+          "inverter_entity_pv_power": "PV power sensor (kW)",
+          "inverter_entity_ac_port_power": "AC grid-port power (signed, positive = inverter → grid)",
+          "inverter_entity_backup_power": "Backup / EPS port power",
+          "inverter_entity_grid_import_power": "Grid import power (one direction only, ≥ 0)",
+          "inverter_entity_grid_export_power": "Grid export power (one direction only, ≥ 0)",
+          "go_to": "On Confirm"
+        },
+        "data_description": {
+          "inverter_entity_pv_power": "Feeds the observed generation series and the clear-sky calibration.",
+          "inverter_entity_ac_port_power": "Needed together with the backup port for the observed consumption and losses series: both are part of the power balance, so leaving either out switches those two series off.",
+          "inverter_entity_backup_power": "Reads ~0 unless the inverter is bridging backup-protected loads with the grid down. Also part of the consumption / losses balance.",
+          "inverter_entity_grid_import_power": "Only for inverters that publish each direction separately. Left blank, sunSale splits the signed net grid sensor itself, which is what most installs do.",
+          "inverter_entity_grid_export_power": "The export half of the pair above; set both or neither.",
+          "go_to": "Confirm saves this page and returns to the menu; the ✕ option leaves it unchanged."
+        },
+        "submit": "Confirm"
       },
-      "price_tou": {
-        "title": "Time-of-use Import Prices",
-        "description": "Define the absolute import price for each time-of-use band (local 24h time). Leave a row's start blank to drop it.",
+      "sources_energy": {
+        "title": "Energy counters (optional)",
+        "description": "{detected}\n\nRunning totals, all optional. Today's counters correct each day's series as it is measured; yesterday's are the best source for finalising the day just gone.",
         "data": {
-          "tou0_start": "Band 1 start (HH:MM, local 24h)",
-          "tou0_price": "Band 1 import price (per kWh)",
-          "tou1_start": "Band 2 start (HH:MM, local 24h)",
-          "tou1_price": "Band 2 import price (per kWh)",
-          "tou2_start": "Band 3 start (HH:MM, local 24h)",
-          "tou2_price": "Band 3 import price (per kWh)",
-          "tou3_start": "Band 4 start (HH:MM, local 24h)",
-          "tou3_price": "Band 4 import price (per kWh)"
-        }
+          "inverter_entity_solar_energy": "Solar energy counter today (kWh)",
+          "inverter_entity_household_consumption_energy": "Household consumption counter today (kWh)",
+          "inverter_entity_grid_import_energy": "Grid import energy counter today (kWh)",
+          "inverter_entity_grid_export_energy": "Grid export energy counter today (kWh)",
+          "inverter_entity_battery_charge_energy": "Battery charge energy counter today (kWh)",
+          "inverter_entity_battery_discharge_energy": "Battery discharge energy counter today (kWh)",
+          "inverter_entity_generation_yesterday": "Solar generation total for yesterday (kWh)",
+          "inverter_entity_grid_import_yesterday": "Grid import total for yesterday (kWh)",
+          "inverter_entity_grid_export_yesterday": "Grid export total for yesterday (kWh)",
+          "go_to": "On Confirm"
+        },
+        "data_description": {
+          "inverter_entity_solar_energy": "Daily-resetting counter used to correct the generation series at the end of each day.",
+          "inverter_entity_household_consumption_energy": "Daily-resetting counter. Blank is fine — baseload is worked out from the other readings.",
+          "inverter_entity_grid_import_energy": "Daily-resetting counter; the authoritative total the grid series is corrected against.",
+          "inverter_entity_grid_export_energy": "Daily-resetting counter; the export half of the pair above.",
+          "inverter_entity_battery_charge_energy": "Daily-resetting counter feeding the battery-capacity estimate. Without it the estimate stays at the nominal capacity you entered instead of learning the real one.",
+          "inverter_entity_battery_discharge_energy": "The discharge half of the pair above; the estimate needs both.",
+          "inverter_entity_generation_yesterday": "A counter your inverter has already finalised for yesterday. This is the best source for the end-of-day correction — unlike a reading taken just before midnight it cannot be thrown off by clock drift or by when the counter resets.",
+          "inverter_entity_grid_import_yesterday": "Yesterday's finalised import total, used the same way.",
+          "inverter_entity_grid_export_yesterday": "Yesterday's finalised export total, used the same way.",
+          "go_to": "Confirm saves this page and returns to the menu; the ✕ option leaves it unchanged."
+        },
+        "submit": "Confirm"
+      },
+      "sources_manual": {
+        "title": "Sources: other",
+        "description": "Pick these sources from every sensor on the system, not only the ones on your inverter.",
+        "data": {
+          "inverter_entity_pv_power": "PV power sensor (kW)",
+          "inverter_entity_ac_port_power": "AC grid-port power (signed, positive = inverter → grid)",
+          "inverter_entity_backup_power": "Backup / EPS port power",
+          "inverter_entity_grid_import_power": "Grid import power (one direction only, ≥ 0)",
+          "inverter_entity_grid_export_power": "Grid export power (one direction only, ≥ 0)",
+          "bms_battery_soc": "Dedicated BMS battery SoC (e.g. JK-BMS)",
+          "bms_battery_power": "Dedicated BMS battery power (signed kW)",
+          "inverter_entity_solar_energy": "Solar energy counter today (kWh)",
+          "inverter_entity_household_consumption_energy": "Household consumption counter today (kWh)",
+          "inverter_entity_grid_import_energy": "Grid import energy counter today (kWh)",
+          "inverter_entity_grid_export_energy": "Grid export energy counter today (kWh)",
+          "inverter_entity_battery_charge_energy": "Battery charge energy counter today (kWh)",
+          "inverter_entity_battery_discharge_energy": "Battery discharge energy counter today (kWh)",
+          "inverter_entity_generation_yesterday": "Solar generation total for yesterday (kWh)",
+          "inverter_entity_grid_import_yesterday": "Grid import total for yesterday (kWh)",
+          "inverter_entity_grid_export_yesterday": "Grid export total for yesterday (kWh)",
+          "go_to": "On Confirm"
+        },
+        "data_description": {
+          "inverter_entity_pv_power": "Feeds the observed generation series and the clear-sky calibration.",
+          "inverter_entity_ac_port_power": "Needed together with the backup port for the observed consumption and losses series: both are part of the power balance, so leaving either out switches those two series off.",
+          "inverter_entity_backup_power": "Reads ~0 unless the inverter is bridging backup-protected loads with the grid down. Also part of the consumption / losses balance.",
+          "inverter_entity_grid_import_power": "Only for inverters that publish each direction separately. Left blank, sunSale splits the signed net grid sensor itself, which is what most installs do.",
+          "inverter_entity_grid_export_power": "The export half of the pair above; set both or neither.",
+          "bms_battery_soc": "A dedicated BMS usually reports SoC more accurately and more often than the inverter. When set it is preferred, falling back to the inverter per reading.",
+          "bms_battery_power": "Positive while charging. Falls back to the inverter when blank.",
+          "inverter_entity_solar_energy": "Daily-resetting counter used to correct the generation series at the end of each day.",
+          "inverter_entity_household_consumption_energy": "Daily-resetting counter. Blank is fine — baseload is worked out from the other readings.",
+          "inverter_entity_grid_import_energy": "Daily-resetting counter; the authoritative total the grid series is corrected against.",
+          "inverter_entity_grid_export_energy": "Daily-resetting counter; the export half of the pair above.",
+          "inverter_entity_battery_charge_energy": "Daily-resetting counter feeding the battery-capacity estimate. Without it the estimate stays at the nominal capacity you entered instead of learning the real one.",
+          "inverter_entity_battery_discharge_energy": "The discharge half of the pair above; the estimate needs both.",
+          "inverter_entity_generation_yesterday": "A counter your inverter has already finalised for yesterday. This is the best source for the end-of-day correction — unlike a reading taken just before midnight it cannot be thrown off by clock drift or by when the counter resets.",
+          "inverter_entity_grid_import_yesterday": "Yesterday's finalised import total, used the same way.",
+          "inverter_entity_grid_export_yesterday": "Yesterday's finalised export total, used the same way.",
+          "go_to": "Confirm saves this page and returns to the menu; the ✕ option leaves it unchanged."
+        },
+        "submit": "Confirm"
+      },
+      "forecast": {
+        "title": "Solar forecast",
+        "description": "{detected}\n\nPick every solar forecast that covers this property — one per array (roof side, carport, …), as many as you have; they are added together.",
+        "data": {
+          "solar_forecast_device_ids": "Forecast integrations",
+          "detected_sensors": "Other forecast sensors found",
+          "solar_forecast_entities": "Forecast sensors picked by hand",
+          "go_to": "On Confirm"
+        },
+        "data_description": {
+          "solar_forecast_device_ids": "Each one's \"energy production today\" sensor is found automatically. What each resolved to is listed above, so a device that exposes nothing recognisable is visible rather than silent.",
+          "detected_sensors": "Forecast sensors on this system that none of the integrations above already covers — an integration sunSale does not recognise, or a sensor built by hand. Recognised by the per-slot forecast data they publish, so anything listed here is readable.",
+          "solar_forecast_entities": "For an array whose sensor is in neither list. Use its \"today\" sensor: the other days are found by substituting the word, so a \"tomorrow\" or \"d3\" sensor will not work. The three fields are added together and de-duplicated, so an array can never count twice.",
+          "go_to": "Confirm saves this page and returns to the menu; the ✕ option leaves it unchanged."
+        },
+        "submit": "Confirm"
       }
     },
     "error": {
-      "negative_fee": "Distribution fee cannot be negative.",
-      "invalid_band_time": "Band start must be a 24h time like 06:30.",
-      "invalid_tax_rate": "Tax rate must be between 0 and 100.",
-      "invalid_capacity": "Capacity must be greater than 0.",
-      "invalid_price": "Purchase price must be greater than 0.",
-      "invalid_efficiency": "Efficiency must be between 0 and 100.",
-      "platform_not_implemented": "That inverter platform isn't supported yet. Selectable: Solis, Huawei, SolaX, Sungrow, GoodWe, Deye. (Fronius, SMA, Kostal and SolarEdge are not wired.)",
-      "invalid_inverter_power": "Inverter rated AC power must be greater than 0.",
-      "invalid_export_limit": "Export limit cannot be negative."
+      "price_entity_required": "{source} is a live price source, so it needs the price sensor from that integration. Pick it here, or make both the buy and the sell price fixed if you have no live price feed.",
+      "export_feed_mismatch": "The export-price feed must come from the same price integration as the price sensor — sunSale reads it only there. Pick the matching feed, or None.",
+      "invalid_band_time": "Start time must be 24-hour HH:MM between 00:00 and 23:59, e.g. 06:30.",
+      "duplicate_band_start": "Another band already starts at this time — every band needs its own start time.",
+      "invalid_currency": "Currency must be a 3-letter ISO code such as EUR, GBP, SEK or AUD.",
+      "invalid_capacity": "Nominal capacity must be greater than 0 kWh.",
+      "invalid_price": "Battery purchase price must be greater than 0 — it sets the wear cost of every cycle.",
+      "invalid_cycle_life": "Rated cycle life must be greater than 0 (typical LFP: 6000).",
+      "invalid_charge_power": "Max charge power must be greater than 0 kW.",
+      "invalid_discharge_power": "Max discharge power must be greater than 0 kW.",
+      "invalid_voltage": "Nominal DC bus voltage must be greater than 0 V (e.g. 51.2 for a low-voltage LFP pack).",
+      "invalid_min_soc": "Minimum SoC is a percentage from 0 up to, but not including, 100.",
+      "invalid_max_soc": "Maximum SoC is a percentage above 0, up to 100.",
+      "soc_range_inverted": "Maximum SoC must be higher than Minimum SoC.",
+      "invalid_efficiency": "Round-trip efficiency is a percentage above 0, up to 100 (typical: 85–95).",
+      "platform_not_implemented": "{platform} isn't supported yet. Selectable: Solis, Huawei, SolaX, Sungrow, GoodWe, Deye, and \"No inverter — metering only\".",
+      "invalid_inverter_power": "Inverter rated AC power must be greater than 0 kW.",
+      "invalid_export_limit": "Max export power cannot be negative — enter 0 for a zero-export site.",
+      "invalid_level_share": "Enter a percentage from 0 to 100.",
+      "level_shares_overlap": "Cheap and expensive together cannot be more than 100 % of the day — a slot can't be both.",
+      "level_limits_inverted": "\"Always expensive at or above\" must be higher than \"Always cheap at or below\".",
+      "required": "Fill in this field.",
+      "invalid_vat": "Must be between 0 and 100 %.",
+      "invalid_season_date": "Enter a calendar day as MM-DD, e.g. 04-01.",
+      "seasons_same_start": "Summer and winter cannot start on the same day.",
+      "schedule_empty": "Fill in at least one row — e.g. 00:00 with T1 for one tariff all day.",
+      "bms_no_soc": "That device publishes no state of charge, so sunSale could not read the battery from it. Pick the device that reports the pack's state of charge, or leave the field empty to read the battery from the inverter."
     }
   },
   "options": {
     "step": {
       "init": {
-        "title": "Tariff Configuration",
-        "description": "Configure the electricity tariff formula for your provider. The distribution fees here are the fallback used outside any time-of-use band you define next.",
+        "title": "sunSale settings",
+        "description": "{status}\n\n✓ set · still needed ○ optional or not used\n\nOpen a section (→) to add it to this installation or change it. Every page ends with a dropdown: **✓ save and go back** (the default) or **✕ discard and go back**. **✓ Save changes** stores everything once every section you added is complete.",
+        "menu_options": {
+          "prices": "Electricity prices →",
+          "inverter": "Inverter and battery →",
+          "forecast": "Solar forecast →",
+          "installation_name": "Installation name →",
+          "finish": "✓ Save changes"
+        },
+        "menu_option_descriptions": {
+          "prices": "Market price feed and tariff. sunSale values energy in money and publishes a cheap / normal / expensive price level for automations.",
+          "inverter": "Battery control: platform, battery, entity mapping and energy counters.",
+          "forecast": "Solar forecast for every array — sharpens the charge / discharge plan.",
+          "installation_name": "Names this installation in the Home Assistant sidebar."
+        }
+      },
+      "installation_name": {
+        "title": "Installation name",
+        "description": "Names this installation in the Home Assistant sidebar.",
         "data": {
+          "panel_title": "Installation name (optional)",
+          "go_to": "On Confirm"
+        },
+        "data_description": {
+          "panel_title": "Leave blank for \"sunSale\".",
+          "go_to": "Confirm saves this page and returns to the menu; the ✕ option leaves it unchanged."
+        },
+        "submit": "Confirm"
+      },
+      "prices": {
+        "title": "Electricity prices",
+        "description": "{status}\n\nSet the **Buy price** and the **Sell price** — each is an energy price (market or fixed) plus markup and grid fee, with VAT or tax on top. **Price source and sensor** is needed while either price follows the market. Price level is optional. **← Back** keeps everything you confirmed.",
+        "menu_options": {
+          "price_feed": "Price source and sensor →",
+          "price_buy": "Buy price →",
+          "price_sell": "Sell price →",
+          "price_levels": "Price level →",
+          "price_forecast": "Price forecast weather →",
+          "prices_remove": "✕ Remove electricity prices from this installation",
+          "init": "← Back to settings"
+        }
+      },
+      "price_feed": {
+        "title": "Price source and sensor",
+        "description": "Where the market price comes from, and the currency prices are shown in. {detected} A price sensor is only needed while the buy or sell price follows the market — with both prices fixed, choose **Other** and leave it blank.",
+        "data": {
+          "price_sensor": "Price sensor",
+          "price_export_sensor": "Export-price feed",
+          "price_source": "Price source / market",
+          "nordpool_entity": "Price sensor",
+          "price_export_entity": "Separate export-price sensor (optional)",
+          "nordpool_resolution": "Price resolution",
           "currency": "Display currency code (e.g. EUR, SEK, NOK, DKK, GBP)",
-          "distribution_fee": "Distribution fee (per kWh, buy)",
-          "tax_rate": "Tax/VAT rate on buy (%)",
-          "markup": "Retailer markup (per kWh, buy)",
-          "sell_distribution_fee": "Distribution fee (per kWh, sell)",
-          "sell_tax_rate": "Tax rate on sell revenue (%)",
-          "sell_markup": "Retailer deduction (per kWh, sell)",
-          "sell_mode": "Sell-price model",
-          "fixed_sell_price": "Fixed/feed-in sell price (per kWh)"
+          "go_to": "On Confirm"
+        },
+        "data_description": {
+          "price_sensor": "Sensors from Nord Pool, ENTSO-e, Octopus Agile or Amber whose attributes hold today's and tomorrow's prices. Nord Pool is verified on a live install; the others follow each integration's documented format but are untested. **Other** lets you pick the source and sensor yourself.",
+          "price_export_sensor": "Separate live export-price feeds found on this system (Octopus export rates, Amber feed-in). The one from the price sensor's integration is pre-selected; a market-based sell price then uses it instead of the import price. **None** keeps the sell price on the price sensor.",
+          "price_source": "Nord Pool is verified on a live install. ENTSO-e, Octopus and Amber follow each integration's documented format but are untested.",
+          "nordpool_entity": "The sensor from your price integration (Nord Pool, ENTSO-e, Octopus Agile or Amber) whose attributes hold today's and tomorrow's prices — for Octopus, the `…_current_day_rates` event entity. Leave blank when both prices are fixed.",
+          "price_export_entity": "Only for a separate live export price (Octopus Outgoing — its `…_export_current_day_rates` event entity — or Amber feed-in). A market-based sell price then uses it instead of the import price. Leave blank otherwise.",
+          "nordpool_resolution": "15-minute is recommended where the market publishes it. With both prices fixed it sets the slot length.",
+          "currency": "Only changes labels — prices stay per kWh in the price source's unit.",
+          "go_to": "Confirm saves this page and returns to the menu (with **Other**, it opens the page for the source and sensor first); the ✕ option leaves it unchanged."
+        },
+        "submit": "Confirm"
+      },
+      "price_feed_manual": {
+        "title": "Price source and sensor: other",
+        "description": "Pick the price integration and its sensor yourself.",
+        "data": {
+          "price_source": "Price source / market",
+          "nordpool_entity": "Price sensor",
+          "price_export_entity": "Separate export-price sensor (optional)",
+          "go_to": "On Confirm"
+        },
+        "data_description": {
+          "price_source": "Nord Pool is verified on a live install. ENTSO-e, Octopus and Amber follow each integration's documented format but are untested.",
+          "nordpool_entity": "The sensor from your price integration whose attributes hold today's and tomorrow's prices — for Octopus, the `…_current_day_rates` event entity. Leave blank when both prices are fixed.",
+          "price_export_entity": "Only for a separate live export price from the same integration (Octopus Outgoing — its `…_export_current_day_rates` event entity — or Amber feed-in). A market-based sell price then uses it instead of the import price. Leave blank otherwise.",
+          "go_to": "Confirm saves the price source page and returns to the menu; the ✕ option leaves it unchanged."
+        },
+        "submit": "Confirm"
+      },
+      "price_buy": {
+        "title": "Buy price",
+        "description": "{status}\n\nWhat you pay per kWh: **(energy + markup + grid fee) × (1 + VAT)**. Start with **Price formula**. With 2 or 4 grid-fee tariffs, each schedule below says which tariff applies when.",
+        "menu_options": {
+          "price_buy_formula": "Price formula →",
+          "price_buy_fees": "Grid fees →",
+          "price_buy_all_workday": "Workday schedule →",
+          "price_buy_all_weekend": "Weekend schedule →",
+          "price_buy_all_holiday": "Holiday schedule →",
+          "price_buy_summer_workday": "Summer workday schedule →",
+          "price_buy_summer_weekend": "Summer weekend schedule →",
+          "price_buy_summer_holiday": "Summer holiday schedule →",
+          "price_buy_winter_workday": "Winter workday schedule →",
+          "price_buy_winter_weekend": "Winter weekend schedule →",
+          "price_buy_winter_holiday": "Winter holiday schedule →",
+          "prices": "← Back to electricity prices"
         }
       },
-      "tariff_weekday": {
-        "title": "Weekday Tariff Bands (Mon\u2013Fri)",
-        "description": "Optional time-of-use distribution fees for weekdays. Each band's start time (24h HH:MM, local) runs until the next band's start, wrapping past midnight. Leave a band's start blank to skip it; leave all blank to use the flat fees from the previous step.",
+      "price_buy_formula": {
+        "title": "Price formula — buy price",
+        "description": "Buy price = **(energy + markup + grid fee) × (1 + VAT)**. The energy is the market price from the price source, or a fixed price. The grid fee can have 1, 2 or 4 tariffs; with more than one, set their fees and schedules in the Buy price menu.",
         "data": {
-          "band0_start": "Band 1 start (HH:MM)",
-          "band0_buy_fee": "Band 1 distribution fee (EUR/kWh, buy)",
-          "band0_sell_fee": "Band 1 distribution fee (EUR/kWh, sell)",
-          "band1_start": "Band 2 start (HH:MM)",
-          "band1_buy_fee": "Band 2 distribution fee (EUR/kWh, buy)",
-          "band1_sell_fee": "Band 2 distribution fee (EUR/kWh, sell)",
-          "band2_start": "Band 3 start (HH:MM)",
-          "band2_buy_fee": "Band 3 distribution fee (EUR/kWh, buy)",
-          "band2_sell_fee": "Band 3 distribution fee (EUR/kWh, sell)",
-          "band3_start": "Band 4 start (HH:MM)",
-          "band3_buy_fee": "Band 4 distribution fee (EUR/kWh, buy)",
-          "band3_sell_fee": "Band 4 distribution fee (EUR/kWh, sell)"
+          "energy": "Energy price",
+          "fixed_price": "Fixed energy price (per kWh)",
+          "markup": "Retailer markup (per kWh)",
+          "vat": "VAT (%)",
+          "tariffs": "Grid-fee tariffs",
+          "weekends": "Weekends have their own schedule",
+          "holidays": "Public holidays have their own schedule",
+          "seasons": "Summer and winter have their own schedules",
+          "summer_start": "Summer starts (MM-DD)",
+          "winter_start": "Winter starts (MM-DD)",
+          "go_to": "On Confirm"
+        },
+        "data_description": {
+          "energy": "The market price follows the price source slot by slot; a fixed price is entered below.",
+          "fixed_price": "Used only with a fixed price.",
+          "markup": "Added to the energy price.",
+          "vat": "Applied to the sum of energy, markup and grid fee.",
+          "tariffs": "1 = the same grid fee at all times. 2 or 4 = the fee depends on the time of day.",
+          "weekends": "Only with 2 or 4 tariffs. Off: Saturdays and Sundays follow the workday schedule.",
+          "holidays": "Only with 2 or 4 tariffs. The national public holidays of the country set in Home Assistant; they take precedence over weekends.",
+          "seasons": "Only with 2 or 4 tariffs. Every day type then gets a summer and a winter schedule.",
+          "summer_start": "Only with seasons. The first day of the summer schedule.",
+          "winter_start": "Only with seasons. The first day of the winter schedule.",
+          "go_to": "Confirm saves this page and returns to the menu; the ✕ option leaves it unchanged."
+        },
+        "submit": "Confirm"
+      },
+      "price_buy_fees": {
+        "title": "Grid fees — buy price",
+        "description": "The grid (distribution) fee of each of your {count} tariff(s), per kWh. It is added to the energy price.",
+        "data": {
+          "fee_1": "T1 grid fee (per kWh)",
+          "fee_2": "T2 grid fee (per kWh)",
+          "fee_3": "T3 grid fee (per kWh)",
+          "fee_4": "T4 grid fee (per kWh)",
+          "go_to": "On Confirm"
+        },
+        "data_description": {
+          "go_to": "Confirm saves this page and returns to the menu; the ✕ option leaves it unchanged."
+        },
+        "submit": "Confirm"
+      },
+      "price_buy_schedule": {
+        "title": "{schedule} — buy price",
+        "description": "Which grid-fee tariff applies when. Each row switches to its tariff at its time (local, 24 h); the tariff runs until the next row's time, wrapping past midnight — a single row at 00:00 means one tariff all day. Leave unused rows blank.\n\nTariffs: {fees}",
+        "data": {
+          "from_1": "Row 1 — from (HH:MM)",
+          "tariff_1": "Row 1 — tariff",
+          "from_2": "Row 2 — from (HH:MM)",
+          "tariff_2": "Row 2 — tariff",
+          "from_3": "Row 3 — from (HH:MM)",
+          "tariff_3": "Row 3 — tariff",
+          "from_4": "Row 4 — from (HH:MM)",
+          "tariff_4": "Row 4 — tariff",
+          "from_5": "Row 5 — from (HH:MM)",
+          "tariff_5": "Row 5 — tariff",
+          "from_6": "Row 6 — from (HH:MM)",
+          "tariff_6": "Row 6 — tariff",
+          "go_to": "On Confirm"
+        },
+        "data_description": {
+          "go_to": "Confirm saves this page and returns to the menu; the ✕ option leaves it unchanged."
+        },
+        "submit": "Confirm"
+      },
+      "price_sell": {
+        "title": "Sell price",
+        "description": "{status}\n\nWhat you are paid per kWh: **(energy − deduction − grid fee) × (1 − tax)**. Start with **Price formula**. With 2 or 4 grid-fee tariffs, each schedule below says which tariff applies when.",
+        "menu_options": {
+          "price_sell_formula": "Price formula →",
+          "price_sell_fees": "Grid fees →",
+          "price_sell_all_workday": "Workday schedule →",
+          "price_sell_all_weekend": "Weekend schedule →",
+          "price_sell_all_holiday": "Holiday schedule →",
+          "price_sell_summer_workday": "Summer workday schedule →",
+          "price_sell_summer_weekend": "Summer weekend schedule →",
+          "price_sell_summer_holiday": "Summer holiday schedule →",
+          "price_sell_winter_workday": "Winter workday schedule →",
+          "price_sell_winter_weekend": "Winter weekend schedule →",
+          "price_sell_winter_holiday": "Winter holiday schedule →",
+          "prices": "← Back to electricity prices"
         }
       },
-      "tariff_weekend": {
-        "title": "Weekend Tariff Bands (Sat/Sun)",
-        "description": "Optional time-of-use distribution fees for weekends. Same rules as the weekday bands. Leave all blank to reuse the flat fees.",
+      "price_sell_formula": {
+        "title": "Price formula — sell price",
+        "description": "Sell price = **(energy − deduction − grid fee) × (1 − tax)**. The energy is the market price from the price source — or the separate live export price where the source has one — or a fixed feed-in price. The grid fee can have 1, 2 or 4 tariffs; with more than one, set their fees and schedules in the Sell price menu.",
         "data": {
-          "band0_start": "Band 1 start (HH:MM)",
-          "band0_buy_fee": "Band 1 distribution fee (EUR/kWh, buy)",
-          "band0_sell_fee": "Band 1 distribution fee (EUR/kWh, sell)",
-          "band1_start": "Band 2 start (HH:MM)",
-          "band1_buy_fee": "Band 2 distribution fee (EUR/kWh, buy)",
-          "band1_sell_fee": "Band 2 distribution fee (EUR/kWh, sell)",
-          "band2_start": "Band 3 start (HH:MM)",
-          "band2_buy_fee": "Band 3 distribution fee (EUR/kWh, buy)",
-          "band2_sell_fee": "Band 3 distribution fee (EUR/kWh, sell)",
-          "band3_start": "Band 4 start (HH:MM)",
-          "band3_buy_fee": "Band 4 distribution fee (EUR/kWh, buy)",
-          "band3_sell_fee": "Band 4 distribution fee (EUR/kWh, sell)"
+          "energy": "Energy price",
+          "fixed_price": "Fixed sell price, e.g. a feed-in tariff (per kWh)",
+          "markup": "Retailer deduction (per kWh)",
+          "vat": "Tax on sell revenue (%)",
+          "tariffs": "Grid-fee tariffs",
+          "weekends": "Weekends have their own schedule",
+          "holidays": "Public holidays have their own schedule",
+          "seasons": "Summer and winter have their own schedules",
+          "summer_start": "Summer starts (MM-DD)",
+          "winter_start": "Winter starts (MM-DD)",
+          "go_to": "On Confirm"
+        },
+        "data_description": {
+          "energy": "The market price follows the price source slot by slot; a fixed price is entered below.",
+          "fixed_price": "Used only with a fixed price.",
+          "markup": "Deducted from the energy price.",
+          "vat": "Deducted from what is left after the deduction and grid fee. 0 when you are not taxed on it.",
+          "tariffs": "1 = the same grid fee at all times. 2 or 4 = the fee depends on the time of day.",
+          "weekends": "Only with 2 or 4 tariffs. Off: Saturdays and Sundays follow the workday schedule.",
+          "holidays": "Only with 2 or 4 tariffs. The national public holidays of the country set in Home Assistant; they take precedence over weekends.",
+          "seasons": "Only with 2 or 4 tariffs. Every day type then gets a summer and a winter schedule.",
+          "summer_start": "Only with seasons. The first day of the summer schedule.",
+          "winter_start": "Only with seasons. The first day of the winter schedule.",
+          "go_to": "Confirm saves this page and returns to the menu; the ✕ option leaves it unchanged."
+        },
+        "submit": "Confirm"
+      },
+      "price_sell_fees": {
+        "title": "Grid fees — sell price",
+        "description": "The grid fee deducted for each of your {count} tariff(s), per kWh. Use 0 when selling carries no grid fee.",
+        "data": {
+          "fee_1": "T1 grid fee (per kWh)",
+          "fee_2": "T2 grid fee (per kWh)",
+          "fee_3": "T3 grid fee (per kWh)",
+          "fee_4": "T4 grid fee (per kWh)",
+          "go_to": "On Confirm"
+        },
+        "data_description": {
+          "go_to": "Confirm saves this page and returns to the menu; the ✕ option leaves it unchanged."
+        },
+        "submit": "Confirm"
+      },
+      "price_sell_schedule": {
+        "title": "{schedule} — sell price",
+        "description": "Which grid-fee tariff applies when. Each row switches to its tariff at its time (local, 24 h); the tariff runs until the next row's time, wrapping past midnight — a single row at 00:00 means one tariff all day. Leave unused rows blank.\n\nTariffs: {fees}",
+        "data": {
+          "from_1": "Row 1 — from (HH:MM)",
+          "tariff_1": "Row 1 — tariff",
+          "from_2": "Row 2 — from (HH:MM)",
+          "tariff_2": "Row 2 — tariff",
+          "from_3": "Row 3 — from (HH:MM)",
+          "tariff_3": "Row 3 — tariff",
+          "from_4": "Row 4 — from (HH:MM)",
+          "tariff_4": "Row 4 — tariff",
+          "from_5": "Row 5 — from (HH:MM)",
+          "tariff_5": "Row 5 — tariff",
+          "from_6": "Row 6 — from (HH:MM)",
+          "tariff_6": "Row 6 — tariff",
+          "go_to": "On Confirm"
+        },
+        "data_description": {
+          "go_to": "Confirm saves this page and returns to the menu; the ✕ option leaves it unchanged."
+        },
+        "submit": "Confirm"
+      },
+      "price_levels": {
+        "title": "Price level",
+        "description": "sunSale publishes whether the current price is cheap, normal or expensive — as the \"Price level\" sensor and the \"Cheap price\" / \"Expensive price\" binary sensors — so your automations and other integrations can react, e.g. heat extra hot water while it is cheap, or put heating and air conditioning in energy-saving mode while it is expensive. sunSale itself does not control anything with it.\n\nEach slot's buy price (with fees and tax) is ranked within its day.",
+        "data": {
+          "price_level_cheap_share": "Cheapest part of the day counted as cheap (%)",
+          "price_level_expensive_share": "Dearest part of the day counted as expensive (%)",
+          "price_level_cheap_below": "Always cheap at or below (per kWh, optional)",
+          "price_level_expensive_above": "Always expensive at or above (per kWh, optional)",
+          "go_to": "On Confirm"
+        },
+        "data_description": {
+          "price_level_cheap_share": "25 % means the cheapest 6 hours of each day are \"cheap\".",
+          "price_level_expensive_share": "25 % means the dearest 6 hours of each day are \"expensive\". The rest is \"normal\".",
+          "price_level_cheap_below": "Overrides the ranking — any buy price at or below this is cheap, even on an expensive day. Leave blank to rank only.",
+          "price_level_expensive_above": "Overrides the ranking — any buy price at or above this is expensive, even on a cheap day. Leave blank to rank only.",
+          "go_to": "Confirm saves this page and returns to the menu; the ✕ option leaves it unchanged."
+        },
+        "submit": "Confirm"
+      },
+      "price_forecast": {
+        "title": "Price forecast weather (optional)",
+        "description": "{detected}\n\nThe week-ahead price forecast predicts each unsettled day from this install's own price history, corrected by weather only as far as that correction has measurably helped. This page says which weather entity it reads.",
+        "data": {
+          "weather_entity": "Weather entity",
+          "go_to": "On Confirm"
+        },
+        "data_description": {
+          "weather_entity": "Its **daily** forecast is used (wind, temperature and, where published, cloud cover), so the horizon is whatever your weather integration publishes — six days for met.no. Days beyond it fall back to history alone.",
+          "go_to": "Confirm saves this page and returns to the menu; the ✕ option leaves it unchanged."
+        },
+        "submit": "Confirm"
+      },
+      "inverter": {
+        "title": "Inverter and battery",
+        "description": "{status}\n\nStart with **Inverter and power ratings**. A single solis_modbus (or other supported vendor) inverter is detected automatically, so **Entity mapping** only appears when it is needed.",
+        "menu_options": {
+          "inverter_platform": "Inverter and power ratings →",
+          "battery": "Battery →",
+          "inverter_mapping": "Entity mapping →",
+          "bms": "Dedicated battery BMS →",
+          "sources": "Inverter power sensors →",
+          "sources_energy": "Energy counters →",
+          "inverter_remove": "✕ Remove inverter and battery from this installation",
+          "init": "← Back to settings"
+        }
+      },
+      "inverter_platform": {
+        "title": "Inverter and power ratings",
+        "description": "Select your inverter and enter its power ratings. Solis is fully supported. Huawei, SolaX, Sungrow, GoodWe and Deye are wired but untested — verify control on first connect. Fronius, SMA and Kostal are not selectable yet. \"No inverter — metering only\" keeps just the optional energy counters.",
+        "data": {
+          "inverter_platform": "Inverter platform",
+          "inverter_max_power_kw": "Inverter rated AC power (kW)",
+          "inverter_export_limit_kw": "Max export / backflow power (kW)",
+          "go_to": "On Confirm"
+        },
+        "submit": "Confirm",
+        "data_description": {
+          "go_to": "Confirm saves this page and returns to the menu; the ✕ option leaves it unchanged."
         }
       },
       "battery": {
-        "title": "Battery Configuration",
+        "title": "Battery",
         "data": {
           "nominal_capacity_kwh": "Nominal capacity (kWh)",
           "purchase_price_eur": "Battery purchase price (EUR)",
@@ -241,46 +897,22 @@
           "min_soc": "Minimum SoC (%)",
           "max_soc": "Maximum SoC (%)",
           "round_trip_efficiency": "Round-trip efficiency (%)",
-          "nominal_voltage_v": "Nominal DC bus voltage (V)"
-        }
-      },
-      "inverter": {
-        "title": "Inverter Setup",
-        "description": "Select your inverter platform and enter its power ratings. Solis is fully supported. Huawei, SolaX, Sungrow, GoodWe and Deye are wired but untested \u2014 verify control on first connect. Fronius, SMA and Kostal are not selectable yet.",
-        "data": {
-          "inverter_platform": "Inverter platform",
-          "inverter_max_power_kw": "Inverter rated AC power (kW)",
-          "inverter_export_limit_kw": "Max export / backflow power (kW)"
-        }
-      },
-      "inverter_generic": {
-        "title": "Inverter Entity Mapping",
-        "description": "If the vendor integration is installed, its inverter is auto-detected (pick which one when several exist). Otherwise map each control + telemetry entity manually. These platforms are untested against hardware: if control doesn't take effect, check Home Assistant logs for the resolver's 'missing roles' warning and confirm the mapped entities.",
-        "data": {
-          "solax_modbus_config_entry_id": "Inverter",
-          "huawei_solar_config_entry_id": "Inverter",
-          "goodwe_config_entry_id": "Inverter",
-          "deye_config_entry_id": "Inverter"
-        }
-      },
-      "inverter_entities": {
-        "title": "Inverter Entity Mapping",
-        "description": "Map the four entities your inverter integration exposes.",
-        "data": {
-          "inverter_entity_battery_soc": "Battery SoC entity",
-          "inverter_entity_battery_power": "Battery power entity (kW)",
-          "inverter_entity_grid_power": "Grid power entity (kW)",
-          "inverter_entity_charge_control": "Charge control entity"
+          "nominal_voltage_v": "Nominal DC bus voltage (V)",
+          "go_to": "On Confirm"
+        },
+        "submit": "Confirm",
+        "data_description": {
+          "go_to": "Confirm saves this page and returns to the menu; the ✕ option leaves it unchanged."
         }
       },
       "inverter_solis": {
-        "title": "Solis Inverter Setup",
-        "description": "If solis_modbus is installed with multiple inverters, select which one sunSale should control. If only one inverter is detected this step is skipped automatically. If solis_modbus is not installed, map the entities manually.",
+        "title": "Solis entity mapping",
+        "description": "Several solis_modbus inverters were found — pick the one sunSale should control. If solis_modbus is not installed, map the entities manually.",
         "data": {
           "solis_config_entry_id": "Solis inverter",
           "inverter_entity_battery_soc": "Battery SoC entity",
           "inverter_entity_battery_power": "Battery power entity (kW)",
-          "inverter_entity_grid_power": "Grid net power entity (kW, +import / \u2212export)",
+          "inverter_entity_grid_power": "Grid net power entity (kW, +import / −export)",
           "inverter_solis_storage_control_readback": "Storage control readback sensor (register 43110)",
           "inverter_solis_battery_max_charge_current": "Battery max charge current (number, A)",
           "inverter_solis_battery_max_discharge_current": "Battery max discharge current (number, A)",
@@ -292,63 +924,211 @@
           "inverter_solis_allow_grid_charge_switch": "Allow-grid-charge switch",
           "inverter_solis_feed_in_priority_switch": "Feed-In priority mode switch",
           "inverter_solis_allow_export_under_self_use_switch": "Allow export under Self-Use switch",
-          "inverter_solis_grid_feed_in_power_limit_switch": "Grid feed-in power limit switch"
+          "inverter_solis_grid_feed_in_power_limit_switch": "Grid feed-in power limit switch",
+          "go_to": "On Confirm"
+        },
+        "submit": "Confirm",
+        "data_description": {
+          "go_to": "Confirm saves this page and returns to the menu; the ✕ option leaves it unchanged."
         }
       },
-      "forecast": {
-        "title": "Solar Forecast",
-        "description": "Select your solar forecast device(s). Each device's forecast sensors are detected automatically; pick more than one if you have several arrays (e.g. one per roof).",
+      "inverter_generic": {
+        "title": "Inverter Entity Mapping",
+        "description": "If the vendor integration is installed, its inverter is auto-detected (pick which one when several exist). Otherwise map each control + telemetry entity manually. These platforms are untested against hardware: if control doesn't take effect, check Home Assistant logs for the resolver's 'missing roles' warning and confirm the mapped entities.",
         "data": {
-          "solar_forecast_device_ids": "Forecast devices"
+          "solax_modbus_config_entry_id": "Inverter",
+          "huawei_solar_config_entry_id": "Inverter",
+          "goodwe_config_entry_id": "Inverter",
+          "deye_config_entry_id": "Inverter",
+          "go_to": "On Confirm"
+        },
+        "submit": "Confirm",
+        "data_description": {
+          "go_to": "Confirm saves this page and returns to the menu; the ✕ option leaves it unchanged."
         }
       },
-      "forecast_manual": {
-        "title": "Solar Forecast (manual)",
-        "description": "No forecast integration was detected. Map up to two forecast sensor entities manually (Open Meteo, Forecast.Solar, or Solcast).",
+      "inverter_entities": {
+        "title": "Inverter Entity Mapping",
+        "description": "Map the four entities your inverter integration exposes.",
         "data": {
-          "solar_forecast_entity": "Solar forecast entity (optional)",
-          "solar_forecast_entity_2": "Solar forecast entity 2 (optional, second array)"
+          "inverter_entity_battery_soc": "Battery SoC entity",
+          "inverter_entity_battery_power": "Battery power entity (kW)",
+          "inverter_entity_grid_power": "Grid power entity (kW)",
+          "inverter_entity_charge_control": "Charge control entity",
+          "go_to": "On Confirm"
+        },
+        "submit": "Confirm",
+        "data_description": {
+          "go_to": "Confirm saves this page and returns to the menu; the ✕ option leaves it unchanged."
         }
+      },
+      "bms": {
+        "title": "Dedicated battery BMS (optional)",
+        "description": "A pack-level BMS usually reports state of charge more accurately and more often than the inverter does. Pick the battery device and sunSale finds its sensors on the next page; its readings are then preferred, falling back to the inverter for anything the BMS does not publish.\n\nLeave this empty to read the battery from the inverter alone.",
+        "data": {
+          "bms_device": "Battery device",
+          "go_to": "On Confirm"
+        },
+        "data_description": {
+          "bms_device": "Only devices publishing a state of charge are listed. Confirming with this empty removes a BMS set earlier.",
+          "go_to": "Confirm opens the device's sensors for you to check; the ✕ option leaves this page unchanged."
+        },
+        "submit": "Confirm"
+      },
+      "bms_details": {
+        "title": "Battery BMS sensors",
+        "description": "These are the sensors found on **{device}**. Check them and correct any that look wrong.",
+        "data": {
+          "bms_battery_soc": "State of charge",
+          "bms_battery_power": "Pack power",
+          "go_to": "On Confirm"
+        },
+        "data_description": {
+          "bms_battery_soc": "Required for the BMS to be used at all: sunSale will not plan against a state of charge it cannot read, so without this one the inverter stays the battery source.",
+          "bms_battery_power": "Signed, positive while charging. A BMS that reports discharge as positive needs a template sensor that flips the sign. Left unset, pack power comes from the inverter.",
+          "go_to": "Confirm saves this page and returns to the menu; the ✕ option leaves it unchanged."
+        },
+        "submit": "Confirm"
       },
       "sources": {
-        "title": "Data Sources",
-        "description": "Select the electricity price source and entities. Only Nord Pool is validated against a live install; ENTSO-e / Octopus / Amber / TOU are untested \u2014 verify the sensor's attributes after setup. Household baseload is derived from inverter telemetry \u2014 no dedicated load sensor is required.",
+        "title": "Inverter power sensors (optional)",
+        "description": "{detected}\n\nEvery sensor here is optional and each one only sharpens a chart or a correction — sunSale falls back to its own estimate for anything left unset.",
         "data": {
-          "price_source": "Electricity price source / market",
-          "nordpool_entity": "Electricity price sensor (import; leave blank for TOU schedule)",
-          "price_export_entity": "Separate export-price sensor (optional; Octopus Outgoing / Amber feed-in)",
-          "nordpool_resolution": "Nordpool price resolution",
-          "inverter_entity_solar_energy": "Solar energy counter entity (optional, kWh, for chart)",
-          "inverter_entity_pv_power": "PV power sensor (optional, kW)",
-          "inverter_entity_household_consumption_energy": "Household consumption today-total energy counter (optional, kWh, daily-resetting)",
-          "inverter_entity_grid_import_energy": "Grid import energy counter (optional, kWh)",
-          "inverter_entity_grid_export_energy": "Grid export energy counter (optional, kWh)",
-          "bms_battery_soc": "Dedicated BMS battery SoC (optional, e.g. JK-BMS)",
-          "bms_battery_power": "Dedicated BMS battery power (optional, signed kW)",
-          "panel_title": "Sidebar panel name (optional; blank = \"sunSale\")"
-        }
+          "inverter_entity_pv_power": "PV power sensor (kW)",
+          "inverter_entity_ac_port_power": "AC grid-port power (signed, positive = inverter → grid)",
+          "inverter_entity_backup_power": "Backup / EPS port power",
+          "inverter_entity_grid_import_power": "Grid import power (one direction only, ≥ 0)",
+          "inverter_entity_grid_export_power": "Grid export power (one direction only, ≥ 0)",
+          "go_to": "On Confirm"
+        },
+        "data_description": {
+          "inverter_entity_pv_power": "Feeds the observed generation series and the clear-sky calibration.",
+          "inverter_entity_ac_port_power": "Needed together with the backup port for the observed consumption and losses series: both are part of the power balance, so leaving either out switches those two series off.",
+          "inverter_entity_backup_power": "Reads ~0 unless the inverter is bridging backup-protected loads with the grid down. Also part of the consumption / losses balance.",
+          "inverter_entity_grid_import_power": "Only for inverters that publish each direction separately. Left blank, sunSale splits the signed net grid sensor itself, which is what most installs do.",
+          "inverter_entity_grid_export_power": "The export half of the pair above; set both or neither.",
+          "go_to": "Confirm saves this page and returns to the menu; the ✕ option leaves it unchanged."
+        },
+        "submit": "Confirm"
       },
-      "price_tou": {
-        "title": "Time-of-use Import Prices",
-        "description": "Define the absolute import price for each time-of-use band (local 24h time). Leave a row's start blank to drop it.",
+      "sources_energy": {
+        "title": "Energy counters (optional)",
+        "description": "{detected}\n\nRunning totals, all optional. Today's counters correct each day's series as it is measured; yesterday's are the best source for finalising the day just gone.",
         "data": {
-          "tou0_start": "Band 1 start (HH:MM, local 24h)",
-          "tou0_price": "Band 1 import price (per kWh)",
-          "tou1_start": "Band 2 start (HH:MM, local 24h)",
-          "tou1_price": "Band 2 import price (per kWh)",
-          "tou2_start": "Band 3 start (HH:MM, local 24h)",
-          "tou2_price": "Band 3 import price (per kWh)",
-          "tou3_start": "Band 4 start (HH:MM, local 24h)",
-          "tou3_price": "Band 4 import price (per kWh)"
-        }
+          "inverter_entity_solar_energy": "Solar energy counter today (kWh)",
+          "inverter_entity_household_consumption_energy": "Household consumption counter today (kWh)",
+          "inverter_entity_grid_import_energy": "Grid import energy counter today (kWh)",
+          "inverter_entity_grid_export_energy": "Grid export energy counter today (kWh)",
+          "inverter_entity_battery_charge_energy": "Battery charge energy counter today (kWh)",
+          "inverter_entity_battery_discharge_energy": "Battery discharge energy counter today (kWh)",
+          "inverter_entity_generation_yesterday": "Solar generation total for yesterday (kWh)",
+          "inverter_entity_grid_import_yesterday": "Grid import total for yesterday (kWh)",
+          "inverter_entity_grid_export_yesterday": "Grid export total for yesterday (kWh)",
+          "go_to": "On Confirm"
+        },
+        "data_description": {
+          "inverter_entity_solar_energy": "Daily-resetting counter used to correct the generation series at the end of each day.",
+          "inverter_entity_household_consumption_energy": "Daily-resetting counter. Blank is fine — baseload is worked out from the other readings.",
+          "inverter_entity_grid_import_energy": "Daily-resetting counter; the authoritative total the grid series is corrected against.",
+          "inverter_entity_grid_export_energy": "Daily-resetting counter; the export half of the pair above.",
+          "inverter_entity_battery_charge_energy": "Daily-resetting counter feeding the battery-capacity estimate. Without it the estimate stays at the nominal capacity you entered instead of learning the real one.",
+          "inverter_entity_battery_discharge_energy": "The discharge half of the pair above; the estimate needs both.",
+          "inverter_entity_generation_yesterday": "A counter your inverter has already finalised for yesterday. This is the best source for the end-of-day correction — unlike a reading taken just before midnight it cannot be thrown off by clock drift or by when the counter resets.",
+          "inverter_entity_grid_import_yesterday": "Yesterday's finalised import total, used the same way.",
+          "inverter_entity_grid_export_yesterday": "Yesterday's finalised export total, used the same way.",
+          "go_to": "Confirm saves this page and returns to the menu; the ✕ option leaves it unchanged."
+        },
+        "submit": "Confirm"
+      },
+      "sources_manual": {
+        "title": "Sources: other",
+        "description": "Pick these sources from every sensor on the system, not only the ones on your inverter.",
+        "data": {
+          "inverter_entity_pv_power": "PV power sensor (kW)",
+          "inverter_entity_ac_port_power": "AC grid-port power (signed, positive = inverter → grid)",
+          "inverter_entity_backup_power": "Backup / EPS port power",
+          "inverter_entity_grid_import_power": "Grid import power (one direction only, ≥ 0)",
+          "inverter_entity_grid_export_power": "Grid export power (one direction only, ≥ 0)",
+          "bms_battery_soc": "Dedicated BMS battery SoC (e.g. JK-BMS)",
+          "bms_battery_power": "Dedicated BMS battery power (signed kW)",
+          "inverter_entity_solar_energy": "Solar energy counter today (kWh)",
+          "inverter_entity_household_consumption_energy": "Household consumption counter today (kWh)",
+          "inverter_entity_grid_import_energy": "Grid import energy counter today (kWh)",
+          "inverter_entity_grid_export_energy": "Grid export energy counter today (kWh)",
+          "inverter_entity_battery_charge_energy": "Battery charge energy counter today (kWh)",
+          "inverter_entity_battery_discharge_energy": "Battery discharge energy counter today (kWh)",
+          "inverter_entity_generation_yesterday": "Solar generation total for yesterday (kWh)",
+          "inverter_entity_grid_import_yesterday": "Grid import total for yesterday (kWh)",
+          "inverter_entity_grid_export_yesterday": "Grid export total for yesterday (kWh)",
+          "go_to": "On Confirm"
+        },
+        "data_description": {
+          "inverter_entity_pv_power": "Feeds the observed generation series and the clear-sky calibration.",
+          "inverter_entity_ac_port_power": "Needed together with the backup port for the observed consumption and losses series: both are part of the power balance, so leaving either out switches those two series off.",
+          "inverter_entity_backup_power": "Reads ~0 unless the inverter is bridging backup-protected loads with the grid down. Also part of the consumption / losses balance.",
+          "inverter_entity_grid_import_power": "Only for inverters that publish each direction separately. Left blank, sunSale splits the signed net grid sensor itself, which is what most installs do.",
+          "inverter_entity_grid_export_power": "The export half of the pair above; set both or neither.",
+          "bms_battery_soc": "A dedicated BMS usually reports SoC more accurately and more often than the inverter. When set it is preferred, falling back to the inverter per reading.",
+          "bms_battery_power": "Positive while charging. Falls back to the inverter when blank.",
+          "inverter_entity_solar_energy": "Daily-resetting counter used to correct the generation series at the end of each day.",
+          "inverter_entity_household_consumption_energy": "Daily-resetting counter. Blank is fine — baseload is worked out from the other readings.",
+          "inverter_entity_grid_import_energy": "Daily-resetting counter; the authoritative total the grid series is corrected against.",
+          "inverter_entity_grid_export_energy": "Daily-resetting counter; the export half of the pair above.",
+          "inverter_entity_battery_charge_energy": "Daily-resetting counter feeding the battery-capacity estimate. Without it the estimate stays at the nominal capacity you entered instead of learning the real one.",
+          "inverter_entity_battery_discharge_energy": "The discharge half of the pair above; the estimate needs both.",
+          "inverter_entity_generation_yesterday": "A counter your inverter has already finalised for yesterday. This is the best source for the end-of-day correction — unlike a reading taken just before midnight it cannot be thrown off by clock drift or by when the counter resets.",
+          "inverter_entity_grid_import_yesterday": "Yesterday's finalised import total, used the same way.",
+          "inverter_entity_grid_export_yesterday": "Yesterday's finalised export total, used the same way.",
+          "go_to": "Confirm saves this page and returns to the menu; the ✕ option leaves it unchanged."
+        },
+        "submit": "Confirm"
+      },
+      "forecast": {
+        "title": "Solar forecast",
+        "description": "{detected}\n\nPick every solar forecast that covers this property — one per array (roof side, carport, …), as many as you have; they are added together.",
+        "data": {
+          "solar_forecast_device_ids": "Forecast integrations",
+          "detected_sensors": "Other forecast sensors found",
+          "solar_forecast_entities": "Forecast sensors picked by hand",
+          "go_to": "On Confirm"
+        },
+        "data_description": {
+          "solar_forecast_device_ids": "Each one's \"energy production today\" sensor is found automatically. What each resolved to is listed above, so a device that exposes nothing recognisable is visible rather than silent.",
+          "detected_sensors": "Forecast sensors on this system that none of the integrations above already covers — an integration sunSale does not recognise, or a sensor built by hand. Recognised by the per-slot forecast data they publish, so anything listed here is readable.",
+          "solar_forecast_entities": "For an array whose sensor is in neither list. Use its \"today\" sensor: the other days are found by substituting the word, so a \"tomorrow\" or \"d3\" sensor will not work. The three fields are added together and de-duplicated, so an array can never count twice.",
+          "go_to": "Confirm saves this page and returns to the menu; the ✕ option leaves it unchanged."
+        },
+        "submit": "Confirm"
       }
     },
     "error": {
-      "negative_fee": "Distribution fee cannot be negative.",
-      "invalid_band_time": "Band start must be a 24h time like 06:30.",
-      "platform_not_implemented": "That inverter platform isn't supported yet. Selectable: Solis, Huawei, SolaX, Sungrow, GoodWe, Deye. (Fronius, SMA, Kostal and SolarEdge are not wired.)",
-      "invalid_inverter_power": "Inverter rated AC power must be greater than 0.",
-      "invalid_export_limit": "Export limit cannot be negative."
+      "price_entity_required": "{source} is a live price source, so it needs the price sensor from that integration. Pick it here, or make both the buy and the sell price fixed if you have no live price feed.",
+      "export_feed_mismatch": "The export-price feed must come from the same price integration as the price sensor — sunSale reads it only there. Pick the matching feed, or None.",
+      "invalid_band_time": "Start time must be 24-hour HH:MM between 00:00 and 23:59, e.g. 06:30.",
+      "duplicate_band_start": "Another band already starts at this time — every band needs its own start time.",
+      "invalid_currency": "Currency must be a 3-letter ISO code such as EUR, GBP, SEK or AUD.",
+      "invalid_capacity": "Nominal capacity must be greater than 0 kWh.",
+      "invalid_price": "Battery purchase price must be greater than 0 — it sets the wear cost of every cycle.",
+      "invalid_cycle_life": "Rated cycle life must be greater than 0 (typical LFP: 6000).",
+      "invalid_charge_power": "Max charge power must be greater than 0 kW.",
+      "invalid_discharge_power": "Max discharge power must be greater than 0 kW.",
+      "invalid_voltage": "Nominal DC bus voltage must be greater than 0 V (e.g. 51.2 for a low-voltage LFP pack).",
+      "invalid_min_soc": "Minimum SoC is a percentage from 0 up to, but not including, 100.",
+      "invalid_max_soc": "Maximum SoC is a percentage above 0, up to 100.",
+      "soc_range_inverted": "Maximum SoC must be higher than Minimum SoC.",
+      "invalid_efficiency": "Round-trip efficiency is a percentage above 0, up to 100 (typical: 85–95).",
+      "platform_not_implemented": "{platform} isn't supported yet. Selectable: Solis, Huawei, SolaX, Sungrow, GoodWe, Deye, and \"No inverter — metering only\".",
+      "invalid_inverter_power": "Inverter rated AC power must be greater than 0 kW.",
+      "invalid_export_limit": "Max export power cannot be negative — enter 0 for a zero-export site.",
+      "invalid_level_share": "Enter a percentage from 0 to 100.",
+      "level_shares_overlap": "Cheap and expensive together cannot be more than 100 % of the day — a slot can't be both.",
+      "level_limits_inverted": "\"Always expensive at or above\" must be higher than \"Always cheap at or below\".",
+      "required": "Fill in this field.",
+      "invalid_vat": "Must be between 0 and 100 %.",
+      "invalid_season_date": "Enter a calendar day as MM-DD, e.g. 04-01.",
+      "seasons_same_start": "Summer and winter cannot start on the same day.",
+      "schedule_empty": "Fill in at least one row — e.g. 00:00 with T1 for one tariff all day.",
+      "bms_no_soc": "That device publishes no state of charge, so sunSale could not read the battery from it. Pick the device that reports the pack's state of charge, or leave the field empty to read the battery from the inverter."
     }
   },
   "entity": {
@@ -374,7 +1154,7 @@
         "name": "Mode-Change Penalty"
       },
       "profitability_tilt_alpha": {
-        "name": "Profitability Tilt \u03b1"
+        "name": "Profitability Tilt α"
       },
       "terminal_value_discount": {
         "name": "Terminal-Value Discount"
