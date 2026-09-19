@@ -66,7 +66,6 @@ codebase (see `CLAUDE.md` → *Derived-power observers*):
 | `BATTERY_SOC` | 0.0–1.0 fraction | percentage normalise |
 | `BATTERY_CHARGE/DISCHARGE_ENERGY_TODAY` | kWh | (stays in `BatterySource`) |
 | `YESTERDAY_TOTAL_*` | kWh | entity read |
-| `INVERTER_CLOCK` | datetime | parse |
 
 ## The seam: three parts
 

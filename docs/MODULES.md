@@ -76,7 +76,6 @@ flowchart TB
         I_btsrc["battery_source.py<br/>BatterySource (BMS/inverter)"]:::inbound
         I_hc["household_consumption.py"]:::inbound
         I_mode["inverter_mode.py"]:::inbound
-        I_time["inverter_time.py"]:::inbound
         I_cons["consumption_daily.py"]:::inbound
         I_snap["pre_rollover_snapshot.py<br/>yesterday_total_resolver.py"]:::inbound
         I_disc["inverter_discovery.py<br/>platform_profiles.py"]:::inbound
@@ -265,12 +264,6 @@ Finalises per-day household-consumption buckets from the derived-power history (
 - **Exposes:** `InverterModeTranslator` → `InverterModeReading`.
 - **Depends on:** `contract.models`, `outbound.driver`.
 - **Tests:** `tests/test_inverter_mode_translator.py`.
-
-### `inbound/inverter_time.py`
-Tracks HA↔inverter clock skew via a rolling median over `InverterTimeReading` samples, so the day-rollover snapshot can fire relative to the inverter's idea of midnight.
-- **Exposes:** `InverterTimeTranslator`, `InverterTimeHistory`, `current_skew_seconds`, `update_history`.
-- **Depends on:** `contract.models`.
-- **Tests:** `tests/test_inverter_time.py`.
 
 ### `inbound/pre_rollover_snapshot.py` + `inbound/yesterday_total_resolver.py`
 Capture the daily-resetting counters just before local midnight (`maybe_capture_snapshots`) and resolve an authoritative yesterday-total (`resolve_yesterday_total`, preferring a dedicated HA entity, falling back to the pre-rollover snapshot) for the observed-series bake-in.

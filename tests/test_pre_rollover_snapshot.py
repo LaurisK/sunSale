@@ -151,53 +151,25 @@ def test_reading_without_attribute_skipped_gracefully() -> None:
     assert out.records == ()
 
 
-def test_positive_skew_shifts_capture_earlier_in_ha_time() -> None:
-    """Inverter 5 min ahead of HA → snapshot fires when HA hits 23:25 (window opens early).
+def test_the_window_is_wide_enough_to_absorb_a_drifting_inverter_clock() -> None:
+    """A capture must land inside the window even when the inverter clock has drifted.
 
-    Without skew correction, HA 23:25 is outside the [23:30, 23:59] window
-    and no capture happens — but the inverter already reads 23:30, so we DO
-    want the snapshot. ``clock_skew_seconds=+300`` should align the window
-    check with the inverter's idea of "now".
+    The counters reset at INVERTER-local midnight, which the observed hardware
+    reaches a few minutes off HA's. The window spans [23:30, 23:59] local, so a
+    capture mid-window precedes the reset whichever way the clock leans — which
+    is why the window needs no skew correction. This pins that margin.
     """
-    ha_now = datetime(2024, 1, 15, 23, 25, tzinfo=UTC)
-
-    # Without skew: outside window, no capture.
-    without = maybe_capture_snapshots(
-        snapshot_history=_empty(),
-        sources=[("generation", _Reading(5.0))],
-        now=ha_now,
-        local_tz=LOCAL_TZ,
-    )
-    assert without.records == ()
-
-    # With +300s skew (inverter ahead): window check uses 23:30, captures.
-    with_skew = maybe_capture_snapshots(
-        snapshot_history=_empty(),
-        sources=[("generation", _Reading(5.0))],
-        now=ha_now,
-        local_tz=LOCAL_TZ,
-        clock_skew_seconds=300.0,
-    )
-    assert len(with_skew.records) == 1
-    # The captured_at remains HA UTC, not the shifted moment.
-    assert with_skew.records[0].captured_at == ha_now
-
-
-def test_negative_skew_extends_window_later_in_ha_time() -> None:
-    """Inverter 5 min behind HA → snapshot still fires when HA already at 00:02.
-
-    HA 00:02 (next day) is past the window normally. With skew=-300s the
-    window check uses 23:57 — still inside the window, capture happens.
-    """
-    ha_now = datetime(2024, 1, 16, 0, 2, tzinfo=UTC)
-    with_skew = maybe_capture_snapshots(
-        snapshot_history=_empty(),
-        sources=[("generation", _Reading(5.0))],
-        now=ha_now,
-        local_tz=LOCAL_TZ,
-        clock_skew_seconds=-300.0,
-    )
-    assert len(with_skew.records) == 1
+    for minutes_of_drift in (-5, 0, 5):
+        # The inverter's midnight, as seen on HA's clock, lands this far off.
+        ha_now = datetime(2024, 1, 15, 23, 45, tzinfo=UTC) + timedelta(minutes=minutes_of_drift)
+        out = maybe_capture_snapshots(
+            snapshot_history=_empty(),
+            sources=[("generation", _Reading(5.0))],
+            now=ha_now,
+            local_tz=LOCAL_TZ,
+        )
+        assert len(out.records) == 1, minutes_of_drift
+        assert out.records[0].captured_at == ha_now
 
 
 def test_window_boundary_inclusive() -> None:

@@ -31,7 +31,6 @@ def maybe_capture_snapshots(
     window_start: tuple[int, int] = (23, 30),
     window_end: tuple[int, int] = (23, 59),
     retention_days: int = 2,
-    clock_skew_seconds: float | None = None,
 ) -> CounterSnapshotHistory:
     """Append a snapshot per side when ``now`` is within the rollover window.
 
@@ -40,12 +39,10 @@ def maybe_capture_snapshots(
     from the returned history regardless of whether a capture occurred this
     cycle — so the store rotates even on cycles outside the window.
 
-    When ``clock_skew_seconds`` is supplied, the window check is performed
-    against ``now + skew`` (i.e. what the inverter believes "now" to be).
-    Captured records still timestamp ``captured_at`` as HA UTC — only the
-    window decision is shifted, so the snapshot is taken at the *HA* moment
-    when the *inverter* is in the window. ``None`` skips the shift and falls
-    back to HA-local timing.
+    The window is checked against **HA** local time, and is wide enough to
+    absorb an inverter clock that has drifted: the counters reset at
+    inverter-local midnight, but the window spans half an hour, so a capture
+    still precedes the reset by minutes at worst.
 
     Args:
         snapshot_history: Current rolling snapshot history.
@@ -58,10 +55,6 @@ def maybe_capture_snapshots(
         window_end: ``(hour, minute)`` inclusive local end of the window.
         retention_days: Records older than this many days from ``now`` are
             dropped from the output.
-        clock_skew_seconds: Inverter clock skew (positive = inverter ahead).
-            When supplied, shifts ``now`` by this amount for the window
-            decision so the capture aligns with the inverter's rollover
-            boundary. ``None`` disables the shift.
 
     Returns:
         A new ``CounterSnapshotHistory``. Returns a history identical to the
@@ -71,11 +64,7 @@ def maybe_capture_snapshots(
     cutoff = now - timedelta(days=retention_days)
     kept = tuple(r for r in snapshot_history.records if r.captured_at >= cutoff)
 
-    window_now = (
-        now + timedelta(seconds=clock_skew_seconds)
-        if clock_skew_seconds is not None else now
-    )
-    if not _within_window(window_now, local_tz, window_start, window_end):
+    if not _within_window(now, local_tz, window_start, window_end):
         if kept == snapshot_history.records:
             return snapshot_history
         return CounterSnapshotHistory(records=kept)

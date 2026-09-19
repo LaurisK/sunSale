@@ -19,8 +19,10 @@ splits into two phases:
 
 Steps never hold the coordinator — every dependency (stores, the resampler,
 config, and the few coordinator bound methods that carry per-cycle anchor state)
-is constructor-injected. Cross-step values travel through the typed
-:class:`CycleScratch`, never through ``primary`` under fake keys.
+is constructor-injected. Steps communicate only through ``primary``, under the
+real contract types the DAG consumes — never under fake keys. A step needing a
+value from an earlier one in a shape the DAG does not model should take a
+constructor-injected collaborator rather than inventing a side channel.
 """
 from __future__ import annotations
 
@@ -61,7 +63,6 @@ from ..contract.models import (
     GridImportPowerHistory,
     GridImportTodayReading,
     InverterModeHistory,
-    InverterTimeReading,
     MonthlyBillState,
     NordpoolData,
     PriceCurveHistory,
@@ -76,16 +77,6 @@ from ..contract.models import (
     YesterdayPrices,
 )
 from ..inbound.consumption_daily import try_finalise_yesterday_consumption
-from ..inbound.inverter_time import (
-    InverterTimeHistory,
-    current_skew_seconds,
-)
-from ..inbound.inverter_time import (
-    empty_history as empty_inverter_time_history,
-)
-from ..inbound.inverter_time import (
-    update_history as update_inverter_time_history,
-)
 from ..inbound.observer.derived import build_derived_power_sample
 from ..inbound.observer.generation import GENERATION_SIDE_ID
 from ..inbound.observer.grid import GRID_EXPORT_SIDE_ID, GRID_IMPORT_SIDE_ID
@@ -135,18 +126,6 @@ def _clamp(value: float, lo: float, hi: float) -> float:
     return v
 
 
-@dataclass
-class CycleScratch:
-    """Typed scratchpad for values handed between steps within one cycle.
-
-    A fresh instance is created each cycle. Currently carries only the inverter
-    clock skew deposited by :class:`InverterTimeStep` and read by
-    :class:`PreRolloverSnapshotStep`.
-    """
-
-    clock_skew_seconds: float | None = None
-
-
 @dataclass(frozen=True)
 class ScheduleKnobs:
     """Snapshot of the coordinator's user-set schedule knobs for one cycle.
@@ -179,10 +158,10 @@ class CycleStep:
 
     label: str = "cycle step"
 
-    def seed(self, primary: dict, now: datetime, scratch: CycleScratch) -> None:
+    def seed(self, primary: dict, now: datetime) -> None:
         """Deposit the fallback primary value(s). Infallible and I/O-free."""
 
-    async def persist(self, primary: dict, now: datetime, scratch: CycleScratch) -> None:
+    async def persist(self, primary: dict, now: datetime) -> None:
         """Best-effort I/O + post-write re-injection. Runs inside ``_guarded()``."""
 
 
@@ -208,7 +187,7 @@ class YesterdayRotationStep(CycleStep):
         self._store = store
         self._config = config
 
-    def seed(self, primary: dict, now: datetime, scratch: CycleScratch) -> None:
+    def seed(self, primary: dict, now: datetime) -> None:
         """Inject ``YesterdayPrices`` and prepend yesterday's stored solar."""
         local_now = now.astimezone(self._config.local_tz)
         yesterday_str = (local_now.date() - timedelta(days=1)).isoformat()
@@ -228,7 +207,7 @@ class YesterdayRotationStep(CycleStep):
         if buckets.yesterday_date == yesterday_str and solar_data is not None:
             solar_data.entries = buckets.yesterday_solar + solar_data.entries
 
-    async def persist(self, primary: dict, now: datetime, scratch: CycleScratch) -> None:
+    async def persist(self, primary: dict, now: datetime) -> None:
         """Persist today's slice and rotate yesterday at LOCAL date rollover."""
         nordpool_data: NordpoolData | None = primary.get(NordpoolData)
         solar_data: SolarData | None = primary.get(SolarData)
@@ -265,13 +244,13 @@ class SampleHistoryStep(CycleStep):
         self._history_stores = history_stores
         self._guard = guard
 
-    def seed(self, primary: dict, now: datetime, scratch: CycleScratch) -> None:
+    def seed(self, primary: dict, now: datetime) -> None:
         """Seed each spec's history primary with its current (un-appended) window."""
         for spec in SAMPLE_HISTORY_SPECS:
             store = self._history_stores.get(spec.storage_key)
             primary[spec.history_type] = spec.build_history(store)
 
-    async def persist(self, primary: dict, now: datetime, scratch: CycleScratch) -> None:
+    async def persist(self, primary: dict, now: datetime) -> None:
         """Append this cycle's reading per spec, re-injecting the updated window."""
         for spec in SAMPLE_HISTORY_SPECS:
             store = self._history_stores.get(spec.storage_key)
@@ -302,11 +281,11 @@ class DerivedSampleStep(CycleStep):
         """Return the derived-power history store, or None before setup."""
         return self._history_stores.get(STORAGE_KEY_DERIVED_POWER)
 
-    def seed(self, primary: dict, now: datetime, scratch: CycleScratch) -> None:
+    def seed(self, primary: dict, now: datetime) -> None:
         """Seed the derived-power history primary with its current window."""
         primary[DERIVED_POWER_SPEC.history_type] = DERIVED_POWER_SPEC.build_history(self._store())
 
-    async def persist(self, primary: dict, now: datetime, scratch: CycleScratch) -> None:
+    async def persist(self, primary: dict, now: datetime) -> None:
         """Compose this cycle's derived sample and append it (re-injecting)."""
         derived_sample = build_derived_power_sample(
             now=now,
@@ -347,7 +326,7 @@ class RecorderResampleStep(CycleStep):
         self._resampler = resampler
         self._config = config
 
-    async def persist(self, primary: dict, now: datetime, scratch: CycleScratch) -> None:
+    async def persist(self, primary: dict, now: datetime) -> None:
         """Resample the observer streams and merge into the history primaries."""
         local_midnight = now.astimezone(self._config.local_tz).replace(
             hour=0, minute=0, second=0, microsecond=0,
@@ -365,28 +344,6 @@ class RecorderResampleStep(CycleStep):
             )
 
 
-class InverterTimeStep(CycleStep):
-    """Track the HA↔inverter clock skew and deposit it into the scratchpad.
-
-    The rolling skew estimate drives :class:`PreRolloverSnapshotStep`'s window
-    shift so the capture aligns with INVERTER-local midnight when the two clocks
-    have drifted. Returns ``None`` (no shift) until enough samples accumulate for
-    confidence. Owns its own rolling history — no coordinator state involved.
-    """
-
-    label = "inverter-time tracking"
-
-    def __init__(self) -> None:
-        """Start with an empty rolling inverter-time history."""
-        self._history: InverterTimeHistory = empty_inverter_time_history()
-
-    async def persist(self, primary: dict, now: datetime, scratch: CycleScratch) -> None:
-        """Absorb this cycle's reading and deposit the median skew into scratch."""
-        current: InverterTimeReading | None = primary.get(InverterTimeReading)
-        self._history = update_inverter_time_history(self._history, current)
-        scratch.clock_skew_seconds = current_skew_seconds(self._history)
-
-
 class PreRolloverSnapshotStep(CycleStep):
     """Capture per-side today-total counters within the late-evening window.
 
@@ -394,7 +351,7 @@ class PreRolloverSnapshotStep(CycleStep):
     yesterday-total sensor is mapped. ``seed`` injects the current (pre-capture)
     history so the DAG always receives the key — it consumes this via
     ``ctx.require``, so a missing key would raise ``MissingDependencyError``.
-    ``persist`` captures (shifting the window by the scratch's clock skew), saves
+    ``persist`` captures, saves
     on change, and re-injects the post-capture history.
     """
 
@@ -409,11 +366,11 @@ class PreRolloverSnapshotStep(CycleStep):
         """Return the stored snapshot history, or an empty one before first save."""
         return (self._store.value if self._store else None) or CounterSnapshotHistory(records=())
 
-    def seed(self, primary: dict, now: datetime, scratch: CycleScratch) -> None:
+    def seed(self, primary: dict, now: datetime) -> None:
         """Seed the counter-snapshot primary with the pre-capture history."""
         primary[CounterSnapshotHistory] = self._current()
 
-    async def persist(self, primary: dict, now: datetime, scratch: CycleScratch) -> None:
+    async def persist(self, primary: dict, now: datetime) -> None:
         """Capture within the rollover window and re-inject the updated history."""
         if self._store is None:
             return
@@ -428,7 +385,6 @@ class PreRolloverSnapshotStep(CycleStep):
             now=now,
             local_tz=self._config.local_tz,
             retention_days=COUNTER_SNAPSHOT_HISTORY_RETENTION_DAYS,
-            clock_skew_seconds=scratch.clock_skew_seconds,
         )
         # Inject the computed history before the (best-effort) save so the DAG
         # sees this cycle's capture even if the disk write then fails.
@@ -457,11 +413,11 @@ class WeatherStep(CycleStep):
         self._cached = WeatherForecastData()
         self._fetched_at: datetime | None = None
 
-    def seed(self, primary: dict, now: datetime, scratch: CycleScratch) -> None:
+    def seed(self, primary: dict, now: datetime) -> None:
         """Seed the cached forecast so the key always exists."""
         primary[WeatherForecastData] = self._cached
 
-    async def persist(self, primary: dict, now: datetime, scratch: CycleScratch) -> None:
+    async def persist(self, primary: dict, now: datetime) -> None:
         """Refresh the forecast when the cache has aged out, then re-inject."""
         stale = (
             self._fetched_at is None
@@ -513,7 +469,7 @@ class StoredPrimariesStep(CycleStep):
         self._mode_history_store = mode_history_store
         self._read_sun_times = read_sun_times
 
-    def seed(self, primary: dict, now: datetime, scratch: CycleScratch) -> None:
+    def seed(self, primary: dict, now: datetime) -> None:
         """Inject baked/bill/price/quality/calibration/mode histories, sun times."""
         primary[BakedObservedHistory] = (
             self._baked_store.value if self._baked_store else None
@@ -570,11 +526,11 @@ class ConsumptionDailyStep(CycleStep):
         """Return the stored rollup, or an empty one before first save."""
         return (self._store.value if self._store else None) or ConsumptionDailyBuckets(records=())
 
-    def seed(self, primary: dict, now: datetime, scratch: CycleScratch) -> None:
+    def seed(self, primary: dict, now: datetime) -> None:
         """Seed the consumption-daily primary with the current rollup."""
         primary[ConsumptionDailyBuckets] = self._current()
 
-    async def persist(self, primary: dict, now: datetime, scratch: CycleScratch) -> None:
+    async def persist(self, primary: dict, now: datetime) -> None:
         """Finalise yesterday's rollup (best-effort) and re-inject the window."""
         derived_store = self._history_stores.get(STORAGE_KEY_DERIVED_POWER)
         if self._store is None or derived_store is None or self._config is None:
@@ -628,11 +584,11 @@ class CapacityStep(CycleStep):
             value_kwh=self._estimator.estimated_capacity_kwh,
         )
 
-    def seed(self, primary: dict, now: datetime, scratch: CycleScratch) -> None:
+    def seed(self, primary: dict, now: datetime) -> None:
         """Seed the pre-observation capacity estimate."""
         self._inject(primary)
 
-    async def persist(self, primary: dict, now: datetime, scratch: CycleScratch) -> None:
+    async def persist(self, primary: dict, now: datetime) -> None:
         """Add this cycle's observation (best-effort save) and re-inject."""
         current_reading: BatteryReading | None = primary.get(BatteryReading)
         if current_reading is None:
@@ -662,7 +618,7 @@ class SchedulePolicyStep(CycleStep):
         """Bind the knob-reader callable."""
         self._read_knobs = read_knobs
 
-    def seed(self, primary: dict, now: datetime, scratch: CycleScratch) -> None:
+    def seed(self, primary: dict, now: datetime) -> None:
         """Inject the clamped schedule policy."""
         k = self._read_knobs()
         primary[SchedulePolicy] = SchedulePolicy(

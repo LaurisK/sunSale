@@ -224,11 +224,6 @@ CONF_INVERTER_ENTITY_AC_PORT_POWER = "inverter_entity_ac_port_power"
 # is bridging backup-protected loads with grid down; otherwise ~0. Solis
 # resolves to ``backup_load_power``.
 CONF_INVERTER_ENTITY_BACKUP_POWER = "inverter_entity_backup_power"
-# Optional: HA entity exposing the inverter's own clock (local-time
-# datetime). When set, the inverter_time module tracks HA↔inverter skew so
-# the pre-rollover snapshot fires relative to the inverter's idea of midnight
-# instead of HA's. Leaving this empty disables skew correction.
-CONF_INVERTER_ENTITY_INVERTER_CLOCK = "inverter_entity_inverter_clock"
 
 # Persistent storage
 STORAGE_KEY_CAPACITY = f"{DOMAIN}_capacity"
@@ -311,18 +306,6 @@ BAKE_IN_HARD_CUTOFF_LOCAL = (6, 0)
 # module captures the current today-total counter values. Expressed as
 # ((start_hour, start_minute), (end_hour, end_minute)) in local time.
 SNAPSHOT_WINDOW_LOCAL = ((23, 30), (23, 59))
-
-# Inverter clock-skew tracker: minimum samples in the rolling window before
-# ``current_skew_seconds`` returns a value. Until then, the snapshot module
-# uses HA local time directly (no shift).
-INVERTER_TIME_MIN_SAMPLES = 5
-
-# Inverter clock-skew tracker: maximum samples retained in the rolling
-# window. Older samples are trimmed each cycle. Sized so a 5 min coordinator
-# cadence yields roughly four hours of history — enough for the median to
-# track gradual drift but small enough that a one-shot bad reading washes
-# out quickly.
-INVERTER_TIME_MAX_SAMPLES = 50
 
 # Rolling per-day consumption-bucket retention (days). One ConsumptionDayRecord
 # per local date, each holding 24 hour-bucket sums in kWh. Sized to give a

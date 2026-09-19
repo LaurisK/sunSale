@@ -43,6 +43,26 @@ Any behavior-affecting change bumps the `version` in
   `check_price_level` integration check recomputes the classes from
   `pipeline.pricing`.
 
+### Removed
+- **The HA↔inverter clock-skew tracker.** `inbound/inverter_time.py`,
+  `InverterTimeTranslator`, `InverterTimeReading`, `InverterTimeStep`,
+  `CONF_INVERTER_ENTITY_INVERTER_CLOCK`, the `INVERTER_TIME_*` constants and
+  `maybe_capture_snapshots`' `clock_skew_seconds` argument are gone. **No
+  behaviour change**: the key was writable by no form, so every install was
+  already on HA-local timing.
+  It could not have worked on Solis anyway — solis_modbus publishes the clock as
+  six independently-updating integer sensors, not the single datetime the
+  translator required, and their update stamps were measured up to 20 minutes
+  apart. solis_modbus also syncs the inverter clock itself, and the observed
+  ~4-6 min drift is far inside the 29-minute snapshot window, so the capture
+  always precedes the counters' reset. `tests/test_pre_rollover_snapshot.py`
+  now pins that margin instead of the shift.
+- **`CycleScratch`.** The clock skew was its only occupant, so the scratchpad
+  went with it: `CycleStep.seed` / `persist` are now `(primary, now)`. Steps
+  communicate through `primary` under the real contract types the DAG consumes;
+  a step wanting an earlier step's value in a shape the DAG does not model takes
+  a constructor-injected collaborator instead of a side channel.
+
 ### Changed
 
 - **Electricity prices: one simple formula per direction.** The tariff is now two

@@ -95,14 +95,7 @@ def make_coordinator(
     coord.profitability_tilt_alpha = profitability_tilt_alpha
     coord.terminal_value_discount = terminal_value_discount
 
-    tariff_cfg = TariffConfig(
-        distribution_fee=0.03,
-        tax_rate=0.21,
-        markup=0.01,
-        sell_distribution_fee=0.02,
-        sell_tax_rate=0.0,
-        sell_markup=0.005,
-    )
+    tariff_cfg: TariffConfig = default_tariff_config()
     coord.tariff_config = tariff_cfg
 
     schedule = Schedule(
@@ -223,8 +216,8 @@ def test_tariff_config_serialised():
     result = _coordinator_to_dict("e", coord)
     tc = result["inputs"]["tariff_config"]
     assert tc is not None
-    assert "distribution_fee" in tc
-    assert "tax_rate" in tc
+    assert list(tc["buy"]["grid_fees"]) == [0.03]
+    assert tc["sell"]["energy_mode"] == "dynamic"
 
 
 def test_last_dispatched_fields():

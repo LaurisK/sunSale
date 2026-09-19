@@ -146,16 +146,17 @@ def _rep_price_curve_history() -> PriceCurveHistory:
         records=(
             PriceDayRecord(
                 day=date(2026, 7, 9), day_class=DayClass.WEEKDAY,
-                peak_1h_eur_kwh=0.2531, peak_3h_eur_kwh=0.2104,
-                trough_1h_eur_kwh=0.0031, trough_3h_eur_kwh=0.0142,
+                peak_1h_eur_kwh=0.2531, peak_4h_eur_kwh=0.2104,
+                trough_1h_eur_kwh=0.0031, trough_4h_eur_kwh=0.0142,
                 negative_hours=3.25, mean_eur_kwh=0.0912,
                 wind_speed_kmh=21.4, temperature_c=17.5, solar_kwh=42.9,
                 negative_generation_kwh=8.4,
             ),
             PriceDayRecord(
                 day=date(2026, 7, 11), day_class=DayClass.WEEKEND,
-                peak_1h_eur_kwh=0.1, peak_3h_eur_kwh=0.08,
-                trough_1h_eur_kwh=-0.014, trough_3h_eur_kwh=0.0,
+                # A record saved before the 4 h band existed.
+                peak_1h_eur_kwh=0.1, peak_4h_eur_kwh=None,
+                trough_1h_eur_kwh=-0.014, trough_4h_eur_kwh=None,
                 negative_hours=0.0, mean_eur_kwh=0.05,
             ),
         ),
@@ -400,3 +401,29 @@ def test_forecast_quality_v0_drops_legacy_per_slot_axes():
     assert restored.horizon_pending == payload["group3_pending"]
     assert restored.last_ingested_slot_utc is None
     assert restored.version == FORECAST_QUALITY_STORE_VERSION
+
+
+def test_price_curve_3h_band_records_load_without_the_4h_band():
+    """A record settled while the wide band was 3 h keeps everything but that band.
+
+    The store holds daily statistics, not curves, so a 3 h value can neither be
+    reused as a 4 h one nor recomputed: ``p3`` / ``t3`` are ignored and the 4 h
+    band loads as None, while the rest of the record — the 1 h band, negative
+    hours, weather features — survives to keep feeding the other targets.
+    """
+    fixture = FIXTURE_DIR / "price_curve_history_3h_bands.json"
+    payload = json.loads(fixture.read_text())
+    assert "p3" in payload["records"][0] and "p4" not in payload["records"][0]
+
+    spec = next(
+        s for s in SINGLETON_STORE_SPECS if s.storage_key == STORAGE_KEY_PRICE_CURVE_HISTORY
+    )
+    restored = spec.deserialize(payload)
+
+    assert len(restored.records) == 2
+    first = restored.records[0]
+    assert first.peak_4h_eur_kwh is None and first.trough_4h_eur_kwh is None
+    assert first.peak_1h_eur_kwh == 0.2531
+    assert first.negative_hours == 3.25
+    assert first.wind_speed_kmh == 21.4
+    assert len(restored.vintages) == 1

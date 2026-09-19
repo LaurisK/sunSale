@@ -47,11 +47,13 @@ _HA_MODULES = [
     "homeassistant.helpers.update_coordinator",
     "homeassistant.helpers.storage",
     "homeassistant.helpers.entity_platform",
+    "homeassistant.helpers.typing",
     "homeassistant.components",
     "homeassistant.components.frontend",
     "homeassistant.components.http",
     "homeassistant.components.panel_custom",
     "homeassistant.components.sensor",
+    "homeassistant.components.binary_sensor",
     "homeassistant.components.switch",
     "homeassistant.components.number",
     "homeassistant.components.select",
@@ -113,6 +115,14 @@ class _SensorEntityStub:
 class _SwitchEntityStub:
     def __init__(self, *args, **kwargs):
         super().__init__(*args, **kwargs)
+
+
+class _BinarySensorEntityStub:
+    def __init__(self, *args, **kwargs):
+        super().__init__(*args, **kwargs)
+
+
+sys.modules["homeassistant.components.binary_sensor"].BinarySensorEntity = _BinarySensorEntityStub
 
 
 class _NumberEntityStub:

@@ -4,7 +4,7 @@ Each step is exercised through the same ``seed → guarded persist`` pattern the
 coordinator loop uses, with fake stores/primaries — the scenarios previously
 only reachable through the whole coordinator: a store-write failure still seeds
 the primary, empty-store defaults, rotation at the date boundary, the resample
-merge order, and the clock-skew hand-off through :class:`CycleScratch`.
+merge order.
 """
 from __future__ import annotations
 
@@ -13,9 +13,9 @@ from datetime import UTC, datetime, timedelta
 from types import SimpleNamespace
 from zoneinfo import ZoneInfo
 
-import pytest
-
-from custom_components.sun_sale.contract.const import STORAGE_KEY_DERIVED_POWER
+from custom_components.sun_sale.contract.const import (
+    STORAGE_KEY_DERIVED_POWER,
+)
 from custom_components.sun_sale.contract.models import (
     AcPortPowerReading,
     ArrayCalibration,
@@ -34,7 +34,6 @@ from custom_components.sun_sale.contract.models import (
     GridExportTodayReading,
     GridImportTodayReading,
     InverterModeHistory,
-    InverterTimeReading,
     MonthlyBillState,
     NordpoolData,
     PriceCurveHistory,
@@ -51,9 +50,7 @@ from custom_components.sun_sale.contract.models import (
 from custom_components.sun_sale.orchestration.cycle_steps import (
     CapacityStep,
     ConsumptionDailyStep,
-    CycleScratch,
     DerivedSampleStep,
-    InverterTimeStep,
     PreRolloverSnapshotStep,
     RecorderResampleStep,
     SampleHistoryStep,
@@ -107,13 +104,11 @@ class FakeStore:
         await self.save(items)
 
 
-async def _run(step, primary, now=_NOW, scratch=None):
+async def _run(step, primary, now=_NOW):
     """Drive one step exactly as the coordinator loop does (seed → guarded persist)."""
-    scratch = scratch or CycleScratch()
-    step.seed(primary, now, scratch)
+    step.seed(primary, now)
     with _swallow_guard(step.label):
-        await step.persist(primary, now, scratch)
-    return scratch
+        await step.persist(primary, now)
 
 
 # ---------------------------------------------------------------------------
@@ -130,7 +125,7 @@ def test_yesterday_seed_injects_prices_and_prepends_solar():
     ))
     primary = {SolarData: SolarData(entries=[se_t], total_today_kwh=0.0,
                                     today_remaining_kwh=0.0, primary_source="none")}
-    YesterdayRotationStep(store, _CFG).seed(primary, _NOW, CycleScratch())
+    YesterdayRotationStep(store, _CFG).seed(primary, _NOW)
     assert primary[YesterdayPrices].entries == (pe,)
     assert primary[SolarData].entries == [se_y, se_t]
 
@@ -140,7 +135,7 @@ def test_yesterday_seed_stale_date_yields_empty_prices():
     pe = PriceEntry(start=_NOW, end=_NOW, price_eur_kwh=0.1)
     store = FakeStore(YesterdayBuckets(yesterday_date="2020-01-01", yesterday_nordpool=[pe]))
     primary = {}
-    YesterdayRotationStep(store, _CFG).seed(primary, _NOW, CycleScratch())
+    YesterdayRotationStep(store, _CFG).seed(primary, _NOW)
     assert primary[YesterdayPrices].entries == ()
 
 
@@ -191,7 +186,7 @@ def test_sample_history_seed_covers_every_spec():
     """seed injects a history primary for every sample-history spec."""
     stores = {spec.storage_key: FakeStore(value=[]) for spec in SAMPLE_HISTORY_SPECS}
     primary = {}
-    SampleHistoryStep(stores, _swallow_guard).seed(primary, _NOW, CycleScratch())
+    SampleHistoryStep(stores, _swallow_guard).seed(primary, _NOW)
     for spec in SAMPLE_HISTORY_SPECS:
         assert spec.history_type in primary
 
@@ -256,27 +251,13 @@ async def test_recorder_resample_noop_leaves_primary_untouched():
 
 
 # ---------------------------------------------------------------------------
-# InverterTimeStep → CycleScratch → PreRolloverSnapshotStep
+# PreRolloverSnapshotStep
 # ---------------------------------------------------------------------------
-
-async def test_inverter_time_deposits_skew_into_scratch():
-    """persist absorbs the reading and writes a skew value into scratch."""
-    step = InverterTimeStep()
-    scratch = CycleScratch()
-    # Feed several readings with a consistent skew so the median stabilises.
-    for i in range(10):
-        t = _NOW + timedelta(minutes=i)
-        inv = t + timedelta(seconds=30)
-        primary = {InverterTimeReading: InverterTimeReading(ha_now=t, inverter_now=inv)}
-        step.seed(primary, t, scratch)
-        await step.persist(primary, t, scratch)
-    assert scratch.clock_skew_seconds == pytest.approx(30.0, abs=1.0)
-
 
 def test_pre_rollover_seed_injects_empty_history():
     """seed injects an empty snapshot history when the store holds nothing."""
     primary = {}
-    PreRolloverSnapshotStep(FakeStore(value=None), _CFG).seed(primary, _NOW, CycleScratch())
+    PreRolloverSnapshotStep(FakeStore(value=None), _CFG).seed(primary, _NOW)
     assert primary[CounterSnapshotHistory] == CounterSnapshotHistory(records=())
 
 
@@ -311,7 +292,7 @@ def test_stored_primaries_seeds_all_keys_with_defaults():
         array_calibration_store=FakeStore(value=None),
         mode_history_store=FakeStore(value=None),
         read_sun_times=lambda now: SunTimes(today_sunrise=None, today_sunset=None),
-    ).seed(primary, _NOW, CycleScratch())
+    ).seed(primary, _NOW)
     assert primary[BakedObservedHistory] == BakedObservedHistory(records=())
     assert primary[MonthlyBillState] is None      # None is meaningful, not defaulted
     assert primary[PriceHistory] == PriceHistory(peaks=())
@@ -381,7 +362,7 @@ def test_schedule_policy_clamps_out_of_range_knobs():
         max_discharge_to_grid_kw=None,
     )
     primary = {}
-    SchedulePolicyStep(lambda: knobs).seed(primary, _NOW, CycleScratch())
+    SchedulePolicyStep(lambda: knobs).seed(primary, _NOW)
     pol = primary[SchedulePolicy]
     assert pol.use_standby is True
     assert pol.max_discharge_to_grid_kw is None
@@ -404,7 +385,7 @@ def test_schedule_policy_passes_export_limit_unclamped():
         export_limit_kw=8.0,
     )
     primary = {}
-    SchedulePolicyStep(lambda: knobs).seed(primary, _NOW, CycleScratch())
+    SchedulePolicyStep(lambda: knobs).seed(primary, _NOW)
     assert primary[SchedulePolicy].export_limit_kw == 8.0
 
 

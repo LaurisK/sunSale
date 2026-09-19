@@ -39,7 +39,6 @@ HA state machine
 │   AcPort / Backup         (observer/)     → DerivedPowerSample parts
 │   HouseholdConsumption                    → HouseholdConsumptionReading
 │   InverterModeTranslator (via driver)     → InverterModeReading
-│   InverterTimeTranslator                  → InverterTimeReading
 │     reads flow through the telemetry seam: inbound/telemetry/** —
 │     HaTelemetryReader + per-vendor TelemetryCodec (canonical unit/sign)
 └──────────────────────────────────────────────────────────────────────
@@ -112,7 +111,6 @@ custom_components/sun_sale/
 │   ├── household_consumption.py HouseholdConsumptionTranslator (today-total kWh)
 │   ├── consumption_daily.py     Finalise per-day consumption buckets from derived history
 │   ├── inverter_mode.py         InverterModeTranslator (decoded StorageMode, via driver.observe)
-│   ├── inverter_time.py         InverterTimeTranslator + HA↔inverter clock-skew median
 │   ├── pre_rollover_snapshot.py Capture daily counters just before local midnight
 │   ├── yesterday_total_resolver.py Authoritative yesterday-total (entity or snapshot)
 │   ├── inverter_discovery.py    Vendor-pluggable entity-discovery registry (discovery_for)
@@ -195,7 +193,6 @@ Each translator lives in its own module — there is no monolithic `translators.
 | `AcPortPowerTranslator` / `BackupPowerTranslator` | `DerivedPowerSample` parts | `observer/derived.py` | AC-port and backup-load power for the synthetic consumption/losses series. |
 | `HouseholdConsumptionTranslator` | `HouseholdConsumptionReading` | `household_consumption.py` | Today-total household-load kWh counter. |
 | `InverterModeTranslator` | `InverterModeReading` | `inverter_mode.py` | Reads + decodes the live mode via `InverterControlDriver.observe` (Solis: register 43110 + currents + RC setpoint → `StorageMode`); carries no register knowledge itself. |
-| `InverterTimeTranslator` | `InverterTimeReading` | `inverter_time.py` | Inverter clock for HA↔inverter skew (median over samples). |
 
 All translators run in parallel via `asyncio.gather` (`run_translators` in `pipeline/dag_engine.py`) before the DAG starts.
 

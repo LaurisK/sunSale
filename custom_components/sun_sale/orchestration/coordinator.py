@@ -48,7 +48,6 @@ from ..contract.const import (
     CONF_CURRENCY,
     CONF_FORECAST_RESERVE_ENABLED,
     CONF_INVERTER_ENTITY_HOUSEHOLD_CONSUMPTION_ENERGY,
-    CONF_INVERTER_ENTITY_INVERTER_CLOCK,
     CONF_INVERTER_EXPORT_LIMIT_KW,
     CONF_INVERTER_MAX_POWER_KW,
     CONF_NORDPOOL_ENTITY,
@@ -163,9 +162,6 @@ from ..inbound.holiday_calendar import holiday_predicate
 from ..inbound.household_consumption import HouseholdConsumptionTranslator
 from ..inbound.inverter_entity_resolver import resolve_inverter_entities
 from ..inbound.inverter_mode import InverterModeTranslator
-from ..inbound.inverter_time import (
-    InverterTimeTranslator,
-)
 from ..inbound.observer.bake_in import try_bake_yesterday
 from ..inbound.observer.derived import (
     AcPortPowerTranslator,
@@ -242,10 +238,8 @@ from ..pipeline.price_level import config_from_entry as price_level_config_from_
 from .cycle_steps import (
     CapacityStep,
     ConsumptionDailyStep,
-    CycleScratch,
     CycleStep,
     DerivedSampleStep,
-    InverterTimeStep,
     PreRolloverSnapshotStep,
     RecorderResampleStep,
     SampleHistoryStep,
@@ -1052,10 +1046,6 @@ class SunSaleCoordinator(DataUpdateCoordinator):
             AcPortPowerTranslator(entity_id=self._ac_port_power_entity_id),
             BackupPowerTranslator(entity_id=self._backup_power_entity_id),
             InverterModeTranslator(driver=driver),
-            InverterTimeTranslator(
-                entity_id=data.get(CONF_INVERTER_ENTITY_INVERTER_CLOCK, ""),
-                local_tz=local_tz,
-            ),
         ]
 
         nodes = [
@@ -1220,7 +1210,6 @@ class SunSaleCoordinator(DataUpdateCoordinator):
             SampleHistoryStep(self._history_stores, self._guarded),
             DerivedSampleStep(self._history_stores),
             RecorderResampleStep(self.hass, self._resampler, self._sun_sale_config),
-            InverterTimeStep(),
             PreRolloverSnapshotStep(self._counter_snapshot_store, self._sun_sale_config),
             WeatherStep(
                 self.hass,
@@ -1345,11 +1334,10 @@ class SunSaleCoordinator(DataUpdateCoordinator):
             # its best-effort persist runs inside ``_guarded`` so a disk write
             # failure logs and the cycle — including the inverter dispatch —
             # still proceeds with every primary key present. See cycle_steps.py.
-            scratch = CycleScratch()
             for step in self._cycle_steps:
-                step.seed(primary, now, scratch)
+                step.seed(primary, now)
                 with self._guarded(step.label):
-                    await step.persist(primary, now, scratch)
+                    await step.persist(primary, now)
 
             secondary = await self._engine.run(primary, self._sun_sale_config, now)
 

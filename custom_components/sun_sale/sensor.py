@@ -1048,7 +1048,7 @@ class ForecastPipelineSensor(_BaseSensor):
 class PriceForecastSensor(_BaseSensor):
     """Week-ahead price forecast — peak/trough bands and negative-price exposure.
 
-    The state is tomorrow's expected 3 h peak, because that is the nearest
+    The state is tomorrow's expected 4 h peak, because that is the nearest
     figure a hold-or-sell decision turns on; everything else (today through
     d6, the trough bands, negative hours and the PV exposed to them) is in the
     attributes. ``model_skill`` and ``model_weight`` are published alongside so
@@ -1069,14 +1069,14 @@ class PriceForecastSensor(_BaseSensor):
 
     @property
     def native_value(self) -> float | None:
-        """Return tomorrow's expected 3 h peak price, or None when unavailable."""
+        """Return tomorrow's expected 4 h peak price, or None when unavailable."""
         forecast: PriceForecast | None = (self.coordinator.data or {}).get("price_forecast")
         if forecast is None or not forecast.days:
             return None
         tomorrow = next((d for d in forecast.days if d.horizon_days == 1), None)
-        if tomorrow is None:
+        if tomorrow is None or tomorrow.peak_4h_eur_kwh is None:
             return None
-        return round(tomorrow.peak_3h_eur_kwh, 4)
+        return round(tomorrow.peak_4h_eur_kwh, 4)
 
     @property
     def extra_state_attributes(self) -> dict[str, Any]:
