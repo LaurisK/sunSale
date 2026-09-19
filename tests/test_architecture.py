@@ -59,6 +59,7 @@ HA_IMPORT_ALLOWLIST = {
     "inbound/forecast_resolver.py",
     "inbound/inverter_discovery.py",
     "inbound/inverter_entity_resolver.py",
+    "inbound/inverter_sources.py",
     "inbound/observer/recorder_resample.py",
     "inbound/platform_profiles.py",
     "inbound/solis_entity_resolver.py",

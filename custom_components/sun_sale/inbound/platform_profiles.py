@@ -400,7 +400,7 @@ class ProfileEntityDiscovery:
     Auto-detects from the platform's config entry when its id is stored
     (``config_entry_key``); otherwise reads the manual mapping the config flow
     saved under ``manual_role_key``. Either way it appends the platform-neutral
-    telemetry/energy roles collected in the shared "sources" step, mirroring
+    energy counters collected on the shared ``sources_energy`` page, mirroring
     :class:`..inverter_discovery.GenericEntityDiscovery`.
     """
 

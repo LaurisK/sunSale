@@ -22,6 +22,9 @@ from datetime import tzinfo as TzInfo
 from typing import Any
 
 from ..contract.const import (
+    CONF_INVERTER_ENTITY_GENERATION_YESTERDAY,
+    CONF_INVERTER_ENTITY_GRID_EXPORT_YESTERDAY,
+    CONF_INVERTER_ENTITY_GRID_IMPORT_YESTERDAY,
     SOURCE_KIND_DEDICATED_SENSOR,
     SOURCE_KIND_SNAPSHOT,
 )
@@ -32,9 +35,9 @@ from ..ha_state import read_float_state
 # coordinator populates ``raw_config`` from the config entry; missing keys
 # (the common case today) simply fall back to the snapshot path.
 DEDICATED_ENTITY_CONFIG_KEY: dict[str, str] = {
-    "generation":  "inverter_entity_generation_yesterday",
-    "grid_import": "inverter_entity_grid_import_yesterday",
-    "grid_export": "inverter_entity_grid_export_yesterday",
+    "generation":  CONF_INVERTER_ENTITY_GENERATION_YESTERDAY,
+    "grid_import": CONF_INVERTER_ENTITY_GRID_IMPORT_YESTERDAY,
+    "grid_export": CONF_INVERTER_ENTITY_GRID_EXPORT_YESTERDAY,
 }
 
 

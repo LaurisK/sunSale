@@ -23,8 +23,11 @@ from homeassistant.core import HomeAssistant
 from ..contract.const import (
     CONF_INVERTER_ENTITY_AC_PORT_POWER,
     CONF_INVERTER_ENTITY_BACKUP_POWER,
+    CONF_INVERTER_ENTITY_GENERATION_YESTERDAY,
     CONF_INVERTER_ENTITY_GRID_EXPORT_POWER,
+    CONF_INVERTER_ENTITY_GRID_EXPORT_YESTERDAY,
     CONF_INVERTER_ENTITY_GRID_IMPORT_POWER,
+    CONF_INVERTER_ENTITY_GRID_IMPORT_YESTERDAY,
     CONF_INVERTER_ENTITY_PV_POWER,
     CONF_INVERTER_ENTITY_SOLAR_ENERGY,
     CONF_INVERTER_PLATFORM,
@@ -147,9 +150,9 @@ def resolve_inverter_entities(
     # raw-config dict so ``yesterday_total_resolver`` finds them via its
     # ``DEDICATED_ENTITY_CONFIG_KEY`` lookup without further plumbing.
     for cfg_key, role_key in (
-        ("inverter_entity_generation_yesterday", "solar_energy_yesterday"),
-        ("inverter_entity_grid_import_yesterday", "grid_import_energy_yesterday"),
-        ("inverter_entity_grid_export_yesterday", "grid_export_energy_yesterday"),
+        (CONF_INVERTER_ENTITY_GENERATION_YESTERDAY, "solar_energy_yesterday"),
+        (CONF_INVERTER_ENTITY_GRID_IMPORT_YESTERDAY, "grid_import_energy_yesterday"),
+        (CONF_INVERTER_ENTITY_GRID_EXPORT_YESTERDAY, "grid_export_energy_yesterday"),
     ):
         if not data.get(cfg_key) and inverter_entity_ids.get(role_key):
             data[cfg_key] = inverter_entity_ids[role_key]

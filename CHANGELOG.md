@@ -23,6 +23,18 @@ Any behavior-affecting change bumps the `version` in
   The form also names each chosen integration's resolved sensor, and says so
   when one resolved to nothing — previously a silent log line, so an array
   could contribute no forecast at all without anyone noticing.
+- **The inverter's optional sources are detected.** The old *Energy counters and
+  BMS* page asked for each sensor out of every sensor in Home Assistant. It is
+  now two pages — *Power sensors and BMS* and *Energy counters* — whose every
+  row lists the sensors found **on the inverter's own device**, pre-selecting
+  what the platform already resolved, else what the user stored, else the best
+  name match. `inbound/inverter_sources.py` locates the device from the
+  platform's resolved role map (the way the metered-device picker locates a
+  meter) and classifies the rest by device class, counter state class and a
+  today/yesterday split. Every same-kind sensor is still offered — the hints
+  only rank — so an unusually named sensor stays reachable, and **Other** opens
+  a by-hand picker over the whole system for any row that needs it. With
+  nothing detected a row keeps its plain entity picker.
 - **The price forecast's weather entity is now visible and selectable.** New
   optional *Price forecast weather* page in the **prices** section (not the solar
   forecast, which is hidden without an inverter — weather feeds only the
@@ -32,6 +44,15 @@ Any behavior-affecting change bumps the `version` in
   weather correction off and, unlike before, stays off. `CONF_WEATHER_ENTITY`
   was previously read at runtime with no form field anywhere, so which entity
   fed a dispatch-affecting forecast could be neither seen nor changed.
+- **A dedicated battery BMS is picked as a device.** New optional *Dedicated
+  battery BMS* page: choose the battery device and sunSale resolves its state of
+  charge and pack power (`detect_bms_sources` over `BMS_SPECS`), then asks you to
+  confirm them — the same two-step shape as adding a metered device, instead of
+  hunting two loose sensors on the old *Energy counters and BMS* page. A device
+  publishing no state of charge is refused with a reason, because SoC is what
+  puts the BMS in front of the inverter at all; confirming with no device removes
+  a BMS again. The stored keys are unchanged, so `inbound/battery_source.py` and
+  the coordinator are untouched. That page is now *Inverter power sensors*.
 - **Price sensors are detected.** *Price source and sensor* now lists the
   sensors on the system that a price translator can read — recognised by the
   attributes each translator parses (Nord Pool `raw_today` / `today` +

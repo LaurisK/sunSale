@@ -81,6 +81,7 @@ flowchart TB
         I_snap["pre_rollover_snapshot.py<br/>yesterday_total_resolver.py"]:::inbound
         I_disc["inverter_discovery.py<br/>platform_profiles.py"]:::inbound
         I_solis["solis_entity_resolver.py<br/>inverter_entity_resolver.py"]:::inbound
+        I_srcs["inverter_sources.py<br/>setup-time source detection"]:::inbound
         subgraph TELE["telemetry/  —  read-side seam"]
             I_tbind["binding.py<br/>TelemetrySignal / SignalBinding"]:::inbound
             I_tcodec["codec.py<br/>TelemetryCodec (sign/unit)"]:::inbound
@@ -143,7 +144,7 @@ flowchart TB
     %% --- HA root → orchestration ---
     R_init --> ORCH_coord & ORCH_dbg
     R_sens & R_sw & R_sel & R_num --> ORCH_coord
-    R_cfg --> I_disc
+    R_cfg --> I_disc & I_srcs & I_fcr & I_weather & I_price
 
     %% --- coordinator: the hub ---
     ORCH_coord --> INBOUND
@@ -253,6 +254,12 @@ Two ways to name a solar array without hunting for entities. `discover_forecast_
 - **Exposes:** `WeatherTranslator` → `WeatherForecastData`, `detect_weather_entity`, `detect_weather_entities`, `DetectedWeather`, `parse_daily_forecast`.
 - **Depends on:** `contract.models`.
 - **Tests:** `tests/test_weather_inbound.py`.
+
+### `inbound/inverter_sources.py`
+Finds the candidates for the inverter's **optional** sources (PV / AC-port / backup / per-direction grid power, the daily and yesterday energy counters) so the setup pages offer the sensors on the user's inverter instead of every sensor in HA. Locates the inverter's device(s) from whatever its platform's discovery already resolved then classifies the rest against one `SourceSpec` per source: device class, a counter state class for today's counters, and a today/yesterday split on the name (the only signal separating two otherwise identical counters). Candidates are **ranked, never filtered**, so an oddly named sensor stays reachable; the pre-selection is stored value → platform-resolved → best hint. `BMS_SPECS` + `detect_bms_sources` serve the dedicated battery BMS, which is picked as its own device rather than found on the inverter. Advisory only: `inverter_entity_resolver.py` still decides what the runtime reads.
+- **Exposes:** `detect_inverter_sources`, `detect_bms_sources`, `device_of`, `role_candidates`, `default_source`, `SourceSpec`, `SourceOptions`, `DetectedSource`, `SOURCE_SPECS`, `SPEC_BY_KEY`, `BMS_SPECS`.
+- **Depends on:** `contract.const`, `inbound.inverter_discovery`, `outbound.inverter`, HA entity registry directly.
+- **Tests:** `tests/test_inverter_sources.py`, `tests/test_config_flow.py`.
 
 ### `inbound/household_consumption.py`
 `HouseholdConsumptionTranslator` snapshots the today-total household-load kWh counter (resets at local midnight) — used to display "consumption so far today".

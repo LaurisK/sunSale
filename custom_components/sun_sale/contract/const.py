@@ -232,6 +232,14 @@ CONF_INVERTER_ENTITY_AC_PORT_POWER = "inverter_entity_ac_port_power"
 # is bridging backup-protected loads with grid down; otherwise ~0. Solis
 # resolves to ``backup_load_power``.
 CONF_INVERTER_ENTITY_BACKUP_POWER = "inverter_entity_backup_power"
+# Yesterday-total energy counters (kWh), per observed side. The preferred
+# bake-in source: an already-finalised total is immune to the clock-skew and
+# reset-timing problems of the pre-rollover snapshot fallback. Read through
+# ``inbound/yesterday_total_resolver.DEDICATED_ENTITY_CONFIG_KEY``, which these
+# keys define; the Solis path also auto-resolves them.
+CONF_INVERTER_ENTITY_GENERATION_YESTERDAY = "inverter_entity_generation_yesterday"
+CONF_INVERTER_ENTITY_GRID_IMPORT_YESTERDAY = "inverter_entity_grid_import_yesterday"
+CONF_INVERTER_ENTITY_GRID_EXPORT_YESTERDAY = "inverter_entity_grid_export_yesterday"
 
 # Persistent storage
 STORAGE_KEY_CAPACITY = f"{DOMAIN}_capacity"
