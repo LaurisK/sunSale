@@ -104,6 +104,13 @@ Any behavior-affecting change bumps the `version` in
   `inverter_entity_*_yesterday` totals (the **end-of-day bake-in** fell back to
   the pre-rollover snapshot). All are now rows on the new pages, so these work
   on every platform rather than Solis alone.
+- **Price estimates in the panel's generation row.** Each upcoming day's pill
+  now shows the week-ahead price forecast next to its generation estimate —
+  the cheapest–dearest 1 h and 4 h spot price (`≈ 1h 0.021–0.190 · 4h
+  0.035–0.160 €`), with the forecast source in the tooltip. The 4 h pair is
+  left out while that band has too little history. It shows only while that day's auction is unsettled, so tomorrow's
+  estimate disappears once its actual prices are published. Carried in the
+  dashboard sensor's new `forecast_daily_price` attribute.
 
 ### Removed
 - **The HA↔inverter clock-skew tracker.** `inbound/inverter_time.py`,

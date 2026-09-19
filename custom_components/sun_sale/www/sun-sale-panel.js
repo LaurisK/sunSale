@@ -5,6 +5,9 @@
  *   Yesterday/Today show predicted / actual (today also shows remaining-forecast).
  *   Future days show predicted only. Data: forecast_daily_kwh,
  *   actual_yesterday_kwh, actual_today_kwh.
+ *   Future days whose auction has not settled also show the estimated spot
+ *   price bands (≈ 1h cheapest–dearest · 4h cheapest–dearest) from
+ *   forecast_daily_price; the 4h pair appears once it has its own history.
  *
  * 72-hour window: yesterday 00:00 → tomorrow 23:59 (local)
  *
@@ -240,6 +243,7 @@
           #generation .day .remain { color: #ffb300; font-size: 0.75rem; }
           #generation .day .sep  { color: var(--secondary-text-color, #444); }
           #generation .day .unit { color: var(--secondary-text-color, #888); font-size: 0.75rem; }
+          #generation .day .price { color: #ffb300; font-size: 0.75rem; font-style: italic; margin-left: 4px; }
           #status {
             padding: 40px;
             text-align: center;
@@ -830,6 +834,7 @@
       const daily = dashAttrs.forecast_daily_kwh;
       if (!daily) { el.innerHTML = ''; return; }
 
+      const prices = dashAttrs.forecast_daily_price || {};
       const fmt = (v) => (typeof v === 'number' ? v.toFixed(2) : '—');
 
       const DAY_NAMES = ['Sun', 'Mon', 'Tue', 'Wed', 'Thu', 'Fri', 'Sat'];
@@ -866,6 +871,24 @@
         } else {
           inner += `<span class="pred">${predTxt}</span>`
                 +  `<span class="unit">kWh</span>`;
+          // Present only while the auction has not settled that day, so
+          // tomorrow's estimate vanishes once its actual prices are in.
+          const est = prices[KEYS[i]];
+          if (est) {
+            const fp   = (v) => (typeof v === 'number' ? v.toFixed(3) : '—');
+            const band = (lo, hi) => `${fp(lo)}–${fp(hi)}`;
+            const sym  = this._currencySymbol;
+            // The 4 h band needs two weeks of its own history before it can be
+            // estimated; until then only the 1 h band is shown.
+            const has4h = typeof est.trough_4h === 'number' && typeof est.peak_4h === 'number';
+            const tip = `Estimated spot price, ${sym}/kWh (${est.source}). `
+                      + `Cheapest–dearest 1 h: ${band(est.trough_1h, est.peak_1h)}`
+                      + (has4h ? `; 4 h: ${band(est.trough_4h, est.peak_4h)}` : '');
+            inner += `<span class="price" title="${tip}">`
+                  +  `≈ 1h ${band(est.trough_1h, est.peak_1h)}`
+                  +  (has4h ? ` · 4h ${band(est.trough_4h, est.peak_4h)}` : '')
+                  +  ` ${sym}</span>`;
+          }
         }
         return `<span class="day ${cls}">${inner}</span>`;
       });

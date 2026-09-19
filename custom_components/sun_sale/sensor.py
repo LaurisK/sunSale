@@ -22,6 +22,7 @@ from .contract.const import (
     DOMAIN,
 )
 from .contract.models import (
+    PRICE_STAT_SOURCE_ACTUAL,
     ArrayCalibration,
     BakedObservedHistory,
     BaseLoadProfile,
@@ -128,6 +129,43 @@ def _serialize_forecast_slots(series: GenerationSeries | None) -> list[dict]:
             "forecast_w": round(w),
         })
     return result
+
+
+def _serialize_price_estimates(forecast: PriceForecast | None) -> dict[str, dict]:
+    """Return the modelled daily price bands keyed like ``forecast_daily_kwh``.
+
+    Only days the day-ahead auction has not settled are included, so
+    tomorrow's estimate drops out as soon as its actual prices are published
+    and the price chart takes over.
+
+    Args:
+        forecast: Week-ahead price forecast, or None.
+
+    Returns:
+        Dict mapping ``tomorrow`` / ``d2`` … ``d6`` to that day's cheapest and
+        dearest 1 h and 4 h spot price, the forecast source and its confidence.
+        The 4 h pair is None until that band has enough history to estimate.
+    """
+    if forecast is None:
+        return {}
+    out: dict[str, dict] = {}
+    for stat in forecast.days:
+        if stat.horizon_days < 1 or stat.source == PRICE_STAT_SOURCE_ACTUAL:
+            continue
+        key = "tomorrow" if stat.horizon_days == 1 else f"d{stat.horizon_days}"
+        out[key] = {
+            "trough_1h": round(stat.trough_1h_eur_kwh, 4),
+            "peak_1h": round(stat.peak_1h_eur_kwh, 4),
+            "trough_4h": (
+                round(stat.trough_4h_eur_kwh, 4) if stat.trough_4h_eur_kwh is not None else None
+            ),
+            "peak_4h": (
+                round(stat.peak_4h_eur_kwh, 4) if stat.peak_4h_eur_kwh is not None else None
+            ),
+            "source": stat.source,
+            "confidence": round(stat.confidence, 3),
+        }
+    return out
 
 
 def _slot_kw(kwh: float, start: datetime, end: datetime) -> float:
@@ -888,6 +926,9 @@ class DashboardSensor(_BaseSensor):
             "array_calibration": array_calibration_data,
             "solar_health": solar_health_data,
             "forecast_daily_kwh": forecast_daily_kwh,
+            "forecast_daily_price": _serialize_price_estimates(
+                self.coordinator.data.get("price_forecast")
+            ),
             "actual_yesterday_kwh": round(observed.total_yesterday_kwh, 3) if observed else None,
             "actual_today_kwh": round(observed.total_today_so_far_kwh, 3) if observed else None,
             "inverter_mode_plan": inverter_mode_plan,
