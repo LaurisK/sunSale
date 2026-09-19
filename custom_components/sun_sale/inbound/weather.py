@@ -27,7 +27,7 @@ from __future__ import annotations
 
 import logging
 from datetime import UTC, datetime, tzinfo
-from typing import Any
+from typing import Any, NamedTuple
 
 from ..contract.models import WeatherDaily, WeatherForecastData
 
@@ -79,6 +79,49 @@ def detect_weather_entity(hass: Any, configured: str = "") -> str:
         if state.state not in ("unavailable", "unknown", "", None):
             return state.entity_id
     return ""
+
+
+class DetectedWeather(NamedTuple):
+    """A weather entity on this system the price forecast could read.
+
+    Attributes:
+        entity_id: The entity id.
+        name: Its friendly name, or "" when it publishes none.
+        auto: Whether :func:`detect_weather_entity` would pick this one with
+            nothing configured — i.e. what an unconfigured install already uses.
+    """
+
+    entity_id: str
+    name: str
+    auto: bool
+
+
+def detect_weather_entities(hass: Any) -> list[DetectedWeather]:
+    """Return every weather entity on this system, the auto-detected one first.
+
+    Offered as a list because the price forecast reads exactly one, and which
+    one it reads was previously invisible: the translator auto-detects and
+    nothing said so. Ordering matches :func:`detect_weather_entity`'s
+    preference so the row at the top is the one already in use.
+
+    Args:
+        hass: Home Assistant instance, or None (nothing is detected then).
+
+    Returns:
+        The weather entities, auto-detected first, then the rest by entity id.
+    """
+    if hass is None:
+        return []
+    auto = detect_weather_entity(hass)
+    found = [
+        DetectedWeather(
+            state.entity_id,
+            str(state.attributes.get("friendly_name") or ""),
+            state.entity_id == auto,
+        )
+        for state in hass.states.async_all(_WEATHER_DOMAIN)
+    ]
+    return sorted(found, key=lambda entity: (not entity.auto, entity.entity_id))
 
 
 def _to_kmh(value: Any, unit: Any) -> float | None:

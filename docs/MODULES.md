@@ -72,6 +72,7 @@ flowchart TB
         I_price["pricing.py<br/>price-feed translators<br/>(Nordpool/ENTSO-e/Octopus/Amber/TOU)"]:::inbound
         I_fc["forecast.py<br/>SolarTranslator"]:::inbound
         I_fcr["forecast_resolver.py"]:::inbound
+        I_weather["weather.py<br/>WeatherTranslator + detection"]:::inbound
         I_bat["battery.py<br/>BatteryTranslator"]:::inbound
         I_btsrc["battery_source.py<br/>BatterySource (BMS/inverter)"]:::inbound
         I_hc["household_consumption.py"]:::inbound
@@ -133,7 +134,7 @@ flowchart TB
     end
 
     %% --- HA boundary ---
-    HA -->|states| I_price & I_fc & I_hc & I_time & I_trdr
+    HA -->|states| I_price & I_fc & I_hc & I_trdr & I_weather
     SOLIS -.->|registry scan| I_solis
     O_inv & O_entity -->|service calls| HA
     R_init --> HA
@@ -246,6 +247,12 @@ Two ways to name a solar array without hunting for entities. `discover_forecast_
 - **Exposes:** `discover_forecast_entries`, `resolve_forecast_entities`, `detect_forecast_sensors`, `is_forecast_sensor`, `DetectedForecast`, `manual_forecast_entities`, `combine_forecast_entities`.
 - **Depends on:** `contract.const`, HA entity registry directly.
 - **Tests:** `tests/test_forecast_resolver.py`, `tests/test_config_flow.py`.
+
+### `inbound/weather.py`
+`WeatherTranslator` reads one HA `weather` entity's **daily** forecast (wind, temperature, cloud cover where published) for the week-ahead price model — no new cloud dependency, no API key, and whatever source the user already trusts. Hourly forecasts are deliberately unused: the published targets are daily statistics and hourly coverage is typically ~48 h. `detect_weather_entity` picks an entity when none is configured (`weather.forecast_home` → `weather.home` → first available); `detect_weather_entities` lists them all for the setup page, marking the auto-detected one. Every failure path yields empty data rather than raising, since weather is an optional accuracy input.
+- **Exposes:** `WeatherTranslator` → `WeatherForecastData`, `detect_weather_entity`, `detect_weather_entities`, `DetectedWeather`, `parse_daily_forecast`.
+- **Depends on:** `contract.models`.
+- **Tests:** `tests/test_weather_inbound.py`.
 
 ### `inbound/household_consumption.py`
 `HouseholdConsumptionTranslator` snapshots the today-total household-load kWh counter (resets at local midnight) — used to display "consumption so far today".

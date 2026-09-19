@@ -15,6 +15,7 @@ import pytest
 from custom_components.sun_sale.contract.models import WeatherForecastData
 from custom_components.sun_sale.inbound.weather import (
     WeatherTranslator,
+    detect_weather_entities,
     detect_weather_entity,
     parse_daily_forecast,
 )
@@ -162,6 +163,33 @@ def test_unavailable_entities_are_not_selected():
     """An unavailable entity is not a usable source."""
     hass = _Hass([_State("weather.broken", state="unavailable")], _Services())
     assert detect_weather_entity(hass, "") == ""
+
+
+def test_the_candidate_list_offers_every_entity_with_the_one_in_use_first():
+    """The setup page shows which entity the forecast already reads — it was invisible before."""
+    hass = _Hass([
+        _State("weather.zzz_last", friendly_name="Last"),
+        _State("weather.forecast_home", friendly_name="Home"),
+        _State("weather.aaa_first"),
+    ], _Services())
+    found = detect_weather_entities(hass)
+    assert [(e.entity_id, e.name, e.auto) for e in found] == [
+        ("weather.forecast_home", "Home", True),
+        ("weather.aaa_first", "", False),
+        ("weather.zzz_last", "Last", False),
+    ]
+
+
+def test_an_unavailable_entity_is_still_offered_but_never_marked_in_use():
+    """It may be temporarily down; hiding it would stop the user picking it at all."""
+    hass = _Hass([_State("weather.broken", state="unavailable")], _Services())
+    found = detect_weather_entities(hass)
+    assert [(e.entity_id, e.auto) for e in found] == [("weather.broken", False)]
+
+
+def test_no_weather_integration_offers_nothing():
+    assert detect_weather_entities(_Hass([], _Services())) == []
+    assert detect_weather_entities(None) == []
 
 
 # ---------------------------------------------------------------------------

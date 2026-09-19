@@ -23,6 +23,15 @@ Any behavior-affecting change bumps the `version` in
   The form also names each chosen integration's resolved sensor, and says so
   when one resolved to nothing — previously a silent log line, so an array
   could contribute no forecast at all without anyone noticing.
+- **The price forecast's weather entity is now visible and selectable.** New
+  optional *Price forecast weather* page in the **prices** section (not the solar
+  forecast, which is hidden without an inverter — weather feeds only the
+  week-ahead *price* model, and a prices-only install is exactly where that
+  matters). `inbound/weather.py:detect_weather_entities` lists every weather
+  entity and marks the auto-detected one **in use now**; *None* turns the
+  weather correction off and, unlike before, stays off. `CONF_WEATHER_ENTITY`
+  was previously read at runtime with no form field anywhere, so which entity
+  fed a dispatch-affecting forecast could be neither seen nor changed.
 - **Price sensors are detected.** *Price source and sensor* now lists the
   sensors on the system that a price translator can read — recognised by the
   attributes each translator parses (Nord Pool `raw_today` / `today` +
