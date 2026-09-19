@@ -63,6 +63,15 @@ Any behavior-affecting change bumps the `version` in
   install with prices, including a monitoring-only one. The new
   `check_price_level` integration check recomputes the classes from
   `pipeline.pricing`.
+- **Prices are optional.** Leaving *Electricity prices* out of the installation
+  makes sunSale a monitoring-only install: the coordinator builds no price
+  translator, so pricing and everything downstream skip. Placeholder zero
+  tariff values are written so setup stays constructible.
+- `CONF_INSTALL_CAPABILITIES` and `contract/install_capabilities.py`: what the
+  installation has (prices, inverter, solar forecast), derived at Finish from
+  the completed setup sections. Entries created before have no stored
+  capabilities and read as having everything, so existing installs behave
+  exactly as before — no migration.
 
 ### Removed
 - **The HA↔inverter clock-skew tracker.** `inbound/inverter_time.py`,

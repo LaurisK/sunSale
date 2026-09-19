@@ -87,6 +87,10 @@ CONF_BATTERY_NOMINAL_VOLTAGE = "nominal_voltage_v"
 
 # Config entry keys — inverter
 CONF_INVERTER_PLATFORM = "inverter_platform"
+# The ``{prices, inverter, solar_forecast}`` capability dict the setup flow
+# stores — which parts of an installation exist at all (see
+# ``contract/install_capabilities.py``).
+CONF_INSTALL_CAPABILITIES = "install_capabilities"
 # Per-deployment inverter power ratings (config flow). Stored in kW for UX
 # parity with the battery power fields; the coordinator converts to W. Absent
 # on configs created before these fields existed — the coordinator falls back

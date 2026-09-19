@@ -92,6 +92,7 @@ from ..contract.const import (
     STORAGE_VERSION,
     UPDATE_INTERVAL_MINUTES,
 )
+from ..contract.install_capabilities import CAP_PRICES, resolve_install_capabilities
 from ..contract.models import (
     ArrayCalibration,
     BakedObservedHistory,
@@ -1007,14 +1008,26 @@ class SunSaleCoordinator(DataUpdateCoordinator):
             if data.get(CONF_NORDPOOL_RESOLUTION) == "15min"
             else timedelta(hours=1)
         )
+        # An install with prices unchecked gets no price feed at all, so
+        # PricingNode and everything downstream skip — the same path a
+        # missing price sensor already takes. Gating the translator (rather
+        # than blanking its entity) also covers the fixed-price feed, which
+        # needs no sensor and would otherwise keep emitting slots.
+        price_translators = (
+            [
+                build_price_translator(
+                    self._sun_sale_config.price_source,
+                    entity_id=data.get(CONF_NORDPOOL_ENTITY, ""),
+                    export_entity_id=data.get(CONF_PRICE_EXPORT_ENTITY, ""),
+                    resolution=fixed_resolution,
+                    local_tz=local_tz,
+                ),
+            ]
+            if resolve_install_capabilities(data)[CAP_PRICES]
+            else []
+        )
         self._translators = [
-            build_price_translator(
-                self._sun_sale_config.price_source,
-                entity_id=data.get(CONF_NORDPOOL_ENTITY, ""),
-                export_entity_id=data.get(CONF_PRICE_EXPORT_ENTITY, ""),
-                resolution=fixed_resolution,
-                local_tz=local_tz,
-            ),
+            *price_translators,
             SolarTranslator(
                 base_entities=self._forecast_base_entities,
             ),
