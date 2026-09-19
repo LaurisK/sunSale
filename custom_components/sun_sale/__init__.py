@@ -101,7 +101,7 @@ async def _async_sync_panels(hass: HomeAssistant) -> None:
 
 _DEBUG_VIEW_KEY = f"{DOMAIN}_debug_view_registered"
 
-PLATFORMS = ["sensor", "switch", "number", "select"]
+PLATFORMS = ["sensor", "binary_sensor", "switch", "number", "select"]
 
 SERVICE_FORCE_RECALCULATE = "force_recalculate"
 SERVICE_FORCE_VERIFY_INVERTER_MODE = "force_verify_inverter_mode"

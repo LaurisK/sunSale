@@ -8,6 +8,6 @@
   "documentation": "https://github.com/LaurisK/sunSale",
   "iot_class": "local_polling",
   "issue_tracker": "https://github.com/LaurisK/sunSale/issues",
-  "requirements": [],
+  "requirements": ["holidays>=0.35"],
   "version": "0.5.1"
 }

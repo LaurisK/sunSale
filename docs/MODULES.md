@@ -100,7 +100,7 @@ flowchart TB
         P_engine["dag_engine.py<br/>DagEngine / DagNode / NodeContext"]:::pipe
         subgraph NODES["nodes/  —  DAG node tiers"]
             P_t1["tier1.py<br/>Pricing / BatteryState /<br/>BatteryStatus / BaseLoadProfile"]:::pipe
-            P_t2["tier2.py<br/>Generation / Observed{Gen,Grid,<br/>Consumption,Losses} / Degradation /<br/>BatteryRuntime / Profitability"]:::pipe
+            P_t2["tier2.py<br/>PriceLevel / Generation / Observed{Gen,<br/>Grid,Consumption,Losses} / Degradation /<br/>BatteryRuntime / Profitability"]:::pipe
             P_t3["tier3.py<br/>Lockout / ForecastAccuracy /<br/>MonthlyBill"]:::pipe
             P_t4["tier4.py<br/>ScheduleNode"]:::pipe
         end

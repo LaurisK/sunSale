@@ -145,6 +145,7 @@ from ..contract.models import (
     ObservedLossesSeries,
     PriceCurveHistory,
     PriceForecast,
+    PriceLevelSeries,
     PriceSeries,
     ProfitabilityScore,
     PvPowerHistory,
@@ -242,10 +243,12 @@ from ..pipeline.nodes import (
     ObservedGridNode,
     ObservedLossesNode,
     PriceForecastNode,
+    PriceLevelNode,
     PricingNode,
     ProfitabilityNode,
     ScheduleNode,
 )
+from ..pipeline.price_level import config_from_entry as price_level_config_from_entry
 from .cycle_steps import (
     CapacityStep,
     ConsumptionDailyStep,
@@ -969,6 +972,7 @@ class SunSaleCoordinator(DataUpdateCoordinator):
             forecast_reserve_enabled=bool(
                 data.get(CONF_FORECAST_RESERVE_ENABLED, DEFAULT_FORECAST_RESERVE_ENABLED)
             ),
+            price_levels=price_level_config_from_entry(data),
         )
 
         # Per-deployment inverter power ratings (config flow, kW → W). Fall back
@@ -1073,6 +1077,7 @@ class SunSaleCoordinator(DataUpdateCoordinator):
 
         nodes = [
             PricingNode(),
+            PriceLevelNode(),
             BatteryStateNode(),
             BatteryStatusNode(),
             BaseLoadProfileNode(),
@@ -1891,6 +1896,7 @@ class SunSaleCoordinator(DataUpdateCoordinator):
             "base_load_profile": secondary.get(BaseLoadProfile),
             "battery_runtime": secondary.get(BatteryRuntimeEstimate),
             "profitability_score": secondary.get(ProfitabilityScore),
+            "price_level": secondary.get(PriceLevelSeries),
             "price_forecast": secondary.get(PriceForecast),
             "consumption_today_kwh": (
                 consumption.today_total_kwh if consumption else None

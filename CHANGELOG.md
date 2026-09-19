@@ -29,6 +29,19 @@ Any behavior-affecting change bumps the `version` in
   (`export_feed_mismatch`), since the translator only reads its own. The
   by-hand export sensor field can now be cleared (it used to snap back to its
   stored value), and the page summary shows the export sensor.
+- **Price level published to Home Assistant.** Every price slot's buy price is
+  ranked within its local day and classed cheap / normal / expensive — the
+  cheapest `price_level_cheap_share` / dearest `price_level_expensive_share`
+  (defaults 25 % / 25 %), with optional absolute per-kWh limits overriding the
+  rank, and a boundary tie group joining a class only when at least half of it
+  is inside the share. The level is exposed as
+  `sensor.sunsale_price_level`, the `binary_sensor.sunsale_cheap_price` /
+  `sunsale_expensive_price` pair and the debug view's `pipeline.price_level`,
+  re-evaluated on every quarter-hour boundary. sunSale controls nothing with
+  it — automations and other integrations consume it — so it works on any
+  install with prices, including a monitoring-only one. The new
+  `check_price_level` integration check recomputes the classes from
+  `pipeline.pricing`.
 
 ### Changed
 

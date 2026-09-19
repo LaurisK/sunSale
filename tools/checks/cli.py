@@ -29,6 +29,7 @@ from .observed import (
     check_observed_grid,
 )
 from .price_forecast import check_price_forecast
+from .price_level import check_price_level
 from .pricing import check_pricing
 from .profitability import check_profitability
 from .report import render_json, render_values, run_checks
@@ -116,6 +117,7 @@ def main(argv: list[str] | None = None) -> int:
     capability_results             = {s.entry_id: check_capability(s)                for s in snapshots}
     export_guard_results           = {s.entry_id: check_export_guard(s)              for s in snapshots}
     price_forecast_results         = {s.entry_id: check_price_forecast(s)            for s in snapshots}
+    price_level_results            = {s.entry_id: check_price_level(s)               for s in snapshots}
     app = IntegrationCheckApp(
         report,
         forecast_results, pricing_results, calculation_results,
@@ -125,6 +127,7 @@ def main(argv: list[str] | None = None) -> int:
         forecast_acc_results,
         base_load_results, battery_runtime_results,
         household_consumption_results, profitability_results,
+        price_forecast_results,
         forecast_quality_results,
         array_calibration_results,
         monthly_bill_results,
@@ -132,8 +135,8 @@ def main(argv: list[str] | None = None) -> int:
         observed_losses_results,
         inverter_mode_results,
         capability_results,
-        price_forecast_results,
         export_guard_results=export_guard_results,
+        price_level_results=price_level_results,
     )
     app.run(inline=True)
     return app.exit_code

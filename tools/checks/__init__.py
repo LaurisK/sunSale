@@ -73,6 +73,7 @@ from .observed import (
     check_observed_grid,
 )
 from .price_forecast import PriceForecastCheckResult, check_price_forecast
+from .price_level import PriceLevelCheckResult, check_price_level
 from .pricing import PricingCheckResult, check_pricing
 from .profitability import ProfitabilityCheckResult, check_profitability
 from .registry import CheckResult, Validator, validator
@@ -111,6 +112,7 @@ __all__ = [
     "BaseLoadCheckResult",
     "HouseholdConsumptionCheckResult",
     "PriceForecastCheckResult",
+    "PriceLevelCheckResult",
     "ProfitabilityCheckResult",
     "MonthlyBillCheckResult",
     "ObservedConsumptionCheckResult",
@@ -135,6 +137,7 @@ __all__ = [
     "check_base_load",
     "check_household_consumption",
     "check_price_forecast",
+    "check_price_level",
     "check_profitability",
     "check_monthly_bill",
     "check_observed_consumption",

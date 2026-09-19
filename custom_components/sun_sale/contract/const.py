@@ -10,6 +10,44 @@ CONF_TARIFF_SELL_DISTRIBUTION_FEE = "sell_distribution_fee"
 CONF_TARIFF_SELL_TAX_RATE = "sell_tax_rate"
 CONF_TARIFF_SELL_MARKUP = "sell_markup"
 
+# Config entry keys — price formulas. Buy and sell each hold one formula dict
+# (see pipeline/tariff.py:formula_from_config):
+#   price = (energy + markup + grid_fee[T]) × (1 + vat)        buy
+#   price = (energy − markup − grid_fee[T]) × (1 − vat)        sell
+# where energy is the market price (dynamic) or a fixed price, and T is the
+# grid-fee tariff active for the slot's season / day type / time of day.
+CONF_PRICE_BUY = "price_buy"
+CONF_PRICE_SELL = "price_sell"
+
+# Keys inside a formula dict (also the formula / fees / schedule form fields).
+FORMULA_ENERGY = "energy"              # ENERGY_DYNAMIC | ENERGY_FIXED
+FORMULA_FIXED_PRICE = "fixed_price"    # per kWh, used when energy is fixed
+FORMULA_MARKUP = "markup"              # per kWh
+FORMULA_VAT = "vat"                    # percent
+FORMULA_TARIFFS = "tariffs"            # grid-fee tariff count, one of TARIFF_COUNTS
+FORMULA_SEASONS = "seasons"            # separate summer / winter schedules
+FORMULA_WEEKENDS = "weekends"          # separate weekend schedule
+FORMULA_HOLIDAYS = "holidays"          # separate public-holiday schedule
+FORMULA_SUMMER_START = "summer_start"  # "MM-DD"
+FORMULA_WINTER_START = "winter_start"  # "MM-DD"
+FORMULA_GRID_FEES = "grid_fees"        # list of per-kWh fees, T1 first
+# {"<season>_<day type>": [{"start": "HH:MM", "tariff": 1-based int}, ...]}
+FORMULA_SCHEDULES = "schedules"
+
+ENERGY_DYNAMIC = "dynamic"
+ENERGY_FIXED = "fixed"
+TARIFF_COUNTS = (1, 2, 4)
+MAX_TARIFF_SWITCHES = 6  # switch-point rows per schedule form
+
+SEASON_ALL = "all"
+SEASON_SUMMER = "summer"
+SEASON_WINTER = "winter"
+DAY_WORKDAY = "workday"
+DAY_WEEKEND = "weekend"
+DAY_HOLIDAY = "holiday"
+DEFAULT_SUMMER_START = "04-01"
+DEFAULT_WINTER_START = "11-01"
+
 # Display currency code (ISO 4217, e.g. EUR/SEK/NOK/DKK/GBP/USD). Affects only
 # the unit labels / icons on sensors and the panel — never the optimisation math,
 # which is currency-neutral (per-kWh in whatever unit the price source supplies).
@@ -130,6 +168,9 @@ PRICE_SOURCES = (
     PRICE_SOURCE_AMBER,
     PRICE_SOURCE_TOU,
 )
+# Not selectable: the effective source when neither price is dynamic, so no
+# market sensor is read (the feed is a synthetic zero-spot slot grid).
+PRICE_SOURCE_FIXED = "fixed"
 DEFAULT_PRICE_SOURCE = PRICE_SOURCE_NORDPOOL
 CONF_SOLAR_FORECAST_ENTITY = "solar_forecast_entity"
 CONF_SOLAR_FORECAST_ENTITY_2 = "solar_forecast_entity_2"
@@ -138,6 +179,15 @@ CONF_SOLAR_FORECAST_ENTITY_2 = "solar_forecast_entity_2"
 # "today" forecast sensor automatically. The two legacy entity keys above remain
 # as the manual fallback (used when no forecast devices are discovered).
 CONF_SOLAR_FORECAST_DEVICE_IDS = "solar_forecast_device_ids"
+# Price level (cheap / normal / expensive) published to HA for automations and
+# other integrations. Shares are percentages of each local day's slots by
+# buy-price rank; the absolute limits (per kWh, buy price) are optional and
+# override the rank. See ``pipeline/price_level.py``.
+CONF_PRICE_LEVEL_CHEAP_SHARE = "price_level_cheap_share"
+CONF_PRICE_LEVEL_EXPENSIVE_SHARE = "price_level_expensive_share"
+CONF_PRICE_LEVEL_CHEAP_BELOW = "price_level_cheap_below"
+CONF_PRICE_LEVEL_EXPENSIVE_ABOVE = "price_level_expensive_above"
+DEFAULT_PRICE_LEVEL_SHARE_PCT = 25.0
 CONF_INVERTER_ENTITY_HOUSEHOLD_CONSUMPTION_ENERGY = (
     "inverter_entity_household_consumption_energy"
 )

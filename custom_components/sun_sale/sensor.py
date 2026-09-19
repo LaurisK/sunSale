@@ -11,8 +11,9 @@ from homeassistant.components.sensor import (
 )
 from homeassistant.config_entries import ConfigEntry
 from homeassistant.const import UnitOfEnergy
-from homeassistant.core import HomeAssistant
+from homeassistant.core import HomeAssistant, callback
 from homeassistant.helpers.entity_platform import AddEntitiesCallback
+from homeassistant.helpers.event import async_track_time_change
 from homeassistant.helpers.update_coordinator import CoordinatorEntity
 
 from .contract.const import (
@@ -38,6 +39,8 @@ from .contract.models import (
     ObservedGridSeries,
     ObservedLossesSeries,
     PriceForecast,
+    PriceLevel,
+    PriceLevelSeries,
     PriceSeries,
     PriceSlot,
     Schedule,
@@ -47,6 +50,11 @@ from .contract.models import (
 )
 from .currency import currency_icon, per_kwh_unit, resolve_currency
 from .orchestration.coordinator import SunSaleCoordinator
+from .pipeline.price_level import price_level_status
+
+# Price slots start on the quarter hour; re-evaluate price-level state then
+# instead of waiting for the next (~5-min) coordinator refresh.
+SLOT_BOUNDARY_MINUTES = (0, 15, 30, 45)
 
 
 async def async_setup_entry(
@@ -71,6 +79,7 @@ async def async_setup_entry(
         EstimatedCapacitySensor(coordinator, entry),
         CurrentBuyPriceSensor(coordinator, entry),
         CurrentSellPriceSensor(coordinator, entry),
+        PriceLevelSensor(coordinator, entry),
         ScheduleSensor(coordinator, entry),
         DashboardSensor(coordinator, entry),
         InverterModeSensor(coordinator, entry),
@@ -426,6 +435,54 @@ class CurrentSellPriceSensor(_BaseSensor):
         """Return the current slot's sell_eur_kwh."""
         slot = self._current_price_slot()
         return round(slot.sell_eur_kwh, 4) if slot else None
+
+
+class PriceLevelSensor(_BaseSensor):
+    """Whether the current price is cheap, normal or expensive — for automations.
+
+    sunSale acts on nothing with this; it is published so automations and other
+    integrations can (heat extra hot water while cheap, eco mode while
+    expensive). Attributes carry the buy price, its rank within the day, the
+    day's thresholds and when the level next changes.
+    """
+
+    _attr_name = "sunSale Price Level"
+    _attr_device_class = SensorDeviceClass.ENUM
+    _attr_options = [level.value for level in PriceLevel]
+    _attr_icon = "mdi:cash-clock"
+
+    def __init__(self, coordinator, entry):
+        """Initialise the price-level sensor."""
+        super().__init__(coordinator, entry, "price_level")
+
+    async def async_added_to_hass(self) -> None:
+        """Also re-evaluate on every slot boundary, not only on coordinator refresh."""
+        await super().async_added_to_hass()
+        self.async_on_remove(async_track_time_change(
+            self.hass, self._on_slot_boundary, minute=SLOT_BOUNDARY_MINUTES, second=1,
+        ))
+
+    @callback
+    def _on_slot_boundary(self, _now: datetime) -> None:
+        """Write the state for the slot that just started."""
+        self.async_write_ha_state()
+
+    def _status(self) -> dict[str, Any] | None:
+        """Return the current price status, or None when no prices are known."""
+        series: PriceLevelSeries | None = (self.coordinator.data or {}).get("price_level")
+        return price_level_status(series, datetime.now(UTC)) if series else None
+
+    @property
+    def native_value(self) -> str | None:
+        """Return ``cheap`` / ``normal`` / ``expensive`` for the current slot."""
+        status = self._status()
+        return status["level"] if status else None
+
+    @property
+    def extra_state_attributes(self) -> dict[str, Any]:
+        """Return buy price, day rank, thresholds and the next level change."""
+        status = self._status()
+        return {k: v for k, v in status.items() if k != "level"} if status else {}
 
 
 class ScheduleSensor(_BaseSensor):

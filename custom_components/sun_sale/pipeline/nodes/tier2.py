@@ -19,6 +19,7 @@ from ...contract.models import (
     ObservedGridSeries,
     ObservedLossesSeries,
     PriceHistory,
+    PriceLevelSeries,
     PriceSeries,
     ProfitabilityScore,
     PvPowerHistory,
@@ -30,10 +31,24 @@ from ...inbound.observer import generation as generation_module
 from ...inbound.observer import grid as grid_module
 from .. import base_load as base_load_module
 from .. import battery as battery_module
+from .. import price_level as price_level_module
 from .. import profitability as profitability_module
 from ..dag_engine import DagNode, NodeContext
 
 _LOGGER = logging.getLogger(__name__)
+
+
+class PriceLevelNode(DagNode):
+    """Class every price slot cheap / normal / expensive → PriceLevelSeries (published to HA)."""
+
+    output_type = PriceLevelSeries
+    consumes = [PriceSeries]
+
+    async def _compute(self, ctx: NodeContext) -> PriceLevelSeries:
+        """Rank each local day's buy prices and class every slot."""
+        return price_level_module.classify_price_levels(
+            ctx.require(PriceSeries), ctx.config.price_levels, ctx.config.local_tz, ctx.now,
+        )
 
 
 class GenerationNode(DagNode):

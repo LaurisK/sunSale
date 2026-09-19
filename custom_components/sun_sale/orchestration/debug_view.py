@@ -16,6 +16,8 @@ from ..contract.const import (
     DEFAULT_EXPORT_LIMIT_W,
     DOMAIN,
 )
+from ..contract.models import PriceLevel
+from ..pipeline.price_level import price_level_status
 
 
 class SunSaleDebugView(HomeAssistantView):
@@ -84,6 +86,7 @@ def _coordinator_to_dict(entry_id: str, coordinator: Any) -> dict:
     batt_status = data.get("battery_status")
     batt_runtime = data.get("battery_runtime")
     profitability = data.get("profitability_score")
+    price_level = data.get("price_level")
     price_forecast = data.get("price_forecast")
     forecast_quality = data.get("forecast_quality")
     array_calibration = data.get("array_calibration")
@@ -252,6 +255,7 @@ def _coordinator_to_dict(entry_id: str, coordinator: Any) -> dict:
                     for s in pricing.slots
                 ],
             } if pricing is not None else None,
+            "price_level": _price_level_block(price_level),
             "forecast": {
                 "slot_count": len(forecast.slots),
                 **forecast.daily_totals_kwh(4),
@@ -585,6 +589,56 @@ def _coordinator_to_dict(entry_id: str, coordinator: Any) -> dict:
             coordinator.last_dispatched_at.isoformat()
             if coordinator.last_dispatched_at is not None else None
         ),
+    }
+
+
+def _price_level_block(series: Any) -> dict | None:
+    """Serialise the PriceLevelSeries: config, per-day thresholds, per-slot levels.
+
+    ``current`` is the same status dict the HA entities publish, so a check can
+    confirm the entities and the series agree.
+
+    Args:
+        series: The coordinator's ``PriceLevelSeries`` (or None without prices).
+
+    Returns:
+        JSON-safe dict, or None when there is no series.
+    """
+    if series is None:
+        return None
+    cfg = series.config
+    counts = {level.value: 0 for level in PriceLevel}
+    for s in series.slots:
+        counts[s.level.value] += 1
+    return {
+        "config": {
+            "cheap_share": cfg.cheap_share,
+            "expensive_share": cfg.expensive_share,
+            "cheap_below": cfg.cheap_below,
+            "expensive_above": cfg.expensive_above,
+        },
+        "computed_at": series.computed_at.isoformat(),
+        "current": price_level_status(series, datetime.now(UTC)),
+        "counts": counts,
+        "days": [
+            {
+                "date": d.date.isoformat(),
+                "slot_count": d.slot_count,
+                "cheap_threshold": d.cheap_threshold,
+                "expensive_threshold": d.expensive_threshold,
+            }
+            for d in series.days
+        ],
+        "slots": [
+            {
+                "start": s.start.isoformat(),
+                "day": s.day.isoformat(),
+                "buy": s.buy_eur_kwh,
+                "level": s.level.value,
+                "rank": round(s.rank, 4),
+            }
+            for s in series.slots
+        ],
     }
 
 

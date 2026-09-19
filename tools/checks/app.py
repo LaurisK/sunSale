@@ -46,6 +46,7 @@ from .observed import (
     ObservedGridCheckWidget,
 )
 from .price_forecast import PriceForecastCheckResult, PriceForecastCheckWidget
+from .price_level import PriceLevelCheckResult, PriceLevelCheckWidget
 from .pricing import PricingCheckResult, PricingCheckWidget
 from .profitability import ProfitabilityCheckResult, ProfitabilityCheckWidget
 from .registry import CheckResult
@@ -60,7 +61,7 @@ _DEEP_CATS: frozenset[str] = frozenset({
     "array_calibration",
     "monthly_bill", "baked_observed",
     "observed_consumption", "observed_losses",
-    "inverter_mode", "capability", "export_guard",
+    "inverter_mode", "capability", "export_guard", "price_level",
 })
 
 
@@ -76,6 +77,7 @@ class IntegrationCheckApp(App):
     ForecastSummaryTable DataTable { height: 12; }
     PricingCheckWidget { height: auto; }
     PricingSlotsTable DataTable { height: 22; }
+    PriceLevelCheckWidget { height: auto; }
     CalculationCheckWidget { height: auto; }
     CalculationSlotsTable DataTable { height: 22; }
     ScheduleCheckWidget { height: auto; }
@@ -132,6 +134,7 @@ class IntegrationCheckApp(App):
         inverter_mode_results: dict[str, InverterModeCheckResult],
         capability_results: dict[str, CapabilityCheckResult],
         export_guard_results: dict[str, ExportGuardCheckResult] | None = None,
+        price_level_results: dict[str, PriceLevelCheckResult] | None = None,
     ) -> None:
         """Initialise with validator report and all deep-check results.
 
@@ -159,6 +162,7 @@ class IntegrationCheckApp(App):
             observed_losses_results: Per-entry observed losses deep-check results.
             inverter_mode_results: Per-entry stitched history+plan band deep-check results.
             export_guard_results: Per-entry battery-export guard deep-check results.
+            price_level_results: Per-entry cheap/normal/expensive price-level deep-check results.
         """
         super().__init__()
         self._report = report
@@ -184,6 +188,7 @@ class IntegrationCheckApp(App):
         self._observed_losses_results = observed_losses_results
         self._inverter_mode_results = inverter_mode_results
         self._export_guard_results = export_guard_results or {}
+        self._price_level_results = price_level_results or {}
         self.exit_code = 0
 
     def _all_deep(self) -> list:
@@ -215,6 +220,7 @@ class IntegrationCheckApp(App):
             + list(self._observed_losses_results.values())
             + list(self._inverter_mode_results.values())
             + list(self._export_guard_results.values())
+            + list(self._price_level_results.values())
         )
 
     def compose(self) -> ComposeResult:
@@ -238,6 +244,7 @@ class IntegrationCheckApp(App):
             for label, widget_cls, results_map in (
                 ("forecast",                ForecastCheckWidget,                self._forecast_results),
                 ("pricing",                 PricingCheckWidget,                 self._pricing_results),
+                ("price_level",             PriceLevelCheckWidget,              self._price_level_results),
                 ("calculation",             CalculationCheckWidget,             self._calculation_results),
                 ("schedule",                ScheduleCheckWidget,                self._schedule_results),
                 ("inverter_mode",           InverterModeCheckWidget,            self._inverter_mode_results),
