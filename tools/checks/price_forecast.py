@@ -4,8 +4,9 @@ Validates everything ``pipeline.price_forecast`` exposes:
 
 * the day set is contiguous, starts today, and has no duplicate horizons;
 * every day's band ordering is physically coherent
-  (``trough_1h ≤ trough_3h ≤ peak_3h ≤ peak_1h``) and its spread matches the
-  published peak/trough;
+  (``trough_1h ≤ trough_4h ≤ peak_4h ≤ peak_1h``) and its spread matches the
+  published peak/trough; a modelled day may carry a null 4 h pair while that
+  band lacks history, a settled day never;
 * days marked ``actual`` are recomputed from ``pipeline.pricing`` and must
   match — this is the cross-check against the upstream source;
 * the negative-hours and negative-generation figures are within range, and
@@ -77,6 +78,11 @@ def _band_mean(values: list[float], hours: float, slot_hours: float, top: bool) 
 def _fmt(value: float | None) -> str:
     """Render an optional kWh figure, or an em dash when it was not computed."""
     return "—" if value is None else f"{value:.2f}"
+
+
+def _fmt_price(value: float | None) -> str:
+    """Render an optional price, or an em dash when it was not estimated."""
+    return "—" if value is None else f"{value:.4f}"
 
 
 @dataclass
@@ -178,14 +184,21 @@ def check_price_forecast(snap: Snapshot) -> PriceForecastCheckResult:
             result.mismatches.append(f"{day}:horizon_day_mismatch")
 
         p1 = entry.get("peak_1h_eur_kwh", 0.0)
-        p3 = entry.get("peak_3h_eur_kwh", 0.0)
-        t3 = entry.get("trough_3h_eur_kwh", 0.0)
+        p4 = entry.get("peak_4h_eur_kwh")
+        t4 = entry.get("trough_4h_eur_kwh")
         t1 = entry.get("trough_1h_eur_kwh", 0.0)
-        if not (t1 - _PRICE_TOL <= t3 <= p3 + _PRICE_TOL <= p1 + 2 * _PRICE_TOL):
+        has_4h = p4 is not None and t4 is not None
+        if (p4 is None) != (t4 is None):
+            result.mismatches.append(f"{day}:4h_half_missing")
+        if has_4h:
+            ordered = t1 - _PRICE_TOL <= t4 <= p4 + _PRICE_TOL <= p1 + 2 * _PRICE_TOL
+        else:
+            ordered = t1 <= p1 + _PRICE_TOL
+        if not ordered:
             result.mismatches.append(f"{day}:band_ordering")
 
-        spread = entry.get("spread_3h_eur_kwh")
-        if spread is not None and abs(spread - (p3 - t3)) > _PRICE_TOL:
+        spread = entry.get("spread_4h_eur_kwh")
+        if spread is not None and (not has_4h or abs(spread - (p4 - t4)) > _PRICE_TOL):
             result.mismatches.append(f"{day}:spread_mismatch")
 
         neg_h = entry.get("negative_hours", 0.0)
@@ -221,13 +234,18 @@ def check_price_forecast(snap: Snapshot) -> PriceForecastCheckResult:
         # Settled days must reproduce exactly from the upstream price slots.
         if source == "actual":
             spots = sorted(spots_by_day.get(day, []))
+            if not has_4h:
+                result.mismatches.append(f"{day}:actual_4h_missing")
             if spots and slot_hours > 0:
-                checks = (
+                checks = [
                     ("peak_1h", _band_mean(spots, 1.0, slot_hours, True), p1),
-                    ("peak_3h", _band_mean(spots, 3.0, slot_hours, True), p3),
-                    ("trough_3h", _band_mean(spots, 3.0, slot_hours, False), t3),
                     ("trough_1h", _band_mean(spots, 1.0, slot_hours, False), t1),
-                )
+                ]
+                if has_4h:
+                    checks += [
+                        ("peak_4h", _band_mean(spots, 4.0, slot_hours, True), p4),
+                        ("trough_4h", _band_mean(spots, 4.0, slot_hours, False), t4),
+                    ]
                 for name, expected, published in checks:
                     if abs(expected - published) > _PRICE_TOL:
                         result.mismatches.append(f"{day}:{name}_mismatch")
@@ -274,15 +292,16 @@ class PriceForecastCheckWidget(Static):
 
         with Collapsible(title=title, collapsed=True):
             lines = [
-                f"  {'day':12s} {'source':11s} {'peak1':>8s} {'peak3':>8s} "
-                f"{'trgh3':>8s} {'trgh1':>8s} {'negh':>6s} {'negkWh':>8s} "
+                f"  {'day':12s} {'source':11s} {'peak1':>8s} {'peak4':>8s} "
+                f"{'trgh4':>8s} {'trgh1':>8s} {'negh':>6s} {'negkWh':>8s} "
                 f"{'absorb':>8s} {'surplus':>8s} {'conf':>5s}"
             ]
             for d in pr.days:
                 lines.append(
                     f"  {d.get('day', ''):12s} {d.get('source', ''):11s} "
-                    f"{d.get('peak_1h_eur_kwh', 0.0):8.4f} {d.get('peak_3h_eur_kwh', 0.0):8.4f} "
-                    f"{d.get('trough_3h_eur_kwh', 0.0):8.4f} {d.get('trough_1h_eur_kwh', 0.0):8.4f} "
+                    f"{d.get('peak_1h_eur_kwh', 0.0):8.4f} {_fmt_price(d.get('peak_4h_eur_kwh')):>8s} "
+                    f"{_fmt_price(d.get('trough_4h_eur_kwh')):>8s} "
+                    f"{d.get('trough_1h_eur_kwh', 0.0):8.4f} "
                     f"{d.get('negative_hours', 0.0):6.2f} "
                     f"{d.get('negative_generation_kwh', 0.0):8.2f} "
                     f"{_fmt(d.get('absorbable_kwh')):>8s} {_fmt(d.get('surplus_kwh')):>8s} "

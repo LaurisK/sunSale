@@ -26,6 +26,7 @@ from ...contract.models import (
     SolarData,
 )
 from ...inbound import forecast as forecast_module
+from ...inbound.holiday_calendar import holiday_predicate
 from ...inbound.observer import derived as derived_module
 from ...inbound.observer import generation as generation_module
 from ...inbound.observer import grid as grid_module
@@ -222,13 +223,13 @@ class ProfitabilityNode(DagNode):
         """Compute profitability score using today's peak from PriceSeries and rolling history."""
         price_series = ctx.require(PriceSeries)
         history = ctx.require(PriceHistory)
-        # `is_holiday` is intentionally left unwired (see classify_day) — pass
         # local_tz so "today" and the slot day-buckets use local midnight,
         # matching how the coordinator keys DailyPeak history.
         score = profitability_module.compute_profitability_score(
             price_series=price_series,
             history=history,
             now=ctx.now,
+            is_holiday=holiday_predicate(ctx.config.holiday_country),
             local_tz=ctx.config.local_tz,
         )
         return score

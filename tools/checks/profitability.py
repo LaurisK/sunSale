@@ -2,7 +2,7 @@
 from __future__ import annotations
 
 from dataclasses import dataclass, field
-from datetime import UTC, datetime, tzinfo
+from datetime import UTC, date, datetime, tzinfo
 from zoneinfo import ZoneInfo
 
 from textual.app import ComposeResult
@@ -27,6 +27,31 @@ def _resolve_local_tz(tz_name: str | None) -> tzinfo:
         return ZoneInfo(tz_name)
     except Exception:    # ZoneInfoNotFoundError + anything unexpected
         return UTC
+
+
+def _expected_day_class(day: date, country: str | None) -> str | None:
+    """Return the day class the scorer should give ``day``, mirroring classify_day.
+
+    Args:
+        day: The local date being classified.
+        country: The payload's ``holiday_country`` (None → no holidays).
+
+    Returns:
+        ``"weekend"`` / ``"holiday"`` / ``"weekday"``, or None when this machine
+        has no calendar for the country (``holidays`` missing), so the class
+        cannot be checked here.
+    """
+    if day.weekday() >= 5:
+        return "weekend"
+    if not country:
+        return "weekday"
+    try:
+        import holidays  # noqa: PLC0415 — optional; the check skips without it
+
+        calendar = holidays.country_holidays(country.upper())
+    except (ImportError, NotImplementedError):
+        return None
+    return "holiday" if day in calendar else "weekday"
 
 
 @dataclass
@@ -73,12 +98,24 @@ def check_profitability(snap: Snapshot) -> ProfitabilityCheckResult:
         result.mismatches.append("score_out_of_range")
         result.overall_ok = False
 
+    local_tz = _resolve_local_tz(snap.config.get("time_zone"))
+
+    # Cross-check: today's class follows weekends and the configured country's
+    # public holidays, on the local date the score was computed for.
+    try:
+        computed_day = datetime.fromisoformat(result.computed_at).astimezone(local_tz).date()
+    except ValueError:
+        computed_day = datetime.now(UTC).astimezone(local_tz).date()
+    expected_class = _expected_day_class(computed_day, snap.config.get("holiday_country"))
+    if expected_class is not None and result.today_class and result.today_class != expected_class:
+        result.mismatches.append("today_class_mismatch")
+        result.overall_ok = False
+
     # Cross-check: today's peak should equal max spot across today's pricing
     # slots, bucketed by *local* date to match the coordinator/profitability
     # scorer (both key on local midnight, not UTC).
     pricing = snap.pipeline.get("pricing")
     if pricing and result.today_peak_eur_kwh > 0:
-        local_tz = _resolve_local_tz(snap.config.get("time_zone"))
         today_local = datetime.now(UTC).astimezone(local_tz).date()
         today_spots = []
         for s in pricing.get("slots") or []:

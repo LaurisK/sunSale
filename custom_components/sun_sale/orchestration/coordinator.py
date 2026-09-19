@@ -55,20 +55,9 @@ from ..contract.const import (
     CONF_NORDPOOL_RESOLUTION,
     CONF_PRICE_EXPORT_ENTITY,
     CONF_PRICE_SOURCE,
-    CONF_PRICE_TOU_BANDS,
     CONF_SOLAR_FORECAST_DEVICE_IDS,
     CONF_SOLAR_FORECAST_ENTITY,
     CONF_SOLAR_FORECAST_ENTITY_2,
-    CONF_TARIFF_DISTRIBUTION_FEE,
-    CONF_TARIFF_FIXED_SELL_PRICE,
-    CONF_TARIFF_MARKUP,
-    CONF_TARIFF_SELL_DISTRIBUTION_FEE,
-    CONF_TARIFF_SELL_MARKUP,
-    CONF_TARIFF_SELL_MODE,
-    CONF_TARIFF_SELL_TAX_RATE,
-    CONF_TARIFF_TAX_RATE,
-    CONF_TARIFF_WEEKDAY_BANDS,
-    CONF_TARIFF_WEEKEND_BANDS,
     CONF_WEATHER_ENTITY,
     DEFAULT_BATTERY_NOMINAL_VOLTAGE,
     DEFAULT_CURRENCY,
@@ -85,11 +74,11 @@ from ..contract.const import (
     DEFAULT_SCHEDULE_PROFITABILITY_TILT_ALPHA,
     DEFAULT_SCHEDULE_TERMINAL_VALUE_DISCOUNT,
     DEFAULT_SCHEDULE_USE_STANDBY,
-    DEFAULT_SELL_MODE,
     DOMAIN,
     GRID_POWER_HISTORY_RETENTION_DAYS,
     PRICE_CURVE_RETENTION_DAYS,
     PRICE_HISTORY_RETENTION_DAYS,
+    PRICE_SOURCE_FIXED,
     SCHEDULE_SLOT_MINUTES,
     STORAGE_KEY_ARRAY_CALIBRATION,
     STORAGE_KEY_BAKED_OBSERVED,
@@ -170,6 +159,7 @@ from ..inbound.consumption_daily import (
 )
 from ..inbound.forecast import SolarTranslator
 from ..inbound.forecast_resolver import resolve_forecast_entities
+from ..inbound.holiday_calendar import holiday_predicate
 from ..inbound.household_consumption import HouseholdConsumptionTranslator
 from ..inbound.inverter_entity_resolver import resolve_inverter_entities
 from ..inbound.inverter_mode import InverterModeTranslator
@@ -201,7 +191,7 @@ from ..inbound.observer.recorder_resample import (
     ResampleSources,
 )
 from ..inbound.platform_profiles import profile_for, unbacked_roles
-from ..inbound.pricing import build_price_translator, tou_bands_from_config
+from ..inbound.pricing import build_price_translator
 from ..inbound.telemetry import (
     SignalRole,
     TelemetryCodec,
@@ -886,18 +876,7 @@ class SunSaleCoordinator(DataUpdateCoordinator):
         data = {**self._entry.data, **self._entry.options}
         self._config = data
 
-        tariff_config = TariffConfig(
-            distribution_fee=data[CONF_TARIFF_DISTRIBUTION_FEE],
-            tax_rate=data[CONF_TARIFF_TAX_RATE] / 100.0,
-            markup=data[CONF_TARIFF_MARKUP],
-            sell_distribution_fee=data[CONF_TARIFF_SELL_DISTRIBUTION_FEE],
-            sell_tax_rate=data[CONF_TARIFF_SELL_TAX_RATE] / 100.0,
-            sell_markup=data[CONF_TARIFF_SELL_MARKUP],
-            weekday_bands=tariff_module.bands_from_config(data.get(CONF_TARIFF_WEEKDAY_BANDS)),
-            weekend_bands=tariff_module.bands_from_config(data.get(CONF_TARIFF_WEEKEND_BANDS)),
-            sell_mode=data.get(CONF_TARIFF_SELL_MODE, DEFAULT_SELL_MODE),
-            fixed_sell_price=data.get(CONF_TARIFF_FIXED_SELL_PRICE, 0.0),
-        )
+        tariff_config = tariff_module.tariff_from_config(data)
 
         battery_config = BatteryConfig(
             nominal_capacity_kwh=data[CONF_BATTERY_NOMINAL_CAPACITY],
@@ -965,10 +944,15 @@ class SunSaleCoordinator(DataUpdateCoordinator):
         self._sun_sale_config = SunSaleConfig(
             tariff=tariff_config, battery=battery_config,
             local_tz=local_tz,
-            price_source=data.get(CONF_PRICE_SOURCE, DEFAULT_PRICE_SOURCE),
+            # With both prices fixed no market sensor is read at all.
+            price_source=(
+                data.get(CONF_PRICE_SOURCE, DEFAULT_PRICE_SOURCE)
+                if tariff_module.needs_market_price(tariff_config) else PRICE_SOURCE_FIXED
+            ),
             currency=(data.get(CONF_CURRENCY) or DEFAULT_CURRENCY).strip().upper(),
             latitude=home_lat,
             longitude=home_lon,
+            holiday_country=self._resolve_holiday_country(),
             forecast_reserve_enabled=bool(
                 data.get(CONF_FORECAST_RESERVE_ENABLED, DEFAULT_FORECAST_RESERVE_ENABLED)
             ),
@@ -1026,18 +1010,17 @@ class SunSaleCoordinator(DataUpdateCoordinator):
         # selection resolves these from config-entry IDs at runtime).
         self._forecast_base_entities = self._resolve_forecast_base_entities(data)
 
-        tou_resolution = (
+        fixed_resolution = (
             timedelta(minutes=15)
             if data.get(CONF_NORDPOOL_RESOLUTION) == "15min"
             else timedelta(hours=1)
         )
         self._translators = [
             build_price_translator(
-                data.get(CONF_PRICE_SOURCE, DEFAULT_PRICE_SOURCE),
+                self._sun_sale_config.price_source,
                 entity_id=data.get(CONF_NORDPOOL_ENTITY, ""),
                 export_entity_id=data.get(CONF_PRICE_EXPORT_ENTITY, ""),
-                resolution=tou_resolution,
-                tou_bands=tou_bands_from_config(data.get(CONF_PRICE_TOU_BANDS)),
+                resolution=fixed_resolution,
                 local_tz=local_tz,
             ),
             SolarTranslator(
@@ -1552,7 +1535,9 @@ class SunSaleCoordinator(DataUpdateCoordinator):
                     new_peak = DailyPeak(
                         day=today_local,
                         peak_eur_kwh=today_peak_val,
-                        day_class=profitability_module.classify_day(today_local),
+                        day_class=profitability_module.classify_day(
+                            today_local, holiday_predicate(self._sun_sale_config.holiday_country),
+                        ),
                     )
                     peaks = [p for p in (self._price_history_store.value or []) if p.day != today_local]
                     peaks.append(new_peak)
@@ -1590,10 +1575,7 @@ class SunSaleCoordinator(DataUpdateCoordinator):
         history: PriceCurveHistory = self._price_curve_store.value or PriceCurveHistory()
         generation: GenerationSeries | None = secondary.get(GenerationSeries)
         weather: WeatherForecastData | None = primary.get(WeatherForecastData)
-        threshold = price_forecast_module.export_break_even(
-            self._sun_sale_config.tariff.sell_distribution_fee,
-            self._sun_sale_config.tariff.sell_markup,
-        )
+        threshold = price_forecast_module.export_break_even(self._sun_sale_config.tariff)
 
         updated = price_forecast_module.capture_feature_vintage(
             history, weather, generation, today_local,
@@ -1695,6 +1677,11 @@ class SunSaleCoordinator(DataUpdateCoordinator):
             return ZoneInfo(tz_name)
         except Exception:    # ZoneInfoNotFoundError + anything weird from HA mocks
             return UTC
+
+    def _resolve_holiday_country(self) -> str | None:
+        """Return HA's configured country code for the holiday calendar, or None when unset."""
+        country = getattr(self.hass.config, "country", None)
+        return country if isinstance(country, str) and country else None
 
     def _resolve_home_location(self) -> tuple[float | None, float | None]:
         """Return the HA home latitude/longitude, or (None, None) when unset.

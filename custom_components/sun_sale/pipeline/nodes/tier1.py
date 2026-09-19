@@ -16,6 +16,7 @@ from ...contract.models import (
 )
 from ...inbound import battery as battery_inbound
 from ...inbound import pricing as pricing_module
+from ...inbound.holiday_calendar import holiday_predicate
 from .. import base_load as base_load_module
 from ..dag_engine import DagNode, NodeContext
 
@@ -35,6 +36,7 @@ class PricingNode(DagNode):
         series = pricing_module.build_price_series_72h(
             feed, yesterday, ctx.config.tariff, now=ctx.now,
             local_tz=ctx.config.local_tz, source=ctx.config.price_source,
+            is_holiday=holiday_predicate(ctx.config.holiday_country),
         )
         return series
 

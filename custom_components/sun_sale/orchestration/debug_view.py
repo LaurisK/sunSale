@@ -126,6 +126,9 @@ def _coordinator_to_dict(entry_id: str, coordinator: Any) -> dict:
             # integration check mirror the coordinator's local-date logic for
             # the profitability peak cross-check.
             "time_zone": str(getattr(coordinator._sun_sale_config, "local_tz", UTC)),  # noqa: SLF001
+            # Country whose public holidays form the profitability HOLIDAY class
+            # (None → no holidays); the check mirrors today's class with it.
+            "holiday_country": getattr(coordinator._sun_sale_config, "holiday_country", None),  # noqa: SLF001
             "nordpool_entity": cfg.get(CONF_NORDPOOL_ENTITY, ""),
             "price_source": getattr(
                 coordinator._sun_sale_config, "price_source", "nordpool"  # noqa: SLF001

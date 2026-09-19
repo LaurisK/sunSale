@@ -61,11 +61,8 @@ def test_all_positive_no_lockout_notes():
 
 def _make_negative_sell_config():
     """High sell fees so even normal spot prices produce negative sell prices."""
-    from custom_components.sun_sale.contract.models import TariffConfig
-    return TariffConfig(
-        distribution_fee=0.0, tax_rate=0.0, markup=0.0,
-        sell_distribution_fee=0.20, sell_tax_rate=0.0, sell_markup=0.0,
-    )
+    from tests.conftest import flat_tariff
+    return flat_tariff(buy_fee=0.0, vat=0.0, markup=0.0, sell_fee=0.20, sell_tax=0.0, sell_markup=0.0)
 
 
 def test_negative_sell_window_flagged():
@@ -154,12 +151,9 @@ def test_no_battery_full_note_when_headroom_sufficient():
 # ---------------------------------------------------------------------------
 
 def test_paid_to_charge_note_on_negative_buy():
-    from custom_components.sun_sale.contract.models import TariffConfig
+    from tests.conftest import flat_tariff
     # Zero fees so buy_price ≈ spot price
-    tc = TariffConfig(
-        distribution_fee=0.0, tax_rate=0.0, markup=0.0,
-        sell_distribution_fee=0.0, sell_tax_rate=0.0, sell_markup=0.0,
-    )
+    tc = flat_tariff(buy_fee=0.0, vat=0.0, markup=0.0, sell_fee=0.0, sell_tax=0.0, sell_markup=0.0)
     prices = [make_price(5, -0.05), make_price(6, 0.10)]
     ps = build_price_series(prices, tc, now=NOW)
     result = calculate(ps, _empty_gen(), default_battery_state(), NOW)

@@ -49,7 +49,7 @@ def _price_series(days: int = 2, peak: float = 0.25, base: float = 0.05,
     for i in range(days * 96):
         start = midnight + _RESOLUTION * i
         hour = start.hour
-        spot = peak if 17 <= hour < 20 else base
+        spot = peak if 17 <= hour < 21 else base
         if hour in cheap_hours:
             spot = 0.001
         slots.append(PriceSlot(
@@ -90,8 +90,8 @@ def _history(n: int = 300, wind_effect: float = -0.004, seed: int = 7) -> PriceC
         neg = max(0.0, 2.0 - wind_effect * 60 * (wind - 20) + rng.gauss(0, 0.5))
         records.append(PriceDayRecord(
             day=day, day_class=cls,
-            peak_1h_eur_kwh=peak3 * 1.1, peak_3h_eur_kwh=peak3,
-            trough_1h_eur_kwh=trough3 * 0.8, trough_3h_eur_kwh=trough3,
+            peak_1h_eur_kwh=peak3 * 1.1, peak_4h_eur_kwh=peak3,
+            trough_1h_eur_kwh=trough3 * 0.8, trough_4h_eur_kwh=trough3,
             negative_hours=neg, mean_eur_kwh=(peak3 + trough3) / 2,
             wind_speed_kmh=wind, temperature_c=15.0, solar_kwh=30.0,
             negative_generation_kwh=30.0 * min(1.0, neg * 0.05),
@@ -117,7 +117,25 @@ def _weather(wind: float = 20.0, days: int = 7) -> WeatherForecastData:
 
 def test_export_break_even_is_the_tariff_wedge_not_zero():
     """Export stops paying at fee+markup — the whole point of the threshold."""
-    assert pf.export_break_even(0.02, 0.005) == pytest.approx(0.025)
+    from tests.conftest import flat_tariff
+
+    assert pf.export_break_even(flat_tariff(sell_fee=0.02, sell_markup=0.005)) == pytest.approx(0.025)
+
+
+def test_export_break_even_uses_the_cheapest_grid_fee_tariff():
+    """With several tariffs a counted hour must lose money whichever tariff is active."""
+    from custom_components.sun_sale.contract.models import PriceFormula, TariffConfig
+
+    tariff = TariffConfig(sell=PriceFormula(markup=0.005, grid_fees=(0.03, 0.01)))
+    assert pf.export_break_even(tariff) == pytest.approx(0.015)
+
+
+def test_a_fixed_sell_price_never_reaches_the_export_break_even():
+    """A feed-in price does not move with spot, so no spot price makes exporting lose money."""
+    from custom_components.sun_sale.contract.models import PriceFormula, TariffConfig
+
+    tariff = TariffConfig(sell=PriceFormula(energy_mode="fixed", fixed_price=0.08))
+    assert pf.export_break_even(tariff) == float("-inf")
 
 
 def test_day_price_stats_bands_and_ordering():
@@ -127,8 +145,8 @@ def test_day_price_stats_bands_and_ordering():
     stats = pf.day_price_stats(day_slots, 0.25, 0.025)
 
     assert stats["peak_1h_eur_kwh"] == pytest.approx(0.25)
-    assert stats["peak_3h_eur_kwh"] == pytest.approx(0.25)   # exactly 3 h at peak
-    assert stats["trough_3h_eur_kwh"] == pytest.approx(0.05)
+    assert stats["peak_4h_eur_kwh"] == pytest.approx(0.25)   # exactly 4 h at peak
+    assert stats["trough_4h_eur_kwh"] == pytest.approx(0.05)
     assert stats["negative_hours"] == 0.0
 
 
@@ -172,7 +190,7 @@ def test_settled_days_are_reported_as_actual():
     )
     by_day = forecast.by_day()
     assert by_day[_TODAY].source == PRICE_STAT_SOURCE_ACTUAL
-    assert by_day[_TODAY].peak_3h_eur_kwh == pytest.approx(0.25)
+    assert by_day[_TODAY].peak_4h_eur_kwh == pytest.approx(0.25)
     assert by_day[_TODAY].confidence == 1.0
 
 
@@ -189,15 +207,15 @@ def test_horizon_covers_a_full_week_with_decaying_confidence():
 
 
 def test_band_ordering_holds_on_modelled_days():
-    """trough_1h ≤ trough_3h ≤ peak_3h ≤ peak_1h, even when targets are fitted apart."""
+    """trough_1h ≤ trough_4h ≤ peak_4h ≤ peak_1h, even when targets are fitted apart."""
     forecast = pf.compute_price_forecast(
         _price_series(), _history(), _weather(), _generation(), 0.025,
         now=_NOW, local_tz=UTC,
     )
     for day in forecast.days:
-        assert day.trough_1h_eur_kwh <= day.trough_3h_eur_kwh + 1e-9
-        assert day.trough_3h_eur_kwh <= day.peak_3h_eur_kwh + 1e-9
-        assert day.peak_3h_eur_kwh <= day.peak_1h_eur_kwh + 1e-9
+        assert day.trough_1h_eur_kwh <= day.trough_4h_eur_kwh + 1e-9
+        assert day.trough_4h_eur_kwh <= day.peak_4h_eur_kwh + 1e-9
+        assert day.peak_4h_eur_kwh <= day.peak_1h_eur_kwh + 1e-9
 
 
 def test_wind_moves_the_forecast_in_the_physical_direction():
@@ -208,7 +226,7 @@ def test_wind_moves_the_forecast_in_the_physical_direction():
     windy = pf.compute_price_forecast(*args[:2], _weather(wind=32.0), *args[3:],
                                       now=_NOW, local_tz=UTC)
     target = _TODAY + timedelta(days=3)
-    assert windy.by_day()[target].peak_3h_eur_kwh < calm.by_day()[target].peak_3h_eur_kwh
+    assert windy.by_day()[target].peak_4h_eur_kwh < calm.by_day()[target].peak_4h_eur_kwh
     assert windy.by_day()[target].negative_hours > calm.by_day()[target].negative_hours
 
 
@@ -219,8 +237,8 @@ def test_weekend_is_cheaper_than_the_surrounding_weekdays():
         now=_NOW, local_tz=UTC,
     )
     modelled = [d for d in forecast.days if d.source != PRICE_STAT_SOURCE_ACTUAL]
-    weekend = [d.peak_3h_eur_kwh for d in modelled if d.day_class is DayClass.WEEKEND]
-    weekday = [d.peak_3h_eur_kwh for d in modelled if d.day_class is DayClass.WEEKDAY]
+    weekend = [d.peak_4h_eur_kwh for d in modelled if d.day_class is DayClass.WEEKEND]
+    weekday = [d.peak_4h_eur_kwh for d in modelled if d.day_class is DayClass.WEEKDAY]
     assert weekend and weekday
     assert max(weekend) < max(weekday)
 
@@ -290,6 +308,38 @@ def test_no_weather_still_publishes_the_climatology_baseline():
     assert modelled and all(d.source == PRICE_STAT_SOURCE_CLIMATOLOGY for d in modelled)
 
 
+def test_4h_band_is_unknown_until_it_has_its_own_history():
+    """Records saved before the 4 h band existed leave it unestimated, not zero."""
+    from dataclasses import replace
+
+    original = _history().records
+    legacy = tuple(
+        replace(r, peak_4h_eur_kwh=None, trough_4h_eur_kwh=None) for r in original
+    )
+
+    pf._skill_cache.clear()
+    forecast = pf.compute_price_forecast(
+        _price_series(), PriceCurveHistory(records=legacy), _weather(), _generation(), 0.025,
+        now=_NOW, local_tz=UTC,
+    )
+    modelled = [d for d in forecast.days if d.source != PRICE_STAT_SOURCE_ACTUAL]
+    settled = [d for d in forecast.days if d.source == PRICE_STAT_SOURCE_ACTUAL]
+    assert modelled and settled
+    assert all(d.peak_4h_eur_kwh is None and d.trough_4h_eur_kwh is None for d in modelled)
+    assert all(d.peak_1h_eur_kwh > 0 for d in modelled)
+    # Settled days are recomputed from their own curves, so they always carry it.
+    assert all(d.peak_4h_eur_kwh is not None for d in settled)
+
+    # Two weeks of 4 h history is enough to estimate it again.
+    pf._skill_cache.clear()
+    mixed = PriceCurveHistory(records=legacy[:-14] + original[-14:])
+    forecast = pf.compute_price_forecast(
+        _price_series(), mixed, _weather(), _generation(), 0.025,
+        now=_NOW, local_tz=UTC,
+    )
+    assert all(d.peak_4h_eur_kwh is not None for d in forecast.days)
+
+
 def test_ridge_solver_rejects_a_singular_system():
     """A rank-deficient design returns None rather than exploding."""
     rows = [[1.0, 2.0], [2.0, 4.0], [3.0, 6.0]]
@@ -329,7 +379,7 @@ def test_settle_days_records_settled_days_and_uses_the_vintage():
     assert settled is not None
     record = settled.by_day()[_TODAY]
     assert record.wind_speed_kmh == 7.0          # the frozen vintage, not 42.0
-    assert record.peak_3h_eur_kwh == pytest.approx(0.25)
+    assert record.peak_4h_eur_kwh == pytest.approx(0.25)
     assert settled.vintages == ()                # consumed once its day settled
 
 
@@ -350,8 +400,8 @@ def test_settle_days_prunes_beyond_retention():
     """Records older than the retention window are dropped."""
     old = PriceDayRecord(
         day=_TODAY - timedelta(days=500), day_class=DayClass.WEEKDAY,
-        peak_1h_eur_kwh=0.2, peak_3h_eur_kwh=0.2,
-        trough_1h_eur_kwh=0.0, trough_3h_eur_kwh=0.0,
+        peak_1h_eur_kwh=0.2, peak_4h_eur_kwh=0.2,
+        trough_1h_eur_kwh=0.0, trough_4h_eur_kwh=0.0,
         negative_hours=0.0, mean_eur_kwh=0.1,
     )
     settled = pf.settle_days(

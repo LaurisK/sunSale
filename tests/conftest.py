@@ -234,6 +234,7 @@ from custom_components.sun_sale.contract.models import (  # noqa: E402  (after H
     BatteryConfig,
     BatteryState,
     PriceEntry,
+    PriceFormula,
     SolarForecast,
     TariffConfig,
 )
@@ -260,15 +261,23 @@ def make_solar(hour: int, kwh: float, base: datetime = BASE_DT) -> SolarForecast
 # Default configs
 # ---------------------------------------------------------------------------
 
-def default_tariff_config() -> TariffConfig:
+def flat_tariff(
+    buy_fee: float = 0.03,
+    vat: float = 0.21,
+    markup: float = 0.01,
+    sell_fee: float = 0.02,
+    sell_tax: float = 0.0,
+    sell_markup: float = 0.005,
+) -> TariffConfig:
+    """Return a market-price tariff with one grid fee per direction."""
     return TariffConfig(
-        distribution_fee=0.03,
-        tax_rate=0.21,
-        markup=0.01,
-        sell_distribution_fee=0.02,
-        sell_tax_rate=0.0,
-        sell_markup=0.005,
+        buy=PriceFormula(markup=markup, vat=vat, grid_fees=(buy_fee,)),
+        sell=PriceFormula(markup=sell_markup, vat=sell_tax, grid_fees=(sell_fee,)),
     )
+
+
+def default_tariff_config() -> TariffConfig:
+    return flat_tariff()
 
 
 def default_battery_config() -> BatteryConfig:

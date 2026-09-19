@@ -4,7 +4,7 @@ The day-ahead auction covers at most ~48 h, shrinking to ~24 h just before
 publication, so every decision about holding energy past that edge is made
 blind. This module extends the view to a full week on the same axis as the
 week-ahead *generation* forecast, publishing four statistics per local day:
-the mean of the highest and lowest 1 h and 3 h of the day, how many hours sit
+the mean of the highest and lowest 1 h and 4 h of the day, how many hours sit
 at or below the export break-even, and how much PV is expected to land in
 them.
 
@@ -36,6 +36,7 @@ from dataclasses import replace
 from datetime import UTC, date, datetime, timedelta, tzinfo
 
 from ..contract.const import (
+    ENERGY_DYNAMIC,
     PRICE_FORECAST_CONFIDENCE_DECAY,
     PRICE_FORECAST_FULL_SKILL,
     PRICE_FORECAST_HORIZON_DAYS,
@@ -61,6 +62,7 @@ from ..contract.models import (
     PriceDayStats,
     PriceForecast,
     PriceSeries,
+    TariffConfig,
     WeatherForecastData,
 )
 from .profitability import classify_day
@@ -68,15 +70,17 @@ from .profitability import classify_day
 # Targets predicted by the model, in the order they are reported.
 _TARGETS: tuple[str, ...] = (
     "peak_1h_eur_kwh",
-    "peak_3h_eur_kwh",
+    "peak_4h_eur_kwh",
     "trough_1h_eur_kwh",
-    "trough_3h_eur_kwh",
+    "trough_4h_eur_kwh",
     "negative_hours",
 )
 
-# Band widths, in hours, behind the 1 h / 3 h statistics.
+# Band widths, in hours, behind the 1 h / 4 h statistics. Each band is the
+# cheapest / dearest slots anywhere in the day, not a contiguous window: a
+# battery can charge and discharge in scattered slots.
 _BAND_1H = 1.0
-_BAND_3H = 3.0
+_BAND_4H = 4.0
 
 # Fraction of a day's slots that must be present before its statistics are
 # trusted. Guards the local-midnight boundary and partial auction publication,
@@ -162,33 +166,35 @@ def day_price_stats(
     below = sum(1 for v in spot if v <= negative_threshold_eur_kwh)
     return {
         "peak_1h_eur_kwh": _band_mean(spot, _BAND_1H, slot_hours, top=True),
-        "peak_3h_eur_kwh": _band_mean(spot, _BAND_3H, slot_hours, top=True),
+        "peak_4h_eur_kwh": _band_mean(spot, _BAND_4H, slot_hours, top=True),
         "trough_1h_eur_kwh": _band_mean(spot, _BAND_1H, slot_hours, top=False),
-        "trough_3h_eur_kwh": _band_mean(spot, _BAND_3H, slot_hours, top=False),
+        "trough_4h_eur_kwh": _band_mean(spot, _BAND_4H, slot_hours, top=False),
         "negative_hours": below * slot_hours,
         "mean_eur_kwh": sum(spot) / len(spot),
     }
 
 
-def export_break_even(
-    sell_distribution_fee: float,
-    sell_markup: float,
-) -> float:
+def export_break_even(tariff: TariffConfig) -> float:
     """Return the spot price below which exporting stops paying.
 
-    Sell price is ``(spot − fee − markup) × (1 − tax)``, so the sign flips at
-    ``fee + markup`` — not at zero. On a strict ``spot < 0`` test most
-    loss-making hours would go uncounted; across the markets studied, hours
-    below the wedge outnumber hours below zero by roughly 3:1.
+    A dynamic sell price is ``(spot − markup − grid_fee) × (1 − vat)``, so the
+    sign flips at ``markup + grid_fee`` — not at zero. On a strict
+    ``spot < 0`` test most loss-making hours would go uncounted; across the
+    markets studied, hours below the wedge outnumber hours below zero by
+    roughly 3:1. With several grid-fee tariffs the cheapest one is used, so a
+    counted hour loses money whichever tariff is active.
 
     Args:
-        sell_distribution_fee: Per-kWh distribution fee on the sell side.
-        sell_markup: Per-kWh supplier markup on the sell side.
+        tariff: User-configured tariff.
 
     Returns:
-        Spot price in EUR/kWh at which the effective sell price reaches zero.
+        Spot price per kWh at which the effective sell price reaches zero, or
+        ``-inf`` for a fixed sell price, which no spot price makes loss-making.
     """
-    return sell_distribution_fee + sell_markup
+    sell = tariff.sell
+    if sell.energy_mode != ENERGY_DYNAMIC:
+        return float("-inf")
+    return sell.markup + min(sell.grid_fees)
 
 
 def negative_generation_for_day(
@@ -312,9 +318,9 @@ def build_day_record(
         day=day,
         day_class=classify_day(day),
         peak_1h_eur_kwh=stats["peak_1h_eur_kwh"],
-        peak_3h_eur_kwh=stats["peak_3h_eur_kwh"],
+        peak_4h_eur_kwh=stats["peak_4h_eur_kwh"],
         trough_1h_eur_kwh=stats["trough_1h_eur_kwh"],
-        trough_3h_eur_kwh=stats["trough_3h_eur_kwh"],
+        trough_4h_eur_kwh=stats["trough_4h_eur_kwh"],
         negative_hours=stats["negative_hours"],
         mean_eur_kwh=stats["mean_eur_kwh"],
         wind_speed_kmh=wx.wind_speed_kmh if wx else None,
@@ -448,10 +454,29 @@ def _class_medians(
     records: Sequence[PriceDayRecord],
     target: str,
 ) -> dict[DayClass, float]:
-    """Return the per-day-class median of one target across the records."""
+    """Return the per-day-class median of one target across the records.
+
+    Records missing the target (saved before it existed) are skipped, and a
+    target with fewer than ``PRICE_FORECAST_MIN_CLIMATOLOGY_DAYS`` values gets
+    no baseline at all rather than a median of a handful of days.
+
+    Args:
+        records: Settled history.
+        target: ``PriceDayRecord`` attribute to summarise.
+
+    Returns:
+        Dict of day class → median; empty while the target is too short.
+    """
     buckets: dict[DayClass, list[float]] = {}
+    count = 0
     for rec in records:
-        buckets.setdefault(rec.day_class, []).append(getattr(rec, target))
+        value = getattr(rec, target)
+        if value is None:
+            continue
+        buckets.setdefault(rec.day_class, []).append(value)
+        count += 1
+    if count < PRICE_FORECAST_MIN_CLIMATOLOGY_DAYS:
+        return {}
     return {cls: _median(vals) for cls, vals in buckets.items() if vals}
 
 
@@ -488,13 +513,14 @@ def _fit_target(
     rows: list[list[float]] = []
     ys: list[float] = []
     for rec in records:
+        value = getattr(rec, target)
         baseline = _climatology_value(medians, rec.day_class)
-        if baseline is None:
+        if value is None or baseline is None:
             continue
         rows.append(_features(
             rec.day_class, rec.wind_speed_kmh, rec.temperature_c, rec.solar_kwh, base
         ))
-        ys.append(getattr(rec, target) - baseline)
+        ys.append(value - baseline)
     return _solve_ridge(rows, ys, PRICE_FORECAST_RIDGE_LAMBDA)
 
 
@@ -555,11 +581,13 @@ def _backtest_skill(records: Sequence[PriceDayRecord]) -> tuple[float | None, fl
             actual.solar_kwh, base,
         )
         for target in _TARGETS:
+            truth = getattr(actual, target)
+            if truth is None:
+                continue
             medians = _class_medians(train, target)
             baseline = _climatology_value(medians, actual.day_class)
             if baseline is None:
                 continue
-            truth = getattr(actual, target)
             # Normalise so every target contributes comparably to the pooled
             # score regardless of its units (EUR/kWh versus hours).
             scale = max(abs(baseline), 1e-3)
@@ -723,9 +751,9 @@ def compute_price_forecast(
                     horizon_days=horizon,
                     source=PRICE_STAT_SOURCE_ACTUAL,
                     peak_1h_eur_kwh=stats["peak_1h_eur_kwh"],
-                    peak_3h_eur_kwh=stats["peak_3h_eur_kwh"],
+                    peak_4h_eur_kwh=stats["peak_4h_eur_kwh"],
                     trough_1h_eur_kwh=stats["trough_1h_eur_kwh"],
-                    trough_3h_eur_kwh=stats["trough_3h_eur_kwh"],
+                    trough_4h_eur_kwh=stats["trough_4h_eur_kwh"],
                     negative_hours=stats["negative_hours"],
                     negative_generation_kwh=neg_gen,
                     confidence=1.0,
@@ -746,22 +774,30 @@ def compute_price_forecast(
             solar_kwh,
             base,
         )
-        predicted: dict[str, float] = {}
+        predicted: dict[str, float | None] = {}
         for target in _TARGETS:
             baseline = _climatology_value(medians_by_target[target], day_class)
             if baseline is None:
-                predicted[target] = 0.0
+                # Only a band too new to have history lands here; unknown is
+                # honest, where 0.0 would read as a real price.
+                predicted[target] = None
                 continue
             modelled = _predict(betas.get(target), row, baseline)
             predicted[target] = (1.0 - weight) * baseline + weight * modelled
 
-        negative_hours = max(0.0, min(24.0, predicted["negative_hours"]))
-        peak_3h = predicted["peak_3h_eur_kwh"]
-        trough_3h = predicted["trough_3h_eur_kwh"]
+        negative_hours = max(0.0, min(24.0, predicted["negative_hours"] or 0.0))
+        peak_1h = predicted["peak_1h_eur_kwh"] or 0.0
+        trough_1h = predicted["trough_1h_eur_kwh"] or 0.0
+        peak_4h = predicted["peak_4h_eur_kwh"]
+        trough_4h = predicted["trough_4h_eur_kwh"]
         # A predicted trough above its peak is physically impossible and can
         # occur when two independently-fitted targets disagree at the edges.
-        if trough_3h > peak_3h:
-            trough_3h = peak_3h = (trough_3h + peak_3h) / 2.0
+        if peak_4h is not None and trough_4h is not None and trough_4h > peak_4h:
+            trough_4h = peak_4h = (trough_4h + peak_4h) / 2.0
+        if peak_4h is not None:
+            peak_1h = max(peak_1h, peak_4h)
+        if trough_4h is not None:
+            trough_1h = min(trough_1h, trough_4h)
 
         # With no weather for this day every feature sits at its baseline, so
         # the model's correction is identically zero — report that honestly as
@@ -782,10 +818,10 @@ def compute_price_forecast(
             day_class=day_class,
             horizon_days=horizon,
             source=PRICE_STAT_SOURCE_MODEL if modelled else PRICE_STAT_SOURCE_CLIMATOLOGY,
-            peak_1h_eur_kwh=max(predicted["peak_1h_eur_kwh"], peak_3h),
-            peak_3h_eur_kwh=peak_3h,
-            trough_1h_eur_kwh=min(predicted["trough_1h_eur_kwh"], trough_3h),
-            trough_3h_eur_kwh=trough_3h,
+            peak_1h_eur_kwh=peak_1h,
+            peak_4h_eur_kwh=peak_4h,
+            trough_1h_eur_kwh=trough_1h,
+            trough_4h_eur_kwh=trough_4h,
             negative_hours=negative_hours,
             negative_generation_kwh=neg_gen,
             confidence=PRICE_FORECAST_CONFIDENCE_DECAY ** horizon,

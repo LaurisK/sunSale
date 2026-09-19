@@ -10,13 +10,15 @@ Algorithm (see docs in `memory/project_profitability_scoring.md`):
   4. Score today's adjusted peak as its percentile rank within the most
      recent N days of adjusted peaks.
 
-The module accepts an `is_holiday(date) -> bool` predicate so callers can
-plug in the `holidays` package (or any other source) without this module
-depending on it.
+The module accepts an `is_holiday(date) -> bool` predicate so it does not
+depend on a holiday source itself. `ProfitabilityNode` and the coordinator's
+price-history save supply one from `inbound/holiday_calendar.py` (the
+`holidays` package, for the country Home Assistant is configured for).
 """
 from __future__ import annotations
 
 from collections.abc import Callable, Iterable
+from dataclasses import replace
 from datetime import UTC, date, datetime, tzinfo
 from statistics import median
 
@@ -52,13 +54,35 @@ def classify_day(
     """
     if d.weekday() >= 5:                       # 5 = Sat, 6 = Sun
         return DayClass.WEEKEND
-    # `is_holiday` is an intentional, currently-unwired plug point: no caller
-    # supplies a predicate today, so the HOLIDAY class is never produced in
-    # production. Wire the `holidays` package here (and at the ProfitabilityNode
-    # / coordinator call sites) to activate it without touching this module.
     if is_holiday is not None and is_holiday(d):
         return DayClass.HOLIDAY
     return DayClass.WEEKDAY
+
+
+def promote_holidays(
+    peaks: Iterable[DailyPeak],
+    is_holiday: Callable[[date], bool] | None,
+) -> tuple[DailyPeak, ...]:
+    """Return ``peaks`` with stored WEEKDAY days the calendar marks as holidays reclassed HOLIDAY.
+
+    History saved before holidays were classified holds only WEEKDAY / WEEKEND;
+    promoting on read gives past holidays their own bucket at once, with no
+    store migration. A stored class is never demoted.
+
+    Args:
+        peaks: Stored DailyPeak records.
+        is_holiday: Holiday predicate, or None to return the peaks unchanged.
+
+    Returns:
+        The peaks, in the same order, with holidays promoted.
+    """
+    if is_holiday is None:
+        return tuple(peaks)
+    return tuple(
+        replace(p, day_class=DayClass.HOLIDAY)
+        if p.day_class == DayClass.WEEKDAY and is_holiday(p.day) else p
+        for p in peaks
+    )
 
 
 def compute_class_medians(
@@ -202,13 +226,14 @@ def compute_profitability_score(
     today_class = classify_day(today, is_holiday)
     today_peak = today_peak_from_price_series(price_series, today, local_tz) or 0.0
 
-    medians = compute_class_medians(history.peaks)
-    raw_values = [p.peak_eur_kwh for p in history.peaks]
+    peaks = promote_holidays(history.peaks, is_holiday)
+    medians = compute_class_medians(peaks)
+    raw_values = [p.peak_eur_kwh for p in peaks]
 
     # Restrict to the rolling rank window. `history.peaks` is sorted ascending,
     # so we keep the tail. Compare against the most recent days excluding today
     # itself — today's peak is the value being scored.
-    window_peaks = [p for p in history.peaks if p.day != today][-rank_window_days:]
+    window_peaks = [p for p in peaks if p.day != today][-rank_window_days:]
 
     if len(window_peaks) < MIN_HISTORY_DAYS:
         return ProfitabilityScore(

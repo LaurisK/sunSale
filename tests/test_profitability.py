@@ -301,6 +301,31 @@ def test_score_uses_holiday_bucket():
     assert 0.3 < result.score < 0.7
 
 
+def test_history_saved_before_holidays_were_known_is_promoted_on_read():
+    """Stored WEEKDAY peaks the calendar marks as holidays join the HOLIDAY bucket; nothing is demoted."""
+    today = date(2024, 2, 16)  # Friday
+    now = datetime(2024, 2, 16, 20, 0, tzinfo=UTC)
+    past_holidays = {date(2024, 1, 8), date(2024, 1, 16)}  # weekdays inside the 40-day history
+    peaks = []
+    d = today
+    while len(peaks) < 40:
+        d -= timedelta(days=1)
+        value = 0.12 if d in past_holidays else (0.10 if d.weekday() >= 5 else 0.30)
+        peaks.append(_peak(d, value))  # stored as the old weekday/weekend classes
+    # A stored HOLIDAY stays one even when this calendar disagrees.
+    kept = date(2024, 1, 10)
+    peaks = [DailyPeak(kept, 0.2, DayClass.HOLIDAY) if p.day == kept else p for p in peaks]
+    history = _history(peaks)
+    series = _price_series_for_day(today, peak_at_hour=18, peak_value=0.30)
+
+    without = compute_profitability_score(series, history, now=now)
+    with_holidays = compute_profitability_score(series, history, now=now, is_holiday=past_holidays.__contains__)
+    assert without.class_medians[DayClass.HOLIDAY] == 0.2
+    assert with_holidays.class_medians[DayClass.HOLIDAY] == 0.12
+    assert with_holidays.class_medians[DayClass.WEEKDAY] == 0.30
+    assert with_holidays.today_class == DayClass.WEEKDAY
+
+
 def test_score_rank_window_limits_to_recent_days():
     """Old days outside the rolling window must not influence the score.
 

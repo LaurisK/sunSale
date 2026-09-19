@@ -23,7 +23,8 @@ def _pricing_slots(peak: float = 0.25, base: float = 0.05, days: int = 2) -> lis
     midnight = datetime.combine(_TODAY, datetime.min.time(), UTC)
     for i in range(days * 96):
         start = midnight + timedelta(seconds=_RESOLUTION_S * i)
-        spot = peak if 17 <= start.hour < 20 else base
+        # Four peak hours, so the 4 h band equals the peak exactly.
+        spot = peak if 17 <= start.hour < 21 else base
         slots.append({"start": start.isoformat(), "spot": spot,
                       "buy": spot + 0.1, "sell": spot - 0.025, "export": None})
     return slots
@@ -37,10 +38,10 @@ def _day(horizon: int, source: str = "model", **overrides) -> dict:
         "horizon_days": horizon,
         "source": source,
         "peak_1h_eur_kwh": 0.25,
-        "peak_3h_eur_kwh": 0.25,
+        "peak_4h_eur_kwh": 0.25,
         "trough_1h_eur_kwh": 0.05,
-        "trough_3h_eur_kwh": 0.05,
-        "spread_3h_eur_kwh": 0.20,
+        "trough_4h_eur_kwh": 0.05,
+        "spread_4h_eur_kwh": 0.20,
         "negative_hours": 0.0,
         "negative_generation_kwh": 0.0,
         "absorbable_kwh": 0.0,
@@ -110,16 +111,17 @@ def test_missing_block_skips_rather_than_failing():
 
 def test_actual_day_must_match_the_upstream_price_slots():
     """A settled day that disagrees with pipeline.pricing is caught."""
-    days = [_day(0, "actual", peak_3h_eur_kwh=0.99), _day(1, "actual")]
+    days = [_day(0, "actual", peak_4h_eur_kwh=0.99, spread_4h_eur_kwh=0.94),
+            _day(1, "actual")]
     result = check_price_forecast(_Snap(_debug(days)))
     assert not result.overall_ok
-    assert any("peak_3h_mismatch" in m for m in result.mismatches)
+    assert any("peak_4h_mismatch" in m for m in result.mismatches)
 
 
 def test_band_ordering_violation_is_caught():
     """A trough above its peak is physically impossible."""
     days = [_day(0, "actual"), _day(1, "actual"),
-            _day(2, trough_3h_eur_kwh=0.9, trough_1h_eur_kwh=0.9)]
+            _day(2, trough_4h_eur_kwh=0.9, trough_1h_eur_kwh=0.9)]
     result = check_price_forecast(_Snap(_debug(days)))
     assert not result.overall_ok
     assert any("band_ordering" in m for m in result.mismatches)
@@ -143,10 +145,28 @@ def test_negative_generation_cannot_exceed_the_day_total():
 
 def test_spread_must_match_its_own_peak_and_trough():
     """A published spread inconsistent with the bands it summarises is caught."""
-    days = [_day(0, "actual"), _day(1, "actual"), _day(2, spread_3h_eur_kwh=0.99)]
+    days = [_day(0, "actual"), _day(1, "actual"), _day(2, spread_4h_eur_kwh=0.99)]
     result = check_price_forecast(_Snap(_debug(days)))
     assert not result.overall_ok
     assert any("spread_mismatch" in m for m in result.mismatches)
+
+
+def test_modelled_day_without_4h_history_passes():
+    """A modelled day publishes a null 4 h band until that band has history."""
+    days = [_day(0, "actual"), _day(1, "actual"),
+            _day(2, peak_4h_eur_kwh=None, trough_4h_eur_kwh=None, spread_4h_eur_kwh=None)]
+    result = check_price_forecast(_Snap(_debug(days)))
+    assert result.overall_ok, result.mismatches
+
+
+def test_settled_day_must_carry_the_4h_band():
+    """A settled day always has full curves, so a null 4 h band there is a bug."""
+    days = [_day(0, "actual", peak_4h_eur_kwh=None, trough_4h_eur_kwh=None,
+                 spread_4h_eur_kwh=None),
+            _day(1, "actual")]
+    result = check_price_forecast(_Snap(_debug(days)))
+    assert not result.overall_ok
+    assert any("actual_4h_missing" in m for m in result.mismatches)
 
 
 def test_missing_today_is_caught():

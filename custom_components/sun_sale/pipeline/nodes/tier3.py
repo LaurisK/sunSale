@@ -216,16 +216,13 @@ class PriceForecastNode(DagNode):
 
     async def _compute(self, ctx: NodeContext) -> PriceForecast:
         """Build the week-ahead price forecast for the configured horizon."""
-        tariff = ctx.config.tariff
         battery = ctx.get(BatteryStatus)
         return price_forecast_module.compute_price_forecast(
             price_series=ctx.require(PriceSeries),
             history=ctx.get(PriceCurveHistory),
             weather=ctx.get(WeatherForecastData),
             generation=ctx.require(GenerationSeries),
-            negative_threshold_eur_kwh=price_forecast_module.export_break_even(
-                tariff.sell_distribution_fee, tariff.sell_markup,
-            ),
+            negative_threshold_eur_kwh=price_forecast_module.export_break_even(ctx.config.tariff),
             now=ctx.now,
             local_tz=ctx.config.local_tz,
             battery_capacity_kwh=battery.total_capacity_kwh if battery else None,
