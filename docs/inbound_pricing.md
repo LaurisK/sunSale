@@ -8,7 +8,7 @@ The pricing module owns the **72h yesterday→today→tomorrow `PriceSeries`** t
 
 A price-feed translator reads the configured market sensor and emits the source-agnostic `PriceFeedData` (today + tomorrow). `build_price_series_72h(feed, yesterday, config, now)` combines `YesterdayPrices.entries + feed.entries`, applies the tariff formula, and yields the 72h `PriceSeries` `PricingNode` returns.
 
-This module is the **price-source seam** (multi-region): `build_price_translator` selects one of `NordpoolTranslator` (Nordics), `EntsoeTranslator` (EU), `OctopusAgileTranslator` (UK), `AmberTranslator` (AU), or `TouScheduleTranslator` (synthetic TOU), all emitting the identical `PriceFeedData` shape (`NordpoolData` is a back-compat **alias** of `PriceFeedData`). See `CLAUDE.md` → *Price sources & sell-price models*. The Nordpool path is the default and is documented in detail below; the other translators share the same assembly helpers (`_build_feed` / `_parse_points`).
+This module is the **price-source seam** (multi-region): `build_price_translator` selects one of `NordpoolTranslator` (Nordics), `EntsoeTranslator` (EU), `OctopusAgileTranslator` (UK), `AmberTranslator` (AU), plus `FixedPriceTranslator` (a zero-spot slot grid used when neither price follows the market), all emitting the identical `PriceFeedData` shape (`NordpoolData` is a back-compat **alias** of `PriceFeedData`). See `CLAUDE.md` → *Electricity price model*. The Nordpool path is the default and is documented in detail below; the other translators share the same assembly helpers (`_build_feed` / `_parse_points`).
 
 - **Exposes:** `PriceFeedData` (translators), `PriceSeries` (helper), `build_price_translator`.
 - **Depends on:** `contract.models`, `pipeline.tariff`.
@@ -48,10 +48,11 @@ def build_price_series(
     resolution: timedelta | None = None,
     local_tz: tzinfo | None = None,
     source: str = "nordpool",
+    is_holiday: HolidayPredicate | None = None,
 ) -> PriceSeries
 ```
 
-Apply tariff formulas to a flat list of `PriceEntry`. If `resolution` is omitted it is derived from the first two slots (defaults to 1h for single-slot input). `now` defaults to `datetime.now(timezone.utc)` and is recorded as `PriceSeries.computed_at`. `local_tz` projects each slot start to a local time-of-day for time-of-use distribution-band selection; when `None` the flat distribution fees apply to every slot. `source` is the price-source identifier recorded in each slot's provenance tag (`sources = (source, "tariff")`).
+Apply tariff formulas to a flat list of `PriceEntry`. If `resolution` is omitted it is derived from the first two slots (defaults to 1h for single-slot input). `now` defaults to `datetime.now(timezone.utc)` and is recorded as `PriceSeries.computed_at`. `local_tz` projects each slot start to a local time-of-day for grid-fee tariff selection; when `None` every slot gets tariff T1. `is_holiday` (`date -> bool`) marks public holidays for the holiday schedules; `None` treats no day as a holiday. `source` is the price-source identifier recorded in each slot's provenance tag (`sources = (source, "tariff")`).
 
 ```python
 def build_price_series_72h(
@@ -61,20 +62,21 @@ def build_price_series_72h(
     now: datetime | None = None,
     local_tz: tzinfo | None = None,
     source: str = "nordpool",
+    is_holiday: HolidayPredicate | None = None,
 ) -> PriceSeries
 ```
 
-Assemble the full yesterday→today→tomorrow series. Concatenates `yesterday.entries + feed.entries`, then delegates to `build_price_series` with `resolution=feed.resolution`, `local_tz`, and `source` forwarded. This is the function the DAG's `PricingNode` calls (passing `ctx.config.local_tz` and `ctx.config.price_source`).
+Assemble the full yesterday→today→tomorrow series. Concatenates `yesterday.entries + feed.entries`, then delegates to `build_price_series` with `resolution=feed.resolution`, `local_tz`, `source` and `is_holiday` forwarded. This is the function the DAG's `PricingNode` calls (passing `ctx.config.local_tz`, `ctx.config.price_source` and the holiday calendar of `ctx.config.holiday_country`).
 
 ---
 
 ## 3. Inputs
 
-**`PriceFeedData`** (`contract/models.py`) — produced by the active price-feed translator (`NordpoolTranslator` by default; `NordpoolData` is an alias). Covers today + tomorrow only. `resolution` is auto-detected from the source attribute timestamps (for Nordpool, `raw_today[1].start - raw_today[0].start`); the sensor exposes a single resolution stream per cycle and tomorrow is zero-filled until the day-ahead market publishes. Translators may also carry a separate `export_price_eur_kwh` per entry (dual-feed sources) for the `feed` sell mode.
+**`PriceFeedData`** (`contract/models.py`) — produced by the active price-feed translator (`NordpoolTranslator` by default; `NordpoolData` is an alias). Covers today + tomorrow only. `resolution` is auto-detected from the source attribute timestamps (for Nordpool, `raw_today[1].start - raw_today[0].start`); the sensor exposes a single resolution stream per cycle and tomorrow is zero-filled until the day-ahead market publishes. Translators may also carry a separate `export_price_eur_kwh` per entry (dual-feed sources), which a dynamic sell price uses in place of the import price.
 
 **`YesterdayPrices`** (`contract/models.py`) — a frozen wrapper around `tuple[PriceEntry, ...]`. Supplied by `orchestration.coordinator` from the `STORAGE_KEY_YESTERDAY` `Store`. The coordinator gates the value: if the stored date is not exactly yesterday, an empty tuple is passed (no stale stitching).
 
-**`TariffConfig`** — user-configured fees, taxes, and markups, built once at coordinator setup from the config entry.
+**`TariffConfig`** — the buy and sell `PriceFormula`s, built once at coordinator setup from the config entry by `pipeline/tariff.py:tariff_from_config` (entries with the legacy tariff keys are converted on read).
 
 ---
 
@@ -108,24 +110,20 @@ The pricing module emits raw buy/sell price data only. Whether a slot is sellabl
 
 ## 5. Tariff formula
 
-Delegated to `pipeline/tariff.py`:
+Delegated to `pipeline/tariff.py`, one `PriceFormula` per direction:
 
 ```
-buy  = (spot + distribution_fee + markup) * (1 + tax_rate)
-sell = (spot - sell_distribution_fee - sell_markup) * (1 - sell_tax_rate)
+buy  = (energy + markup + grid_fee) * (1 + vat)
+sell = (energy - markup - grid_fee) * (1 - vat)
 ```
 
-The `sell` formula above is the default `spot` sell mode; `TariffConfig.sell_mode` also supports `fixed` (feed-in tariff), `schedule` (TOU avoided-cost), and `feed` (separate live export price) — see `CLAUDE.md` → *Sell-price models*. `buy` is always this shape.
+`energy` is the slot's spot price when the formula's `energy_mode` is `dynamic` — on the sell side the slot's separate export price where the feed has one — or the formula's `fixed_price`. See `CLAUDE.md` → *Electricity price model*.
 
 `sell_eur_kwh` can be negative (high sell fees against low spot prices) or exactly zero. Downstream consumers apply the strict `> 0` sellability check (in `slot_physics` / `schedule`); the pricing module itself does not flag this.
 
-### Time-of-use distribution bands
+### Grid-fee tariffs
 
-Only the **distribution fees** are time-of-use; tax rates and markups are global. `TariffConfig` carries two band schedules — `weekday_bands` (Mon–Fri) and `weekend_bands` (Sat/Sun) — each a `tuple[TariffBand]`. A `TariffBand` has a `start_minute` (minutes from local midnight) plus its own buy/sell distribution fee. For each slot, `build_price_series` projects the slot start into `local_tz`, picks the weekday/weekend schedule by day-of-week, then selects the band whose `start_minute` is the latest at or before the slot's minute-of-day — **wrapping past midnight** (before the earliest band's start, the previous day's last band carries over), so a schedule always covers 24h with no gaps regardless of ordering.
-
-`select_band` returns `None` when the applicable schedule is empty; `buy_price` / `sell_price` then fall back to the flat `distribution_fee` / `sell_distribution_fee` on the config (also used when `local_tz` is `None`). This preserves the pre-TOU behaviour for installs that never define bands. `pipeline/tariff.py:bands_from_config` parses the stored config dicts (`{"start": "HH:MM", "buy_fee", "sell_fee"}`) into a sorted `TariffBand` tuple; the coordinator calls it for both schedules at setup.
-
-The config/options flow collects up to `MAX_TARIFF_BANDS` (4) rows per schedule in the `tariff_weekday` / `tariff_weekend` steps; a row with a blank start time is dropped.
+`PriceFormula.grid_fees` holds 1, 2 or 4 per-kWh fees (T1…T4). With more than one, its `DaySchedule`s say which is active — one per season (`all`, or `summer` / `winter` when the formula has seasons) and day type (`workday`, plus `weekend` / `holiday` when the formula separates them). For each slot, `build_price_series` projects the slot start into `local_tz`, and `tariff.active_tariff` picks the season, the day type (a public holiday per `is_holiday` wins over a weekend), then the switch whose `start_minute` is the latest at or before the slot's minute-of-day — **wrapping past midnight**, so a schedule always covers 24 h. T1 applies with a single tariff, without `local_tz`, or when the season / day type has no schedule.
 
 ---
 
@@ -179,8 +177,8 @@ Run them with:
 | | `test_slot_count_matches_input` | 24 entries → 24 slots |
 | | `test_computed_at_is_set` | `computed_at == now` |
 | | `test_sources_tuple` | Provenance fixed to `("nordpool", "tariff")` |
-| Tariff math | `test_buy_price_formula` | Buy = `(spot + distribution + markup) * (1 + tax)` |
-| | `test_sell_price_formula` | Sell = `(spot - dist - markup) * (1 - tax)` |
+| Tariff math | `test_buy_price_formula` | Buy = `(spot + markup + grid fee) * (1 + vat)` |
+| | `test_sell_price_formula` | Sell = `(spot - markup - grid fee) * (1 - vat)` |
 | | `test_spot_price_preserved` | Raw spot retained on slot |
 | Sell sign | `test_negative_spot_produces_negative_sell` | Negative spot → `sell_eur_kwh < 0` |
 | | `test_positive_spot_produces_positive_sell` | Positive spot → `sell_eur_kwh > 0` |
@@ -194,10 +192,12 @@ Run them with:
 | | `test_72h_uses_nordpool_resolution_not_derived` | Sparse input + 15-min `NordpoolData.resolution` → series resolution = 15-min (not rederived to 1h) |
 | | `test_72h_empty_yesterday_returns_only_today_tomorrow` | Empty yesterday tuple → 48 slots starting at today |
 | | `test_72h_applies_tariff_to_all_segments` | Tariff applied uniformly across yesterday and today slots |
-| TOU bands | `test_local_tz_selects_band_per_slot` | `local_tz` projects each slot to local time; day vs night band fee applied per slot |
-| | `test_no_local_tz_uses_flat_fee_even_with_bands` | No `local_tz` → flat distribution fee, bands ignored |
+| Grid-fee tariffs | `test_local_tz_selects_the_tariff_per_slot` | `local_tz` projects each slot to local time; day vs night tariff applied per slot |
+| | `test_no_local_tz_uses_the_first_tariff` | No `local_tz` → T1, schedules ignored |
+| | `test_the_holiday_predicate_threads_into_tariff_selection` | `is_holiday` switches a slot to the holiday schedule |
+| Export feed | `test_a_dynamic_sell_price_uses_the_export_price_where_the_feed_has_one` | Separate export price replaces spot on the sell side |
 
-Band selection itself (weekday/weekend, wrap-midnight, fallback, `bands_from_config` parsing) is unit-tested in `tests/test_tariff.py`.
+Tariff selection itself (seasons, day types, holidays, wrap-midnight, T1 fallback), stored-dict parsing and the legacy-entry conversion are unit-tested in `tests/test_tariff.py`.
 
 ### What is intentionally **not** covered here
 

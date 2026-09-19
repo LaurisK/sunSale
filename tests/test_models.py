@@ -40,11 +40,9 @@ def test_price_entry_frozen():
 
 
 def test_tariff_config_construction():
-    tc = TariffConfig(
-        distribution_fee=0.03, tax_rate=0.21, markup=0.01,
-        sell_distribution_fee=0.02, sell_tax_rate=0.0, sell_markup=0.005,
-    )
-    assert tc.tax_rate == 0.21
+    tc = TariffConfig()
+    assert tc.buy.grid_fees == (0.0,)
+    assert tc.sell.energy_mode == "dynamic"
 
 
 def test_battery_config_frozen():

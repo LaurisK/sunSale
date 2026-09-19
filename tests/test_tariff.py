@@ -1,197 +1,335 @@
 """Tests for tariff.py — pure Python, no HA required."""
-import dataclasses
-from datetime import UTC, datetime
+from datetime import UTC, date, datetime
 
-from custom_components.sun_sale.contract.models import TariffBand
-from custom_components.sun_sale.pipeline.tariff import (
-    bands_from_config,
-    buy_price,
-    select_band,
-    sell_price,
+import pytest
+
+from custom_components.sun_sale.contract.const import (
+    CONF_PRICE_BUY,
+    CONF_PRICE_SOURCE,
+    CONF_PRICE_TOU_BANDS,
+    CONF_TARIFF_DISTRIBUTION_FEE,
+    CONF_TARIFF_FIXED_SELL_PRICE,
+    CONF_TARIFF_MARKUP,
+    CONF_TARIFF_SELL_DISTRIBUTION_FEE,
+    CONF_TARIFF_SELL_MARKUP,
+    CONF_TARIFF_SELL_MODE,
+    CONF_TARIFF_SELL_TAX_RATE,
+    CONF_TARIFF_TAX_RATE,
+    CONF_TARIFF_WEEKDAY_BANDS,
+    CONF_TARIFF_WEEKEND_BANDS,
 )
-from tests.conftest import default_tariff_config
+from custom_components.sun_sale.contract.models import DaySchedule, PriceFormula, TariffConfig, TariffSwitch
+from custom_components.sun_sale.pipeline.tariff import (
+    active_tariff,
+    buy_price,
+    formula_from_config,
+    legacy_price_config,
+    needs_market_price,
+    price_config,
+    schedule_keys,
+    season_of,
+    sell_price,
+    tariff_from_config,
+)
+from tests.conftest import default_tariff_config, flat_tariff
 
+# 2024-01-15 is a Monday, 2024-01-20 a Saturday, 2024-07-15 a Monday in summer.
+MON = datetime(2024, 1, 15, tzinfo=UTC)
+SAT = datetime(2024, 1, 20, tzinfo=UTC)
+SUMMER_MON = datetime(2024, 7, 15, tzinfo=UTC)
+
+
+# ---------------------------------------------------------------------------
+# The formula
+# ---------------------------------------------------------------------------
 
 def test_buy_price_basic():
-    config = default_tariff_config()
-    # (0.05 + 0.03 + 0.01) * 1.21 = 0.09 * 1.21 = 0.1089
-    result = buy_price(0.05, config)
-    assert abs(result - 0.1089) < 1e-9
+    # (0.05 + 0.01 markup + 0.03 grid fee) * 1.21
+    assert buy_price(0.05, default_tariff_config()) == pytest.approx(0.1089)
 
 
 def test_sell_price_basic():
+    # (0.15 - 0.005 deduction - 0.02 grid fee) * (1 - 0)
+    assert sell_price(0.15, default_tariff_config()) == pytest.approx(0.125)
+
+
+def test_buy_price_zero_and_negative_spot():
     config = default_tariff_config()
-    # (0.15 - 0.02 - 0.005) * (1 - 0.0) = 0.125
-    result = sell_price(0.15, config)
-    assert abs(result - 0.125) < 1e-9
-
-
-def test_buy_price_zero_spot():
-    config = default_tariff_config()
-    # (0 + 0.03 + 0.01) * 1.21 = 0.04 * 1.21 = 0.0484
-    result = buy_price(0.0, config)
-    assert abs(result - 0.0484) < 1e-9
-
-
-def test_buy_price_negative_spot():
-    config = default_tariff_config()
-    # Nordpool can go negative; formula should still work
-    result = buy_price(-0.05, config)
-    # (-0.05 + 0.03 + 0.01) * 1.21 = -0.01 * 1.21 = -0.0121
-    assert abs(result - (-0.0121)) < 1e-9
+    assert buy_price(0.0, config) == pytest.approx(0.0484)
+    assert buy_price(-0.05, config) == pytest.approx(-0.0121)
 
 
 def test_sell_price_negative_spot():
-    config = default_tariff_config()
-    result = sell_price(-0.10, config)
-    # (-0.10 - 0.02 - 0.005) = -0.125
-    assert result < 0
+    assert sell_price(-0.10, default_tariff_config()) < 0
 
 
 def test_buy_always_greater_than_sell_for_same_spot():
     config = default_tariff_config()
     for spot in [-0.05, 0.0, 0.05, 0.10, 0.20, 0.50]:
-        assert buy_price(spot, config) > sell_price(spot, config), (
-            f"buy should exceed sell at spot={spot}"
-        )
+        assert buy_price(spot, config) > sell_price(spot, config), f"buy should exceed sell at spot={spot}"
 
 
-# ---------------------------------------------------------------------------
-# Time-of-use bands
-# ---------------------------------------------------------------------------
-
-# 2024-01-15 is a Monday; 2024-01-20 is a Saturday.
-_MON = datetime(2024, 1, 15, tzinfo=UTC)
-_SAT = datetime(2024, 1, 20, tzinfo=UTC)
+def test_sell_tax_is_deducted():
+    config = flat_tariff(sell_fee=0.02, sell_tax=0.05, sell_markup=0.005)
+    assert sell_price(0.10, config) == pytest.approx((0.10 - 0.02 - 0.005) * 0.95)
 
 
-def _tou_config():
-    """Return a tariff config with a two-band weekday schedule and one weekend band."""
-    base = default_tariff_config()
-    return dataclasses.replace(
-        base,
-        weekday_bands=(
-            TariffBand(start_minute=8 * 60, distribution_fee=0.06, sell_distribution_fee=0.04),   # day rate
-            TariffBand(start_minute=23 * 60, distribution_fee=0.02, sell_distribution_fee=0.01),  # night rate
-        ),
-        weekend_bands=(
-            TariffBand(start_minute=0, distribution_fee=0.015, sell_distribution_fee=0.005),
-        ),
+def test_fixed_energy_ignores_the_market_price():
+    config = TariffConfig(
+        buy=PriceFormula(energy_mode="fixed", fixed_price=0.20, markup=0.01, vat=0.21, grid_fees=(0.05,)),
+        sell=PriceFormula(energy_mode="fixed", fixed_price=0.08),
     )
+    for spot in (-0.5, 0.0, 0.9):
+        assert buy_price(spot, config) == pytest.approx((0.20 + 0.01 + 0.05) * 1.21)
+        assert sell_price(spot, config) == pytest.approx(0.08)
 
 
-def test_select_band_picks_active_window():
-    config = _tou_config()
-    band = select_band(config, _MON.replace(hour=10))
-    assert band.distribution_fee == 0.06
+def test_dynamic_sell_prefers_the_separate_export_price():
+    config = flat_tariff(sell_fee=0.01, sell_markup=0.0)
+    assert sell_price(0.99, config, export=0.07) == pytest.approx(0.06)
+    assert sell_price(0.99, config, export=None) == pytest.approx(0.98)
 
 
-def test_select_band_wraps_before_first_start():
-    config = _tou_config()
-    # 02:00 is before the 08:00 start → previous day's last band (the 23:00 night rate) carries over.
-    band = select_band(config, _MON.replace(hour=2))
-    assert band.distribution_fee == 0.02
+def test_fixed_sell_ignores_the_export_price():
+    config = TariffConfig(sell=PriceFormula(energy_mode="fixed", fixed_price=0.08))
+    assert sell_price(0.99, config, export=0.07) == 0.08
 
 
-def test_select_band_weekend_schedule():
-    config = _tou_config()
-    band = select_band(config, _SAT.replace(hour=12))
-    assert band.distribution_fee == 0.015
-
-
-def test_select_band_none_when_schedule_empty():
-    config = default_tariff_config()  # no bands
-    assert select_band(config, _MON.replace(hour=12)) is None
-
-
-def test_buy_price_uses_band_fee():
-    config = _tou_config()
-    # 10:00 weekday → day band fee 0.06: (0.05 + 0.06 + 0.01) * 1.21
-    expected = (0.05 + 0.06 + 0.01) * 1.21
-    assert abs(buy_price(0.05, config, _MON.replace(hour=10)) - expected) < 1e-9
-
-
-def test_sell_price_uses_band_fee_night():
-    config = _tou_config()
-    # 23:30 weekday → night band sell fee 0.01: (0.15 - 0.01 - 0.005) * (1 - 0)
-    expected = (0.15 - 0.01 - 0.005) * 1.0
-    assert abs(sell_price(0.15, config, _MON.replace(hour=23, minute=30)) - expected) < 1e-9
-
-
-def test_buy_price_falls_back_to_flat_without_local_dt():
-    config = _tou_config()
-    # No local_dt → flat distribution fee 0.03, not any band fee.
-    expected = (0.05 + 0.03 + 0.01) * 1.21
-    assert abs(buy_price(0.05, config) - expected) < 1e-9
-
-
-def test_bands_from_config_parses_and_sorts():
-    bands = bands_from_config([
-        {"start": "23:00", "buy_fee": 0.02, "sell_fee": 0.01},
-        {"start": "08:00", "buy_fee": 0.06, "sell_fee": 0.04},
-    ])
-    assert [b.start_minute for b in bands] == [8 * 60, 23 * 60]
-
-
-def test_bands_from_config_drops_invalid_rows():
-    bands = bands_from_config([
-        {"start": "", "buy_fee": 0.02, "sell_fee": 0.01},
-        {"start": "bad", "buy_fee": 0.06, "sell_fee": 0.04},
-        {"start": "06:15", "buy_fee": 0.05, "sell_fee": 0.03},
-    ])
-    assert len(bands) == 1
-    assert bands[0].start_minute == 6 * 60 + 15
-
-
-def test_bands_from_config_empty_or_none():
-    assert bands_from_config(None) == ()
-    assert bands_from_config([]) == ()
+def test_needs_market_price_when_either_side_is_dynamic():
+    fixed = PriceFormula(energy_mode="fixed")
+    assert needs_market_price(default_tariff_config())
+    assert not needs_market_price(TariffConfig(buy=fixed, sell=fixed))
+    assert needs_market_price(TariffConfig(buy=fixed, sell=PriceFormula()))
 
 
 # ---------------------------------------------------------------------------
-# Sell-price models (sell_mode)
+# Grid-fee tariffs and their schedules
 # ---------------------------------------------------------------------------
 
-WEEKDAY = datetime(2024, 1, 15, 12, 0, tzinfo=UTC)  # Monday local-noon
+_DAY_NIGHT = DaySchedule("all", "workday", (TariffSwitch(7 * 60, 1), TariffSwitch(23 * 60, 2)))
 
 
-def test_sell_mode_spot_is_default_formula():
-    config = default_tariff_config()  # sell_mode defaults to "spot"
-    assert abs(sell_price(0.15, config) - 0.125) < 1e-9
+def _two_tariffs(schedules=(_DAY_NIGHT,), **fields) -> PriceFormula:
+    """Return T1 0.06 / T2 0.02 with a 07:00 day, 23:00 night workday schedule."""
+    return PriceFormula(grid_fees=(0.06, 0.02), schedules=schedules, **fields)
 
 
-def test_sell_mode_fixed_returns_constant():
-    config = dataclasses.replace(default_tariff_config(), sell_mode="fixed", fixed_sell_price=0.08)
-    # Independent of spot.
-    assert sell_price(0.15, config) == 0.08
-    assert sell_price(-0.50, config) == 0.08
+def test_active_tariff_follows_the_switch_points():
+    formula = _two_tariffs()
+    assert active_tariff(formula, MON.replace(hour=10)) == 1
+    assert active_tariff(formula, MON.replace(hour=23, minute=30)) == 2
 
 
-def test_sell_mode_schedule_uses_band_absolute_price():
-    config = dataclasses.replace(
-        default_tariff_config(),
-        sell_mode="schedule",
-        fixed_sell_price=0.01,
-        weekday_bands=(
-            TariffBand(start_minute=0, distribution_fee=0.0, sell_distribution_fee=0.05),
-            TariffBand(start_minute=8 * 60, distribution_fee=0.0, sell_distribution_fee=0.30),
-        ),
+def test_active_tariff_wraps_past_midnight():
+    # 02:00 is before the 07:00 switch → the previous day's 23:00 tariff carries over.
+    assert active_tariff(_two_tariffs(), MON.replace(hour=2)) == 2
+
+
+def test_without_a_local_time_or_with_one_tariff_t1_applies():
+    assert active_tariff(_two_tariffs(), None) == 1
+    assert active_tariff(PriceFormula(grid_fees=(0.05,)), MON.replace(hour=2)) == 1
+
+
+def test_weekends_follow_the_workday_schedule_unless_separated():
+    assert active_tariff(_two_tariffs(), SAT.replace(hour=12)) == 1
+    separate = _two_tariffs(
+        weekends=True, schedules=(_DAY_NIGHT, DaySchedule("all", "weekend", (TariffSwitch(0, 2),))),
     )
-    # 12:00 → the 08:00 band's sell value treated as the absolute price.
-    assert sell_price(0.99, config, WEEKDAY) == 0.30
-    # No local time → fixed fallback.
-    assert sell_price(0.99, config, None) == 0.01
+    assert active_tariff(separate, SAT.replace(hour=12)) == 2
+    assert active_tariff(separate, MON.replace(hour=12)) == 1
 
 
-def test_sell_mode_schedule_empty_bands_falls_back_to_fixed():
-    config = dataclasses.replace(
-        default_tariff_config(), sell_mode="schedule", fixed_sell_price=0.02,
-    )
-    assert sell_price(0.99, config, WEEKDAY) == 0.02
+def test_a_day_type_without_a_schedule_gets_t1():
+    assert active_tariff(_two_tariffs(weekends=True), SAT.replace(hour=2)) == 1
 
 
-def test_sell_mode_feed_uses_per_slot_export():
-    config = dataclasses.replace(default_tariff_config(), sell_mode="feed", fixed_sell_price=0.01)
-    assert sell_price(0.99, config, WEEKDAY, export=0.07) == 0.07
-    # Missing export → fixed fallback.
-    assert sell_price(0.99, config, WEEKDAY, export=None) == 0.01
+def test_holiday_schedule_wins_over_the_weekend_and_needs_a_calendar():
+    formula = PriceFormula(grid_fees=(0.4, 0.3, 0.2, 0.1), weekends=True, holidays=True, schedules=(
+        DaySchedule("all", "workday", (TariffSwitch(0, 1),)),
+        DaySchedule("all", "weekend", (TariffSwitch(0, 2),)),
+        DaySchedule("all", "holiday", (TariffSwitch(0, 3),)),
+    ))
+    holiday = {date(2024, 1, 15), date(2024, 1, 20)}.__contains__
+    assert active_tariff(formula, MON, holiday) == 3
+    assert active_tariff(formula, SAT, holiday) == 3
+    assert active_tariff(formula, SAT, None) == 2
+    assert active_tariff(formula, MON, None) == 1
+
+
+def test_holidays_follow_their_weekday_unless_separated():
+    assert active_tariff(_two_tariffs(), MON.replace(hour=10), lambda day: True) == 1
+
+
+def test_seasons_pick_the_summer_or_winter_schedule():
+    # The day zone starts an hour later in summer (a DST-shifted zone, as in Lithuania).
+    formula = PriceFormula(grid_fees=(0.06, 0.02), seasons=True, schedules=(
+        DaySchedule("summer", "workday", (TariffSwitch(0, 2), TariffSwitch(8 * 60, 1))),
+        DaySchedule("winter", "workday", (TariffSwitch(0, 2), TariffSwitch(7 * 60, 1))),
+    ))
+    assert active_tariff(formula, MON.replace(hour=7, minute=30)) == 1
+    assert active_tariff(formula, SUMMER_MON.replace(hour=7, minute=30)) == 2
+
+
+def test_season_starts_are_inclusive():
+    formula = PriceFormula(seasons=True, summer_start=(4, 1), winter_start=(11, 1))
+    assert season_of(formula, date(2024, 3, 31)) == "winter"
+    assert season_of(formula, date(2024, 4, 1)) == "summer"
+    assert season_of(formula, date(2024, 10, 31)) == "summer"
+    assert season_of(formula, date(2024, 11, 1)) == "winter"
+
+
+def test_a_summer_across_the_new_year_wraps():
+    formula = PriceFormula(seasons=True, summer_start=(10, 1), winter_start=(4, 1))
+    assert season_of(formula, date(2024, 1, 15)) == "summer"
+    assert season_of(formula, date(2024, 6, 15)) == "winter"
+
+
+def test_without_seasons_every_day_is_all():
+    assert season_of(PriceFormula(), date(2024, 7, 1)) == "all"
+
+
+def test_buy_and_sell_use_their_own_active_fee():
+    config = TariffConfig(buy=_two_tariffs(markup=0.01, vat=0.21), sell=_two_tariffs(markup=0.005))
+    night = MON.replace(hour=23, minute=30)
+    assert buy_price(0.05, config, night) == pytest.approx((0.05 + 0.02 + 0.01) * 1.21)
+    assert sell_price(0.15, config, night) == pytest.approx(0.15 - 0.02 - 0.005)
+
+
+# ---------------------------------------------------------------------------
+# Stored formula dicts
+# ---------------------------------------------------------------------------
+
+def test_schedule_keys_follow_the_structure():
+    assert schedule_keys({"tariffs": 1, "weekends": True}) == []
+    assert schedule_keys({"tariffs": 2}) == ["all_workday"]
+    assert schedule_keys({"tariffs": 4, "weekends": True, "holidays": True}) == [
+        "all_workday", "all_weekend", "all_holiday",
+    ]
+    assert schedule_keys({"tariffs": 2, "seasons": True, "holidays": True}) == [
+        "summer_workday", "summer_holiday", "winter_workday", "winter_holiday",
+    ]
+
+
+def test_formula_from_config_parses_the_stored_dict():
+    formula = formula_from_config({
+        "energy": "fixed", "fixed_price": 0.2, "markup": 0.01, "vat": 21, "tariffs": 2, "grid_fees": [0.06],
+        "schedules": {
+            "all_workday": [
+                {"start": "23:00", "tariff": 2},
+                {"start": "7:00", "tariff": 1},
+                {"start": "bad", "tariff": 1},
+                {"start": "12:00", "tariff": 3},  # no T3 with two tariffs
+            ],
+            "all_weekend": [{"start": "00:00", "tariff": 2}],  # weekends are not separated
+        },
+    })
+    assert (formula.energy_mode, formula.fixed_price, formula.markup) == ("fixed", 0.2, 0.01)
+    assert formula.vat == pytest.approx(0.21)
+    assert formula.grid_fees == (0.06, 0.0)
+    assert formula.schedules == (_DAY_NIGHT,)
+
+
+def test_formula_from_config_defaults():
+    assert formula_from_config(None) == PriceFormula()
+
+
+# ---------------------------------------------------------------------------
+# Legacy entries (flat fees, fee bands, sell modes, TOU source)
+# ---------------------------------------------------------------------------
+
+_LEGACY = {
+    CONF_TARIFF_DISTRIBUTION_FEE: 0.03,
+    CONF_TARIFF_TAX_RATE: 21.0,
+    CONF_TARIFF_MARKUP: 0.01,
+    CONF_TARIFF_SELL_DISTRIBUTION_FEE: 0.02,
+    CONF_TARIFF_SELL_TAX_RATE: 5.0,
+    CONF_TARIFF_SELL_MARKUP: 0.005,
+}
+
+
+def test_legacy_flat_tariff_keeps_its_prices():
+    config = tariff_from_config(_LEGACY)
+    assert buy_price(0.10, config, MON) == pytest.approx((0.10 + 0.03 + 0.01) * 1.21)
+    assert sell_price(0.10, config, MON) == pytest.approx((0.10 - 0.02 - 0.005) * 0.95)
+    assert config.buy.grid_fees == (0.03,)
+
+
+def test_legacy_fee_bands_become_tariffs_and_keep_their_prices():
+    data = {
+        **_LEGACY,
+        CONF_TARIFF_WEEKDAY_BANDS: [
+            {"start": "07:00", "buy_fee": 0.06, "sell_fee": 0.01},
+            {"start": "23:00", "buy_fee": 0.02, "sell_fee": 0.0},
+        ],
+        CONF_TARIFF_WEEKEND_BANDS: [],  # weekends used the flat fees
+    }
+    config = tariff_from_config(data)
+    for when, buy_fee, sell_fee in (
+        (MON.replace(hour=10), 0.06, 0.01), (MON.replace(hour=2), 0.02, 0.0), (SAT.replace(hour=10), 0.03, 0.02),
+    ):
+        assert buy_price(0.10, config, when) == pytest.approx((0.10 + buy_fee + 0.01) * 1.21)
+        assert sell_price(0.10, config, when) == pytest.approx((0.10 - sell_fee - 0.005) * 0.95)
+    assert config.buy.weekends is True
+
+
+def test_legacy_bands_equal_on_all_days_need_no_weekend_schedule():
+    bands = [{"start": "07:00", "buy_fee": 0.06, "sell_fee": 0.0}, {"start": "23:00", "buy_fee": 0.02, "sell_fee": 0.0}]
+    buy, _ = legacy_price_config({**_LEGACY, CONF_TARIFF_WEEKDAY_BANDS: bands, CONF_TARIFF_WEEKEND_BANDS: bands})
+    assert (buy["tariffs"], buy["grid_fees"], buy["weekends"]) == (2, [0.06, 0.02], False)
+    assert buy["schedules"] == {"all_workday": [{"start": "07:00", "tariff": 1}, {"start": "23:00", "tariff": 2}]}
+
+
+def test_legacy_with_more_than_four_fees_maps_the_rest_to_the_nearest():
+    bands = [
+        {"start": f"{hour:02d}:00", "buy_fee": fee, "sell_fee": 0.0}
+        for hour, fee in ((0, 0.01), (4, 0.02), (8, 0.03), (12, 0.04), (16, 0.041))
+    ]
+    buy, _ = legacy_price_config({**_LEGACY, CONF_TARIFF_WEEKDAY_BANDS: bands, CONF_TARIFF_WEEKEND_BANDS: bands})
+    assert buy["grid_fees"] == [0.01, 0.02, 0.03, 0.04]
+    assert buy["schedules"]["all_workday"][-1] == {"start": "16:00", "tariff": 4}
+
+
+def test_legacy_sell_modes_keep_their_prices():
+    fixed = tariff_from_config({**_LEGACY, CONF_TARIFF_SELL_MODE: "fixed", CONF_TARIFF_FIXED_SELL_PRICE: 0.08})
+    assert sell_price(0.99, fixed, MON) == pytest.approx(0.08)
+    feed = tariff_from_config({**_LEGACY, CONF_TARIFF_SELL_MODE: "feed"})
+    assert sell_price(0.99, feed, MON, export=0.07) == pytest.approx(0.07)
+    schedule = tariff_from_config({
+        **_LEGACY,
+        CONF_TARIFF_SELL_MODE: "schedule",
+        CONF_TARIFF_FIXED_SELL_PRICE: 0.01,
+        CONF_TARIFF_WEEKDAY_BANDS: [
+            {"start": "00:00", "buy_fee": 0.03, "sell_fee": 0.05},
+            {"start": "08:00", "buy_fee": 0.03, "sell_fee": 0.30},
+        ],
+    })
+    # A band's sell fee was the absolute export price; days without bands got the fixed price.
+    assert sell_price(0.99, schedule, MON.replace(hour=12)) == pytest.approx(0.30)
+    assert sell_price(0.99, schedule, MON.replace(hour=3)) == pytest.approx(0.05)
+    assert sell_price(0.99, schedule, SAT.replace(hour=12)) == pytest.approx(0.01)
+
+
+def test_legacy_tou_source_becomes_fixed_prices_with_tariffs():
+    config = tariff_from_config({
+        **_LEGACY,
+        CONF_PRICE_SOURCE: "tou",
+        CONF_PRICE_TOU_BANDS: [{"start": "00:00", "price": 0.10}, {"start": "08:00", "price": 0.40}],
+    })
+    assert not needs_market_price(config)
+    # The TOU price used to stand in for spot in both formulas.
+    for when, tou in ((MON.replace(hour=3), 0.10), (SAT.replace(hour=9), 0.40)):
+        assert buy_price(0.0, config, when) == pytest.approx((tou + 0.03 + 0.01) * 1.21)
+        assert sell_price(0.0, config, when) == pytest.approx((tou - 0.02 - 0.005) * 0.95)
+
+
+def test_an_empty_entry_converts_to_the_defaults():
+    buy, sell = legacy_price_config({})
+    assert formula_from_config(buy) == PriceFormula()
+    assert formula_from_config(sell) == PriceFormula()
+
+
+def test_stored_formulas_win_over_legacy_keys():
+    stored = {"energy": "fixed", "fixed_price": 0.2}
+    buy, sell = price_config({**_LEGACY, CONF_PRICE_BUY: stored})
+    assert buy == stored
+    assert sell["markup"] == 0.005  # the sell side is still converted from the legacy keys

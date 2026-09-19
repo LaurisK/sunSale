@@ -269,10 +269,8 @@ def test_degradation_cost_stored_in_schedule():
 
 def _high_sell_fee_config() -> TariffConfig:
     """A tariff with a fat sell fee so low-spot hours have negative sell."""
-    return TariffConfig(
-        distribution_fee=0.0, tax_rate=0.0, markup=0.0,
-        sell_distribution_fee=0.20, sell_tax_rate=0.0, sell_markup=0.0,
-    )
+    from tests.conftest import flat_tariff
+    return flat_tariff(buy_fee=0.0, vat=0.0, markup=0.0, sell_fee=0.20, sell_tax=0.0, sell_markup=0.0)
 
 
 def _run_with_negative_sell_window(locked_hours: list[int]):

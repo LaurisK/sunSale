@@ -1,13 +1,16 @@
 """Tests for pricing.py — pure Python, no HA required."""
-import dataclasses
 from datetime import UTC, datetime, timedelta
 from zoneinfo import ZoneInfo
 
+import pytest
+
 from custom_components.sun_sale.contract.models import (
+    DaySchedule,
     NordpoolData,
     PriceEntry,
-    TariffBand,
+    PriceFormula,
     TariffConfig,
+    TariffSwitch,
     YesterdayPrices,
 )
 from custom_components.sun_sale.inbound.pricing import (
@@ -15,7 +18,7 @@ from custom_components.sun_sale.inbound.pricing import (
     build_price_series,
     build_price_series_72h,
 )
-from tests.conftest import BASE_DT, default_tariff_config, make_price
+from tests.conftest import BASE_DT, default_tariff_config, flat_tariff, make_price
 
 NOW = BASE_DT
 
@@ -50,8 +53,7 @@ def test_sources_tuple():
 # ---------------------------------------------------------------------------
 
 def test_buy_price_formula():
-    tc = TariffConfig(distribution_fee=0.03, tax_rate=0.21, markup=0.01,
-                      sell_distribution_fee=0.0, sell_tax_rate=0.0, sell_markup=0.0)
+    tc = flat_tariff(buy_fee=0.03, vat=0.21, markup=0.01, sell_fee=0.0, sell_tax=0.0, sell_markup=0.0)
     ps = build_price_series([make_price(0, 0.10)], tc, now=NOW)
     slot = ps.slots[0]
     expected_buy = (0.10 + 0.03 + 0.01) * (1.0 + 0.21)
@@ -59,8 +61,7 @@ def test_buy_price_formula():
 
 
 def test_sell_price_formula():
-    tc = TariffConfig(distribution_fee=0.0, tax_rate=0.0, markup=0.0,
-                      sell_distribution_fee=0.02, sell_tax_rate=0.05, sell_markup=0.005)
+    tc = flat_tariff(buy_fee=0.0, vat=0.0, markup=0.0, sell_fee=0.02, sell_tax=0.05, sell_markup=0.005)
     ps = build_price_series([make_price(0, 0.10)], tc, now=NOW)
     slot = ps.slots[0]
     expected_sell = (0.10 - 0.02 - 0.005) * (1.0 - 0.05)
@@ -87,8 +88,7 @@ def test_positive_spot_produces_positive_sell():
 
 
 def test_sell_price_can_be_exactly_zero():
-    tc = TariffConfig(distribution_fee=0.0, tax_rate=0.0, markup=0.0,
-                      sell_distribution_fee=0.10, sell_tax_rate=0.0, sell_markup=0.0)
+    tc = flat_tariff(buy_fee=0.0, vat=0.0, markup=0.0, sell_fee=0.10, sell_tax=0.0, sell_markup=0.0)
     ps = build_price_series([make_price(0, 0.10)], tc, now=NOW)
     # sell = (0.10 - 0.10) * 1 = 0.0 exactly
     assert ps.slots[0].sell_eur_kwh == 0.0
@@ -269,45 +269,47 @@ def test_zero_fill_empty_input_passthrough():
 
 
 # ---------------------------------------------------------------------------
-# Time-of-use bands applied through the series builder
+# Grid-fee tariffs applied through the series builder
 # ---------------------------------------------------------------------------
 
-def test_local_tz_selects_band_per_slot():
-    # Europe/Riga is UTC+2 in January. A weekday band starting at local 08:00
-    # has buy fee 0.10; everything else falls to the night band fee 0.02.
+def _day_night_tariff() -> TariffConfig:
+    """Return a buy formula with T1 0.10 from local 08:00 and T2 0.02 from 22:00 on workdays."""
+    buy = PriceFormula(
+        markup=0.01, vat=0.21, grid_fees=(0.10, 0.02),
+        schedules=(DaySchedule("all", "workday", (TariffSwitch(8 * 60, 1), TariffSwitch(22 * 60, 2))),),
+    )
+    return TariffConfig(buy=buy, sell=flat_tariff().sell)
+
+
+def test_local_tz_selects_the_tariff_per_slot():
+    # Europe/Riga is UTC+2 in January; BASE_DT is 2024-01-15 (Monday) 00:00 UTC == 02:00 local.
     tz = ZoneInfo("Europe/Riga")
-    tc = dataclasses.replace(
-        default_tariff_config(),
-        weekday_bands=(
-            TariffBand(start_minute=8 * 60, distribution_fee=0.10, sell_distribution_fee=0.0),
-            TariffBand(start_minute=22 * 60, distribution_fee=0.02, sell_distribution_fee=0.0),
-        ),
-    )
-    # BASE_DT is 2024-01-15 (Monday) 00:00 UTC == 02:00 local. Build 24 hourly slots.
-    prices = [make_price(h, 0.10) for h in range(24)]
-    ps = build_price_series(prices, tc, now=NOW, local_tz=tz)
-
-    # UTC 06:00 == local 08:00 → day band (fee 0.10).
-    day_slot = ps.slots[6]
-    assert abs(day_slot.buy_eur_kwh - (0.10 + 0.10 + tc.markup) * (1 + tc.tax_rate)) < 1e-9
-    # UTC 00:00 == local 02:00 → night band (fee 0.02).
-    night_slot = ps.slots[0]
-    assert abs(night_slot.buy_eur_kwh - (0.10 + 0.02 + tc.markup) * (1 + tc.tax_rate)) < 1e-9
+    ps = build_price_series([make_price(h, 0.10) for h in range(24)], _day_night_tariff(), now=NOW, local_tz=tz)
+    # UTC 06:00 == local 08:00 → T1 (0.10).
+    assert abs(ps.slots[6].buy_eur_kwh - (0.10 + 0.10 + 0.01) * 1.21) < 1e-9
+    # UTC 00:00 == local 02:00 → T2, carried over from 22:00 (0.02).
+    assert abs(ps.slots[0].buy_eur_kwh - (0.10 + 0.02 + 0.01) * 1.21) < 1e-9
 
 
-def test_no_local_tz_uses_flat_fee_even_with_bands():
-    tc = dataclasses.replace(
-        default_tariff_config(),
-        weekday_bands=(TariffBand(start_minute=0, distribution_fee=0.99, sell_distribution_fee=0.0),),
-    )
-    ps = build_price_series([make_price(6, 0.10)], tc, now=NOW)  # no local_tz
-    expected = (0.10 + tc.distribution_fee + tc.markup) * (1 + tc.tax_rate)
-    assert abs(ps.slots[0].buy_eur_kwh - expected) < 1e-9
+def test_no_local_tz_uses_the_first_tariff():
+    ps = build_price_series([make_price(0, 0.10)], _day_night_tariff(), now=NOW)  # no local_tz
+    assert abs(ps.slots[0].buy_eur_kwh - (0.10 + 0.10 + 0.01) * 1.21) < 1e-9
+
+
+def test_the_holiday_predicate_threads_into_tariff_selection():
+    buy = PriceFormula(grid_fees=(0.10, 0.02), holidays=True, schedules=(
+        DaySchedule("all", "workday", (TariffSwitch(0, 1),)),
+        DaySchedule("all", "holiday", (TariffSwitch(0, 2),)),
+    ))
+    tc = TariffConfig(buy=buy, sell=PriceFormula())
+    prices = [make_price(12, 0.0)]
+    assert build_price_series(prices, tc, now=NOW, local_tz=UTC).slots[0].buy_eur_kwh == 0.10
+    on_holiday = build_price_series(prices, tc, now=NOW, local_tz=UTC, is_holiday=lambda day: True)
+    assert on_holiday.slots[0].buy_eur_kwh == 0.02
 
 
 def test_72h_applies_tariff_to_all_segments():
-    tc = TariffConfig(distribution_fee=0.03, tax_rate=0.21, markup=0.01,
-                      sell_distribution_fee=0.0, sell_tax_rate=0.0, sell_markup=0.0)
+    tc = flat_tariff(buy_fee=0.03, vat=0.21, markup=0.01, sell_fee=0.0, sell_tax=0.0, sell_markup=0.0)
     yesterday = (_entry(-1, 0, 0.10),)
     today_tomorrow = [_entry(0, 0, 0.10)]
     nordpool = NordpoolData(entries=today_tomorrow, resolution=timedelta(hours=1))
@@ -331,6 +333,17 @@ def test_export_price_threads_into_slot():
     )
     ps = build_price_series([entry], default_tariff_config(), now=NOW)
     assert ps.slots[0].export_eur_kwh == 0.07
+
+
+def test_a_dynamic_sell_price_uses_the_export_price_where_the_feed_has_one():
+    entry = PriceEntry(
+        start=BASE_DT, end=BASE_DT + timedelta(hours=1),
+        price_eur_kwh=0.10, export_price_eur_kwh=0.07,
+    )
+    tc = flat_tariff(sell_fee=0.0, sell_markup=0.0)
+    ps = build_price_series([entry, make_price(1, 0.10)], tc, now=NOW)
+    assert ps.slots[0].sell_eur_kwh == pytest.approx(0.07)
+    assert ps.slots[1].sell_eur_kwh == pytest.approx(0.10)
 
 
 # ---------------------------------------------------------------------------
@@ -400,35 +413,77 @@ def test_octopus_translator_parses_rates_and_export():
     assert feed.resolution == timedelta(minutes=30)
 
 
-def test_amber_translator_scales_cents_to_unit():
+def test_octopus_translator_reads_todays_and_tomorrows_day_rate_events():
+    """Current Octopus Energy versions publish rates on event entities, in GBP/kWh, with datetime starts."""
+    from custom_components.sun_sale.inbound.pricing import OctopusAgileTranslator
+
+    base = "event.octopus_energy_electricity_1_2"
+    today = _FakeState({"rates": [
+        {"start": datetime(2024, 1, 15, 0, 0, tzinfo=UTC), "value_inc_vat": 0.21},
+        {"start": datetime(2024, 1, 15, 0, 30, tzinfo=UTC), "value_inc_vat": 0.25},
+    ]})
+    tomorrow = _FakeState({"rates": [{"start": datetime(2024, 1, 16, 0, 0, tzinfo=UTC), "value_inc_vat": 0.30}]})
+    export = _FakeState({"rates": [{"start": datetime(2024, 1, 15, 0, 0, tzinfo=UTC), "value_inc_vat": 0.15}]})
+    hass = _FakeHass({
+        f"{base}_current_day_rates": today,
+        f"{base}_next_day_rates": tomorrow,
+        f"{base}_export_current_day_rates": export,
+    })
+    feed = OctopusAgileTranslator(f"{base}_current_day_rates", f"{base}_export_current_day_rates").parse(hass, now=NOW)
+    by_start = {entry.start: entry for entry in feed.entries}
+    assert by_start[datetime(2024, 1, 15, tzinfo=UTC)].price_eur_kwh == 0.21
+    assert by_start[datetime(2024, 1, 15, tzinfo=UTC)].export_price_eur_kwh == 0.15
+    assert by_start[datetime(2024, 1, 16, tzinfo=UTC)].price_eur_kwh == 0.30
+    assert feed.resolution == timedelta(minutes=30)
+
+
+def test_octopus_rate_entities_cover_today_and_tomorrow_from_any_pick():
+    from custom_components.sun_sale.inbound.pricing import octopus_rate_entities
+
+    base = "octopus_energy_electricity_1_2"
+    # A current-rate sensor (no rates attribute in current versions) leads to its event entities.
+    assert octopus_rate_entities(f"sensor.{base}_current_rate") == [
+        f"sensor.{base}_current_rate", f"event.{base}_current_day_rates", f"event.{base}_next_day_rates",
+    ]
+    assert octopus_rate_entities(f"event.{base}_export_current_day_rates") == [
+        f"event.{base}_export_current_day_rates", f"event.{base}_export_next_day_rates",
+    ]
+    assert octopus_rate_entities("sensor.legacy_rates") == ["sensor.legacy_rates"]
+
+
+def test_amber_translator_reads_dollars_as_published():
+    """HA's Amber integration already divides the API's cents by 100 and flips feed-in's sign."""
     from custom_components.sun_sale.inbound.pricing import AmberTranslator
 
-    state = _FakeState({"forecasts": [
-        {"start_time": "2024-01-15T00:00:00+00:00", "end_time": "2024-01-15T00:30:00+00:00", "per_kwh": 30.0},
+    general = _FakeState({"forecasts": [
+        {"start_time": "2024-01-15T00:00:00+00:00", "end_time": "2024-01-15T00:30:00+00:00", "per_kwh": 0.30},
     ]})
-    feed = AmberTranslator("sensor.amber").parse(_FakeHass({"sensor.amber": state}), now=NOW)
-    # 30 cents/kWh → 0.30 unit/kWh
+    feed_in = _FakeState({"forecasts": [
+        {"start_time": "2024-01-15T00:00:00+00:00", "end_time": "2024-01-15T00:30:00+00:00", "per_kwh": 0.08},
+    ]})
+    hass = _FakeHass({"sensor.amber_general": general, "sensor.amber_feed_in": feed_in})
+    feed = AmberTranslator("sensor.amber_general", "sensor.amber_feed_in").parse(hass, now=NOW)
+    assert abs(feed.entries[0].export_price_eur_kwh - 0.08) < 1e-9
     assert abs(feed.entries[0].price_eur_kwh - 0.30) < 1e-9
 
 
-def test_tou_translator_emits_synthetic_schedule():
-    from custom_components.sun_sale.inbound.pricing import TouScheduleTranslator
+def test_fixed_price_translator_emits_a_zero_spot_slot_grid():
+    from custom_components.sun_sale.inbound.pricing import FixedPriceTranslator
 
-    # Two bands: cheap overnight (00:00) and peak (08:00), UTC for simplicity.
-    bands = ((0, 0.10), (8 * 60, 0.40))
-    translator = TouScheduleTranslator(bands, resolution=timedelta(hours=1), local_tz=UTC)
-    feed = translator.parse(None, now=NOW)
-    assert len(feed.entries) == 48  # today + tomorrow at 1h
-    by_start = {e.start: e.price_eur_kwh for e in feed.entries}
-    assert by_start[BASE_DT.replace(hour=2)] == 0.10   # pre-peak → cheap band
-    assert by_start[BASE_DT.replace(hour=9)] == 0.40   # post-08:00 → peak band
+    translator = FixedPriceTranslator(resolution=timedelta(minutes=15), local_tz=UTC)
+    feed = translator.parse(None, now=NOW.replace(hour=13))
+    assert len(feed.entries) == 48 * 4  # today + tomorrow at 15 min
+    assert feed.entries[0].start == BASE_DT
+    assert {e.price_eur_kwh for e in feed.entries} == {0.0}
 
 
-def test_tou_translator_empty_bands_returns_empty():
-    from custom_components.sun_sale.inbound.pricing import TouScheduleTranslator
+def test_fixed_price_translator_counts_days_in_local_time():
+    from custom_components.sun_sale.inbound.pricing import FixedPriceTranslator
 
-    feed = TouScheduleTranslator((), local_tz=UTC).parse(None, now=NOW)
-    assert feed.entries == []
+    # NOW is 02:00 in Riga (UTC+2), so local today started at 22:00 UTC the day before.
+    feed = FixedPriceTranslator(local_tz=ZoneInfo("Europe/Riga")).parse(None, now=NOW)
+    assert feed.entries[0].start == datetime(2024, 1, 14, 22, tzinfo=UTC)
+    assert len(feed.entries) == 48
 
 
 def test_build_price_translator_dispatch():
@@ -438,17 +493,6 @@ def test_build_price_translator_dispatch():
     assert isinstance(p.build_price_translator("entsoe", entity_id="x"), p.EntsoeTranslator)
     assert isinstance(p.build_price_translator("octopus", entity_id="x"), p.OctopusAgileTranslator)
     assert isinstance(p.build_price_translator("amber", entity_id="x"), p.AmberTranslator)
-    assert isinstance(p.build_price_translator("tou", entity_id="x"), p.TouScheduleTranslator)
-    # Unknown source falls back to Nordpool.
+    assert isinstance(p.build_price_translator("fixed", entity_id=""), p.FixedPriceTranslator)
+    # Unknown source (including the legacy "tou") falls back to Nordpool.
     assert isinstance(p.build_price_translator("???", entity_id="x"), p.NordpoolTranslator)
-
-
-def test_tou_bands_from_config_parses_and_sorts():
-    from custom_components.sun_sale.inbound.pricing import tou_bands_from_config
-
-    bands = tou_bands_from_config([
-        {"start": "08:00", "price": 0.40},
-        {"start": "00:00", "price": 0.10},
-        {"start": "bad", "price": 0.99},   # dropped
-    ])
-    assert bands == ((0, 0.10), (480, 0.40))

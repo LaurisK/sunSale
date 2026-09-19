@@ -10,6 +10,52 @@ Any behavior-affecting change bumps the `version` in
 
 ## [Unreleased]
 
+### Added
+- **Price sensors are detected.** *Price source and sensor* now lists the
+  sensors on the system that a price translator can read — recognised by the
+  attributes each translator parses (Nord Pool `raw_today` / `today` +
+  `tomorrow_valid`, ENTSO-e `prices_today` / `prices`, Octopus `rates` /
+  `all_rates`, Amber `forecasts`) — and pre-selects the stored one, or the first
+  found. Picking one sets both the source and the sensor. **Other** opens a
+  follow-up form to pick the source and sensor by hand (also the way to leave
+  the sensor blank with both prices fixed); a stored sensor that isn't detected
+  opens on Other. With nothing detected the form is unchanged. Detection of the
+  non-Nord Pool sources follows their documented schemas and is untested.
+- **Export-price feeds are detected too.** Octopus export-rate sensors
+  (`is_export`) and Amber feed-in forecasts (`channel_type: feedIn`; the entity
+  id as fallback) are kept out of the price-sensor list and offered in their own
+  *Export-price feed* list (plus *None*), pre-selecting the feed from the chosen
+  price sensor's integration. A feed from another integration is refused
+  (`export_feed_mismatch`), since the translator only reads its own. The
+  by-hand export sensor field can now be cleared (it used to snap back to its
+  stored value), and the page summary shows the export sensor.
+
+### Changed
+
+- **Electricity prices: one simple formula per direction.** The tariff is now two
+  independently configured price formulas — buy `(energy + markup + grid fee) × (1 + VAT)`
+  and sell `(energy − deduction − grid fee) × (1 − tax)`. The energy is the market price
+  from the chosen source (Nord Pool, ENTSO-e, Octopus, Amber) or a fixed price; with both
+  prices fixed no price sensor is read at all. The grid fee has 1, 2 or 4 tariffs; with
+  more than one, a switch-point schedule ("from HH:MM → tariff", up to six rows, wrapping
+  past midnight) says which applies when — for workdays, plus optional weekend and
+  public-holiday schedules (the `holidays` calendar for Home Assistant's country) — and
+  optionally separately for summer and winter (configurable start dates). A dynamic sell
+  price uses the separate live export feed (Octopus Outgoing, Amber feed-in) where the slot
+  has one. Setup: the prices section is *Price source and sensor* (now also the currency),
+  *Buy price*, *Sell price* and *Price level*; each price menu holds *Price formula*,
+  *Grid fees* and the schedules its structure needs.
+- **Removed from the price setup:** the synthetic time-of-use price source, the `schedule`
+  and `feed` sell modes and the weekday / weekend fee-band lists — all expressible in the
+  new model. Existing entries need no migration: flat fees, fee bands, sell mode and TOU
+  source are converted on read into formulas with the same per-slot prices (distinct band
+  fees become tariffs; absolute TOU / avoided-cost prices become a fixed zero energy price
+  carried by the grid fee), and saving the options once stores the formulas and drops the
+  legacy keys. Debug view: `inputs.tariff_config` is now the `buy` / `sell` formulas; the
+  pricing deep-check mirrors the new formula, holidays and seasons included. The
+  week-ahead forecast's export break-even uses the cheapest sell grid-fee tariff, and no
+  break-even at all for a fixed sell price.
+
 ## [0.5.1] — 2026-09-11
 
 Fixes for the 2026-09-09/10 over-discharge incident (analysis:
@@ -524,7 +570,9 @@ against real hardware — see the status note in [`README.md`](README.md).
   in the chart, and left out of the series-level statistics and every EMA quality
   bucket.
 
-[Unreleased]: https://github.com/LaurisK/sunSale/compare/v0.4.3...HEAD
+[Unreleased]: https://github.com/LaurisK/sunSale/compare/v0.5.1...HEAD
+[0.5.1]: https://github.com/LaurisK/sunSale/compare/v0.5.0...v0.5.1
+[0.5.0]: https://github.com/LaurisK/sunSale/compare/v0.4.3...v0.5.0
 [0.4.3]: https://github.com/LaurisK/sunSale/compare/v0.4.2...v0.4.3
 [0.4.2]: https://github.com/LaurisK/sunSale/compare/v0.4.1...v0.4.2
 [0.4.1]: https://github.com/LaurisK/sunSale/compare/v0.4.0...v0.4.1

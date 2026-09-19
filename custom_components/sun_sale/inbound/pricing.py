@@ -1,13 +1,14 @@
 """Pricing stage: price-feed HA-state readers + 72h PriceSeries assembly.
 
-A *price-feed translator* reads a market-price sensor (or, for the synthetic
-TOU source, no sensor) and produces source-agnostic ``PriceFeedData`` (today +
-tomorrow, with tomorrow zero-filled until published). One translator exists per
-supported market — ``NordpoolTranslator`` (Nordics), ``EntsoeTranslator`` (EU
-day-ahead), ``OctopusAgileTranslator`` (UK), ``AmberTranslator`` (AU), and
-``TouScheduleTranslator`` (synthetic TOU for US TOU tariffs) — all emitting the
-identical ``PriceFeedData`` shape. ``build_price_translator`` selects one from
-the configured price source. The ``build_price_series*`` functions then apply
+A *price-feed translator* reads a market-price sensor and produces
+source-agnostic ``PriceFeedData`` (today + tomorrow, with tomorrow zero-filled
+until published). One translator exists per supported market —
+``NordpoolTranslator`` (Nordics), ``EntsoeTranslator`` (EU day-ahead),
+``OctopusAgileTranslator`` (UK) and ``AmberTranslator`` (AU) — plus
+``FixedPriceTranslator``, the zero-spot slot grid used when neither the buy
+nor the sell price follows the market, all emitting the identical
+``PriceFeedData`` shape. ``build_price_translator`` selects one from the
+effective price source. The ``build_price_series*`` functions then apply the
 tariff formulas and stitch in persisted yesterday entries to produce the full
 72h PriceSeries.
 """
@@ -16,13 +17,15 @@ from __future__ import annotations
 import logging
 from collections.abc import Sequence
 from datetime import UTC, datetime, timedelta, tzinfo
-from typing import Any, Protocol
+from typing import Any, NamedTuple, Protocol
 
 from ..contract.const import (
     PRICE_SOURCE_AMBER,
     PRICE_SOURCE_ENTSOE,
+    PRICE_SOURCE_FIXED,
+    PRICE_SOURCE_NORDPOOL,
     PRICE_SOURCE_OCTOPUS,
-    PRICE_SOURCE_TOU,
+    PRICE_SOURCES,
 )
 from ..contract.models import (
     NordpoolData,
@@ -35,6 +38,7 @@ from ..contract.models import (
     YesterdayPrices,
 )
 from ..pipeline import tariff as tariff_module
+from ..pipeline.tariff import HolidayPredicate
 
 _LOGGER = logging.getLogger(__name__)
 
@@ -46,6 +50,7 @@ def build_price_series(
     resolution: timedelta | None = None,
     local_tz: tzinfo | None = None,
     source: str = "nordpool",
+    is_holiday: HolidayPredicate | None = None,
 ) -> PriceSeries:
     """Apply tariff formulas to price-feed entries and return a PriceSeries.
 
@@ -58,9 +63,11 @@ def build_price_series(
         now: Cycle timestamp for computed_at; defaults to UTC now.
         resolution: Slot resolution override; auto-detected from data when None.
         local_tz: HA local timezone used to project each slot start to a
-            local time-of-day for TOU band selection. When None the flat
-            distribution fees apply to every slot.
+            local time-of-day for grid-fee tariff selection. When None every
+            slot gets tariff T1.
         source: Price-source identifier recorded in each slot's provenance tag.
+        is_holiday: Public-holiday predicate for the holiday schedules; None
+            treats no day as a holiday.
 
     Returns:
         PriceSeries with buy/sell/spot populated for each entry.
@@ -71,9 +78,9 @@ def build_price_series(
     slots: list[PriceSlot] = []
     for p in prices:
         local_start = p.start.astimezone(local_tz) if local_tz is not None else None
-        buy = tariff_module.buy_price(p.price_eur_kwh, config, local_start)
+        buy = tariff_module.buy_price(p.price_eur_kwh, config, local_start, is_holiday)
         sell = tariff_module.sell_price(
-            p.price_eur_kwh, config, local_start, export=p.export_price_eur_kwh
+            p.price_eur_kwh, config, local_start, export=p.export_price_eur_kwh, is_holiday=is_holiday,
         )
         slots.append(PriceSlot(
             start=p.start,
@@ -102,6 +109,7 @@ def build_price_series_72h(
     now: datetime | None = None,
     local_tz: tzinfo | None = None,
     source: str = "nordpool",
+    is_holiday: HolidayPredicate | None = None,
 ) -> PriceSeries:
     """Assemble the 72h yesterday→today→tomorrow PriceSeries with tariff applied.
 
@@ -114,9 +122,10 @@ def build_price_series_72h(
         yesterday: Persisted yesterday entries from the coordinator store.
         config: User-configured tariff parameters.
         now: Cycle timestamp; defaults to UTC now.
-        local_tz: HA local timezone for TOU band selection; see
+        local_tz: HA local timezone for tariff selection; see
             :func:`build_price_series`.
         source: Price-source identifier for provenance.
+        is_holiday: Public-holiday predicate; see :func:`build_price_series`.
 
     Returns:
         PriceSeries spanning yesterday 00:00 → tomorrow 23:59.
@@ -124,7 +133,7 @@ def build_price_series_72h(
     combined = list(yesterday.entries) + list(feed.entries)
     return build_price_series(
         combined, config, now=now, resolution=feed.resolution,
-        local_tz=local_tz, source=source,
+        local_tz=local_tz, source=source, is_holiday=is_holiday,
     )
 
 
@@ -458,14 +467,41 @@ class EntsoeTranslator:
         return self.parse(hass, now)
 
 
-class OctopusAgileTranslator:
-    """Reads Octopus Energy Agile rate sensors; produces PriceFeedData (UK).
+def octopus_rate_entities(entity_id: str) -> list[str]:
+    """Return the entities an Octopus price pick is read from, the pick first.
 
-    Targets the BottlecapDave Octopus Energy integration, whose current-rate
-    sensor exposes ``all_rates`` / ``rates`` as lists of
-    ``{"start": iso, "end": iso, "value_inc_vat": float}`` in GBP per kWh. When
-    an export sensor is configured its rates populate the per-slot export price
-    (consumed by ``sell_mode="feed"``).
+    Current Octopus Energy versions publish each day's rates on event entities
+    (``event.…_current_day_rates`` / ``event.…_next_day_rates``); older ones
+    carried them on the ``sensor.…_current_rate`` sensor. A current-day event
+    entity brings its next-day sibling, and a current-rate sensor its two event
+    entities, so either pick covers today and tomorrow.
+
+    Args:
+        entity_id: The configured Octopus import or export entity.
+
+    Returns:
+        The entity ids to read rates from.
+    """
+    if entity_id.endswith("_current_day_rates"):
+        return [entity_id, entity_id.removesuffix("_current_day_rates") + "_next_day_rates"]
+    if entity_id.startswith("sensor.") and entity_id.endswith("_current_rate"):
+        base = "event." + entity_id.removeprefix("sensor.").removesuffix("_current_rate")
+        return [entity_id, f"{base}_current_day_rates", f"{base}_next_day_rates"]
+    return [entity_id]
+
+
+class OctopusAgileTranslator:
+    """Reads Octopus Energy rates; produces PriceFeedData (UK).
+
+    Targets the BottlecapDave Octopus Energy integration. Current versions put
+    each day's rates on event entities
+    (``event.octopus_energy_electricity_<serial>_<mpan>[_export]_current_day_rates``
+    and ``…_next_day_rates``) as a ``rates`` attribute of ``{"start": datetime,
+    "end": datetime, "value_inc_vat": float}`` in GBP per kWh (the integration
+    converts the API's pence); older versions carried ``rates`` / ``all_rates``
+    on the current-rate sensor. Both are read (:func:`octopus_rate_entities`).
+    When an export entity is configured its rates populate the per-slot export
+    price.
     """
 
     output_type = PriceFeedData
@@ -476,12 +512,15 @@ class OctopusAgileTranslator:
         self._export_entity_id = export_entity_id
 
     def _read_rates(self, hass: Any, entity_id: str) -> list[tuple[datetime, float]]:
-        """Read an Octopus rate sensor's ``all_rates``/``rates`` into points."""
-        state = hass.states.get(entity_id)
-        if state is None:
-            return []
-        raw = state.attributes.get("all_rates") or state.attributes.get("rates")
-        return _parse_points(raw, ("start", "from", "valid_from"), ("value_inc_vat", "value"))
+        """Read the ``all_rates`` / ``rates`` of an Octopus pick and its day-rate siblings into points."""
+        points: list[tuple[datetime, float]] = []
+        for rate_entity in octopus_rate_entities(entity_id):
+            state = hass.states.get(rate_entity)
+            if state is None:
+                continue
+            raw = state.attributes.get("all_rates") or state.attributes.get("rates")
+            points += _parse_points(raw, ("start", "from", "valid_from"), ("value_inc_vat", "value"))
+        return points
 
     def parse(self, hass: Any, now: datetime | None = None) -> PriceFeedData:
         """Parse the Octopus import (+ optional export) rate sensors."""
@@ -505,15 +544,15 @@ class OctopusAgileTranslator:
 class AmberTranslator:
     """Reads Amber Electric forecast sensors; produces PriceFeedData (AU).
 
-    Targets the Amber integration, whose forecast sensor exposes ``forecasts``
-    as a list of ``{"start_time": iso, "end_time": iso, "per_kwh": float}`` with
-    ``per_kwh`` in **cents** per kWh (scaled to dollars/kWh here). When a feed-in
-    forecast sensor is configured its values populate the per-slot export price
-    (consumed by ``sell_mode="feed"``).
+    Targets Home Assistant's Amber Electric integration, whose forecast sensors
+    expose ``forecasts`` as a list of ``{"start_time": iso, "end_time": iso,
+    "per_kwh": float}`` already in **dollars** per kWh — the integration divides
+    the API's cents by 100 — with the feed-in channel's sign flipped so a
+    positive value is what exporting earns. When a feed-in forecast sensor is
+    configured its values populate the per-slot export price.
     """
 
     output_type = PriceFeedData
-    _SCALE = 0.01  # Amber publishes cents/kWh
 
     def __init__(self, entity_id: str, export_entity_id: str = "") -> None:
         """Initialise with the general-price and optional feed-in sensor IDs."""
@@ -521,12 +560,12 @@ class AmberTranslator:
         self._export_entity_id = export_entity_id
 
     def _read_forecasts(self, hass: Any, entity_id: str) -> list[tuple[datetime, float]]:
-        """Read an Amber forecast sensor's ``forecasts`` into scaled points."""
+        """Read an Amber forecast sensor's ``forecasts`` into points."""
         state = hass.states.get(entity_id)
         if state is None:
             return []
         raw = state.attributes.get("forecasts")
-        return _parse_points(raw, ("start_time", "start", "nem_time"), ("per_kwh",), self._SCALE)
+        return _parse_points(raw, ("start_time", "start", "nem_time"), ("per_kwh",))
 
     def parse(self, hass: Any, now: datetime | None = None) -> PriceFeedData:
         """Parse the Amber general-price (+ optional feed-in) forecast sensors."""
@@ -548,88 +587,31 @@ class AmberTranslator:
 
 
 # ---------------------------------------------------------------------------
-# Synthetic TOU source (no live sensor)
+# Fixed prices (no live sensor)
 # ---------------------------------------------------------------------------
 
-def tou_bands_from_config(raw_bands: Sequence[Any] | None) -> tuple[tuple[int, float], ...]:
-    """Build a sorted (start_minute, price) schedule from stored TOU dicts.
+class FixedPriceTranslator:
+    """Zero-spot slot grid for an install whose buy and sell prices are both fixed.
 
-    Each entry is a ``{"start": "HH:MM", "price": float}`` dict. Rows with a
-    missing/invalid start are dropped; the result is sorted by start minute.
-
-    Args:
-        raw_bands: Stored TOU band list from the config entry, or None.
-
-    Returns:
-        Tuple of (start_minute, price) sorted by start_minute (empty when none).
-    """
-    bands: list[tuple[int, float]] = []
-    for entry in raw_bands or ():
-        if not isinstance(entry, dict):
-            continue
-        minute = tariff_module._parse_hhmm(entry.get("start"))
-        if minute is None:
-            continue
-        try:
-            price = float(entry.get("price", 0.0))
-        except (TypeError, ValueError):
-            continue
-        bands.append((minute, price))
-    return tuple(sorted(bands, key=lambda b: b[0]))
-
-
-def _select_tou_price(bands: Sequence[tuple[int, float]], local_dt: datetime) -> float:
-    """Pick the active TOU import price for a local time, wrapping past midnight.
-
-    Args:
-        bands: Sorted (start_minute, price) schedule.
-        local_dt: Slot start projected into local time.
-
-    Returns:
-        The active band's price, or 0.0 when the schedule is empty.
-    """
-    if not bands:
-        return 0.0
-    minute = local_dt.hour * 60 + local_dt.minute
-    chosen = bands[-1]  # wrap: before the first start the last band carries over
-    for band in bands:
-        if band[0] <= minute:
-            chosen = band
-        else:
-            break
-    return chosen[1]
-
-
-class TouScheduleTranslator:
-    """Synthetic price feed from a fixed TOU import-price schedule (US TOU).
-
-    No live sensor: emits a 48h ``PriceFeedData`` (today + tomorrow, local) where
-    each slot's import price is the active band's value. Pairs naturally with
-    ``sell_mode="schedule"`` for a separate avoided-cost export schedule.
+    No sensor is read: the tariff formulas ignore the spot price, but the
+    pipeline still needs today's and tomorrow's slots to price, so this emits
+    a 48h ``PriceFeedData`` (local today 00:00 → tomorrow 23:59) of 0.0 spots.
     """
 
     output_type = PriceFeedData
 
-    def __init__(
-        self,
-        bands: Sequence[tuple[int, float]],
-        resolution: timedelta = timedelta(hours=1),
-        local_tz: tzinfo | None = None,
-    ) -> None:
-        """Initialise with the TOU schedule, slot resolution, and local timezone.
+    def __init__(self, resolution: timedelta = timedelta(hours=1), local_tz: tzinfo | None = None) -> None:
+        """Initialise with the slot resolution and local timezone.
 
         Args:
-            bands: Sorted (start_minute, price) import schedule.
             resolution: Slot duration to emit (e.g. 15min or 1h).
-            local_tz: HA local timezone; the schedule is in local time. Defaults
-                to UTC when None.
+            local_tz: HA local timezone the days are counted in; UTC when None.
         """
-        self._bands = tuple(bands)
         self._resolution = resolution
         self._local_tz = local_tz or UTC
 
     def parse(self, hass: Any, now: datetime | None = None) -> PriceFeedData:
-        """Generate a 48h synthetic feed from the TOU schedule.
+        """Generate the 48h zero-spot slot grid.
 
         Args:
             hass: Unused (no live sensor); kept for signature parity.
@@ -640,19 +622,12 @@ class TouScheduleTranslator:
         """
         if now is None:
             now = datetime.now(UTC)
-        if not self._bands:
-            return PriceFeedData(entries=[], resolution=self._resolution)
-
-        local_now = now.astimezone(self._local_tz)
-        cur = local_now.replace(hour=0, minute=0, second=0, microsecond=0)
+        cur = now.astimezone(self._local_tz).replace(hour=0, minute=0, second=0, microsecond=0)
         target_end = cur + timedelta(hours=48)
         entries: list[PriceEntry] = []
         while cur < target_end:
-            start_utc = cur.astimezone(UTC).replace(second=0, microsecond=0)
-            price = _select_tou_price(self._bands, cur)
-            entries.append(PriceEntry(
-                start=start_utc, end=start_utc + self._resolution, price_eur_kwh=price,
-            ))
+            start_utc = cur.astimezone(UTC)
+            entries.append(PriceEntry(start=start_utc, end=start_utc + self._resolution, price_eur_kwh=0.0))
             cur += self._resolution
         return PriceFeedData(entries=entries, resolution=self._resolution)
 
@@ -669,29 +644,135 @@ def build_price_translator(
     entity_id: str,
     export_entity_id: str = "",
     resolution: timedelta = timedelta(hours=1),
-    tou_bands: Sequence[tuple[int, float]] = (),
     local_tz: tzinfo | None = None,
 ) -> PriceFeedTranslator:
-    """Select the price-feed translator for the configured price source.
+    """Select the price-feed translator for the effective price source.
 
     Args:
-        source: Price-source identifier (see contract.const.PRICE_SOURCES).
+        source: Price-source identifier (see contract.const.PRICE_SOURCES), or
+            ``PRICE_SOURCE_FIXED`` when neither price follows the market.
         entity_id: Price sensor entity ID (import / primary feed).
         export_entity_id: Optional separate export-feed sensor ID.
-        resolution: Slot resolution for the synthetic TOU source.
-        tou_bands: Sorted (start_minute, price) schedule for the TOU source.
-        local_tz: HA local timezone (used by the TOU source).
+        resolution: Slot resolution of the fixed-price slot grid.
+        local_tz: HA local timezone (used by the fixed-price slot grid).
 
     Returns:
         The matching translator; falls back to NordpoolTranslator for unknown
         or default sources so existing configs keep working.
     """
+    if source == PRICE_SOURCE_FIXED:
+        return FixedPriceTranslator(resolution=resolution, local_tz=local_tz)
     if source == PRICE_SOURCE_ENTSOE:
         return EntsoeTranslator(entity_id)
     if source == PRICE_SOURCE_OCTOPUS:
         return OctopusAgileTranslator(entity_id, export_entity_id)
     if source == PRICE_SOURCE_AMBER:
         return AmberTranslator(entity_id, export_entity_id)
-    if source == PRICE_SOURCE_TOU:
-        return TouScheduleTranslator(tou_bands, resolution=resolution, local_tz=local_tz)
     return NordpoolTranslator(entity_id)
+
+
+# ---------------------------------------------------------------------------
+# Price-sensor discovery (setup)
+# ---------------------------------------------------------------------------
+
+def _first_item_has(raw: Any, keys: tuple[str, ...]) -> bool:
+    """Return True when raw is a non-empty list whose first item is a dict holding any of keys."""
+    return isinstance(raw, list) and bool(raw) and isinstance(raw[0], dict) and any(k in raw[0] for k in keys)
+
+
+def price_source_of(attributes: dict[str, Any]) -> str | None:
+    """Return the price source whose sensor these state attributes belong to.
+
+    Each test mirrors what that source's translator reads, so a sensor this
+    recognises is one its translator can parse.
+
+    Args:
+        attributes: A sensor state's attributes.
+
+    Returns:
+        The ``PRICE_SOURCES`` id, or None when no translator reads this sensor.
+    """
+    if isinstance(attributes.get("raw_today"), list) or (
+        isinstance(attributes.get("today"), list) and "tomorrow_valid" in attributes
+    ):
+        return PRICE_SOURCE_NORDPOOL
+    if isinstance(attributes.get("prices_today"), list) or _first_item_has(attributes.get("prices"), ("time",)):
+        return PRICE_SOURCE_ENTSOE
+    rates = attributes.get("all_rates") or attributes.get("rates")
+    if _first_item_has(rates, ("value_inc_vat",)):
+        return PRICE_SOURCE_OCTOPUS
+    if _first_item_has(attributes.get("forecasts"), ("per_kwh",)):
+        return PRICE_SOURCE_AMBER
+    return None
+
+
+class DetectedPriceSensor(NamedTuple):
+    """A sensor on this system that a price translator can read."""
+
+    source: str
+    entity_id: str
+    name: str
+    # A separate export-price feed (Octopus export rates, Amber feed-in) rather
+    # than the import / market price sensor.
+    export: bool
+
+
+def is_export_feed(source: str, entity_id: str, attributes: dict[str, Any]) -> bool:
+    """Return True when a detected price sensor is a separate export-price feed.
+
+    Only Octopus and Amber publish one. Octopus flags its export meter's rate
+    sensors with ``is_export``, Amber tags each sensor's ``channel_type``
+    (``feedIn``); the entity id is the fallback for older versions.
+
+    Args:
+        source: The source the sensor was recognised as.
+        entity_id: The sensor's entity id.
+        attributes: Its state attributes.
+
+    Returns:
+        True for an export-price feed, False for an import / market price sensor.
+    """
+    if source not in (PRICE_SOURCE_OCTOPUS, PRICE_SOURCE_AMBER):
+        return False
+    if attributes.get("is_export") is True or attributes.get("channel_type") == "feedIn":
+        return True
+    return "export" in entity_id or "feed_in" in entity_id
+
+
+def _is_side_feed(source: str, entity_id: str) -> bool:
+    """Return True for a readable rate entity that is not one to pick.
+
+    Octopus also publishes gas rates and the previous / next day's electricity
+    rates in the same shape; the translator reads the next day itself from the
+    picked current-day entity (:func:`octopus_rate_entities`).
+    """
+    if source != PRICE_SOURCE_OCTOPUS:
+        return False
+    return "_gas_" in entity_id or entity_id.endswith(("_previous_day_rates", "_next_day_rates"))
+
+
+def detect_price_sensors(hass: Any) -> list[DetectedPriceSensor]:
+    """Return every sensor on this system that a price translator can read.
+
+    Args:
+        hass: Home Assistant instance, or None (nothing is detected then).
+
+    Returns:
+        The detected sensors, ordered by source as in ``PRICE_SOURCES``, then
+        import sensors before export feeds, then by entity id.
+    """
+    if hass is None:
+        return []
+    found = []
+    # Octopus publishes its rates on event entities, the other sources on sensors.
+    for state in hass.states.async_all(("sensor", "event")):
+        source = price_source_of(state.attributes)
+        if source is not None and not _is_side_feed(source, state.entity_id):
+            found.append(DetectedPriceSensor(
+                source,
+                state.entity_id,
+                state.attributes.get("friendly_name") or state.entity_id,
+                is_export_feed(source, state.entity_id, state.attributes),
+            ))
+    rank = {source: i for i, source in enumerate(PRICE_SOURCES)}
+    return sorted(found, key=lambda sensor: (rank[sensor.source], sensor.export, sensor.entity_id))

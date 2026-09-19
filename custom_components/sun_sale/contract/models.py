@@ -14,8 +14,8 @@ class PriceEntry:
     ``price_eur_kwh`` is the per-slot import (buy-side) market price.
     ``export_price_eur_kwh`` is an optional *separate* live export price for
     markets that publish a distinct feed-in stream (UK Octopus Outgoing, AU
-    Amber feed-in); it is None for single-feed sources (Nordpool, ENTSO-e) and
-    is only consumed when the tariff is in ``sell_mode="feed"``.
+    Amber feed-in); it is None for single-feed sources (Nordpool, ENTSO-e). A
+    dynamic sell price uses it in place of ``price_eur_kwh`` where it is set.
     """
     start: datetime
     end: datetime
@@ -24,46 +24,53 @@ class PriceEntry:
 
 
 @dataclass(frozen=True)
-class TariffBand:
-    """One time-of-use band of a daily distribution-fee schedule.
+class TariffSwitch:
+    """One switch point of a daily grid-fee schedule.
 
-    A band runs from ``start_minute`` until the next band's start, wrapping
-    past midnight; the last band of the day wraps around to the first. Only
-    the distribution fees are time-of-use — tax rates and markups are global
-    (held on the enclosing :class:`TariffConfig`).
+    The tariff applies from ``start_minute`` until the next switch's start,
+    wrapping past midnight, so a schedule always covers 24 h.
     """
-    start_minute: int             # Minutes from local midnight (0–1439)
-    distribution_fee: float       # EUR/kWh, buy distribution for this band
-    sell_distribution_fee: float  # EUR/kWh, sell distribution for this band
+    start_minute: int  # Minutes from local midnight (0–1439)
+    tariff: int        # 1-based grid-fee tariff number (T1 … T4)
+
+
+@dataclass(frozen=True)
+class DaySchedule:
+    """Which grid-fee tariff is active when, for one season and day type."""
+    season: str    # "all" | "summer" | "winter"
+    day_type: str  # "workday" | "weekend" | "holiday"
+    switches: tuple[TariffSwitch, ...]  # sorted by start_minute
+
+
+@dataclass(frozen=True)
+class PriceFormula:
+    """One side (buy or sell) of the tariff: energy, markup, grid fee, VAT.
+
+    Buy: ``(energy + markup + grid_fee) × (1 + vat)``; sell: ``(energy −
+    markup − grid_fee) × (1 − vat)`` (see pipeline/tariff.py). ``energy`` is
+    the market price when ``energy_mode`` is dynamic, else ``fixed_price``.
+    ``grid_fees`` holds 1, 2 or 4 per-kWh fees; with more than one, the
+    ``schedules`` say which is active per season / day type / time of day,
+    and a day type without a schedule of its own falls back to T1.
+    """
+    energy_mode: str = "dynamic"      # "dynamic" (market price) | "fixed"
+    fixed_price: float = 0.0          # per kWh, the energy price when fixed
+    markup: float = 0.0               # per kWh
+    vat: float = 0.0                  # fractional, e.g. 0.21 for 21 %
+    grid_fees: tuple[float, ...] = (0.0,)  # per kWh, T1 first
+    seasons: bool = False             # separate summer / winter schedules
+    weekends: bool = False            # Sat/Sun get their own schedule
+    holidays: bool = False            # public holidays get their own schedule
+    summer_start: tuple[int, int] = (4, 1)   # (month, day) the summer schedule starts
+    winter_start: tuple[int, int] = (11, 1)  # (month, day) the winter schedule starts
+    schedules: tuple[DaySchedule, ...] = ()
 
 
 @dataclass(frozen=True)
 class TariffConfig:
-    """User-configured tariff formula parameters.
-
-    Distribution fees may vary by time-of-use via ``weekday_bands`` /
-    ``weekend_bands``; tax rates and markups are global. When a schedule is
-    empty the flat ``distribution_fee`` / ``sell_distribution_fee`` are used
-    for every slot, preserving the pre-TOU behaviour.
-    """
-    distribution_fee: float       # EUR/kWh, fallback buy distribution (no bands)
-    tax_rate: float               # Fractional, e.g. 0.21 for 21% VAT on buy
-    markup: float                 # EUR/kWh, retailer margin when buying
-    sell_distribution_fee: float  # EUR/kWh, fallback sell distribution (no bands)
-    sell_tax_rate: float          # Fractional tax deducted from sell revenue
-    sell_markup: float            # EUR/kWh, retailer margin deducted when selling
-    weekday_bands: tuple[TariffBand, ...] = ()  # Mon–Fri TOU distribution schedule
-    weekend_bands: tuple[TariffBand, ...] = ()  # Sat/Sun TOU distribution schedule
-    # Sell-price model selector (see pipeline/tariff.py:sell_price):
-    #   "spot"     — (spot − sell_distribution_fee − sell_markup)·(1 − sell_tax_rate)
-    #   "fixed"    — flat ``fixed_sell_price`` (feed-in tariff)
-    #   "schedule" — per-TOU-band absolute price (band.sell_distribution_fee
-    #                reinterpreted as the absolute sell price; e.g. NEM 3.0
-    #                avoided cost), falling back to ``fixed_sell_price``
-    #   "feed"     — per-slot live export price from the price feed, falling
-    #                back to ``fixed_sell_price``
-    sell_mode: str = "spot"
-    fixed_sell_price: float = 0.0  # EUR/kWh, used by fixed/schedule/feed fallbacks
+    """User-configured tariff: one price formula per direction."""
+    buy: PriceFormula = field(default_factory=PriceFormula)
+    sell: PriceFormula = field(default_factory=PriceFormula)
 
 
 @dataclass(frozen=True)
@@ -349,6 +356,90 @@ class PriceSeries:
             Tuple of overlapping PriceSlots, may be empty.
         """
         return tuple(s for s in self.slots if s.end > t1 and s.start < t2)
+
+
+class PriceLevel(Enum):
+    """How a slot's buy price compares with the rest of its local day."""
+    CHEAP = "cheap"
+    NORMAL = "normal"
+    EXPENSIVE = "expensive"
+
+
+@dataclass(frozen=True)
+class PriceLevelConfig:
+    """How slots are classed cheap / expensive (see ``pipeline/price_level.py``).
+
+    ``cheap_share`` / ``expensive_share`` are the fractions (0–1) of each local
+    day's slots, by buy-price rank, that count as cheap / expensive. The
+    optional absolute limits override the rank: a buy price at or below
+    ``cheap_below`` is always cheap, at or above ``expensive_above`` always
+    expensive.
+    """
+    cheap_share: float = 0.25
+    expensive_share: float = 0.25
+    cheap_below: float | None = None
+    expensive_above: float | None = None
+
+
+@dataclass(frozen=True)
+class PriceLevelDay:
+    """One local day's rank thresholds.
+
+    ``cheap_threshold`` is the highest buy price still inside the cheap share,
+    ``expensive_threshold`` the lowest inside the expensive share; ``None``
+    when that share is 0.
+    """
+    date: date
+    slot_count: int
+    cheap_threshold: float | None
+    expensive_threshold: float | None
+
+
+@dataclass(frozen=True)
+class PriceLevelSlot:
+    """One price slot's level.
+
+    ``day`` is the local date the slot was ranked in; ``rank`` is 0 for that
+    day's cheapest slot and 1 for its dearest.
+    """
+    start: datetime
+    end: datetime
+    day: date
+    buy_eur_kwh: float
+    level: PriceLevel
+    rank: float
+
+
+@dataclass(frozen=True)
+class PriceLevelSeries:
+    """Every price slot classed cheap / normal / expensive, for HA to consume."""
+    slots: tuple[PriceLevelSlot, ...]
+    days: tuple[PriceLevelDay, ...]
+    config: PriceLevelConfig
+    computed_at: datetime
+
+    def slot_at(self, t: datetime) -> PriceLevelSlot | None:
+        """Return the slot covering ``t``, or None when outside the series."""
+        return next((s for s in self.slots if s.start <= t < s.end), None)
+
+    def day(self, d: date) -> PriceLevelDay | None:
+        """Return the thresholds for local date ``d``, or None when not covered."""
+        return next((x for x in self.days if x.date == d), None)
+
+    def next_change(self, t: datetime) -> PriceLevelSlot | None:
+        """Return the first slot after ``t`` whose level differs from the current one.
+
+        Args:
+            t: Timezone-aware lookup time.
+
+        Returns:
+            The slot where the level next changes, or None when the current
+            level lasts to the end of the known prices (or ``t`` is uncovered).
+        """
+        current = self.slot_at(t)
+        if current is None:
+            return None
+        return next((s for s in self.slots if s.start >= current.end and s.level is not current.level), None)
 
 
 @dataclass(frozen=True)
@@ -763,11 +854,13 @@ class PriceDayRecord:
     day: date
     day_class: DayClass
     peak_1h_eur_kwh: float
-    peak_3h_eur_kwh: float
     trough_1h_eur_kwh: float
-    trough_3h_eur_kwh: float
     negative_hours: float
     mean_eur_kwh: float
+    # None on records settled while the wide band was 3 h: only the statistics
+    # are stored, not the price curve, so those days cannot be recomputed.
+    peak_4h_eur_kwh: float | None = None
+    trough_4h_eur_kwh: float | None = None
     wind_speed_kmh: float | None = None
     temperature_c: float | None = None
     solar_kwh: float | None = None       # that day's own PV total
@@ -827,9 +920,9 @@ class PriceDayStats:
     horizon_days: int                     # 0 = today, 1 = tomorrow, …
     source: str                           # one of the PRICE_STAT_SOURCE_* values
     peak_1h_eur_kwh: float
-    peak_3h_eur_kwh: float
+    peak_4h_eur_kwh: float | None         # None on a modelled day until 4 h history exists
     trough_1h_eur_kwh: float
-    trough_3h_eur_kwh: float
+    trough_4h_eur_kwh: float | None
     negative_hours: float                 # hours at or below the export break-even
     negative_generation_kwh: float        # PV kWh expected to land in those hours
     confidence: float = 1.0               # 0.0–1.0
@@ -840,9 +933,11 @@ class PriceDayStats:
     surplus_kwh: float | None = None
 
     @property
-    def spread_3h_eur_kwh(self) -> float:
-        """Return the 3 h peak-to-trough spread — the per-kWh arbitrage margin."""
-        return self.peak_3h_eur_kwh - self.trough_3h_eur_kwh
+    def spread_4h_eur_kwh(self) -> float | None:
+        """Return the 4 h peak-to-trough spread — the per-kWh arbitrage margin."""
+        if self.peak_4h_eur_kwh is None or self.trough_4h_eur_kwh is None:
+            return None
+        return self.peak_4h_eur_kwh - self.trough_4h_eur_kwh
 
     def as_dict(self, ndigits: int = 4) -> dict:
         """Return the day's statistics keyed for serialization.
@@ -853,16 +948,20 @@ class PriceDayStats:
         Returns:
             Dict of plain JSON-safe values.
         """
+        def _opt(value: float | None) -> float | None:
+            """Round an optional figure, keeping None."""
+            return round(value, ndigits) if value is not None else None
+
         return {
             "day": self.day.isoformat(),
             "day_class": self.day_class.value,
             "horizon_days": self.horizon_days,
             "source": self.source,
             "peak_1h_eur_kwh": round(self.peak_1h_eur_kwh, ndigits),
-            "peak_3h_eur_kwh": round(self.peak_3h_eur_kwh, ndigits),
+            "peak_4h_eur_kwh": _opt(self.peak_4h_eur_kwh),
             "trough_1h_eur_kwh": round(self.trough_1h_eur_kwh, ndigits),
-            "trough_3h_eur_kwh": round(self.trough_3h_eur_kwh, ndigits),
-            "spread_3h_eur_kwh": round(self.spread_3h_eur_kwh, ndigits),
+            "trough_4h_eur_kwh": _opt(self.trough_4h_eur_kwh),
+            "spread_4h_eur_kwh": _opt(self.spread_4h_eur_kwh),
             "negative_hours": round(self.negative_hours, 2),
             "negative_generation_kwh": round(self.negative_generation_kwh, ndigits),
             "absorbable_kwh": (
@@ -1012,10 +1111,15 @@ class SunSaleConfig:
     currency: str = "EUR"           # display-only currency code (UI labels/panel)
     latitude: float | None = None
     longitude: float | None = None
+    # ISO 3166-1 alpha-2 country from `hass.config.country`; picks the public-
+    # holiday calendar behind the profitability day classes. None → no holidays.
+    holiday_country: str | None = None
     # Opt-in: hold battery back against day-ahead forecast error. Off by
     # default because it is dispatch-affecting and sized from the install's own
     # measured error, which needs weeks of honest history to be meaningful.
     forecast_reserve_enabled: bool = False
+    # Cheap / expensive classification published to HA as the price level.
+    price_levels: PriceLevelConfig = field(default_factory=PriceLevelConfig)
 
 
 # ---------------------------------------------------------------------------
@@ -1513,19 +1617,6 @@ class ObservedLossesSeries:
     computed_at: datetime
     total_yesterday_kwh: float = 0.0
     total_today_so_far_kwh: float = 0.0
-
-
-@dataclass(frozen=True)
-class InverterTimeReading:
-    """One paired snapshot of the inverter clock and HA's UTC clock.
-
-    The inverter clock is reported as a local-time datetime — the translator
-    attaches HA's local timezone and converts to UTC before constructing the
-    reading. ``skew = inverter_now - ha_now`` (positive means inverter is
-    ahead of HA).
-    """
-    ha_now: datetime          # UTC
-    inverter_now: datetime    # UTC, normalised from the inverter's local-time entity
 
 
 @dataclass(frozen=True)
