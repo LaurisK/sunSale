@@ -137,6 +137,12 @@ async def _setup_coordinator(monkeypatch, extra: dict | None = None) -> SunSaleC
     hass.config.latitude = 54.7
     hass.config.longitude = 25.3
     hass.states.get.return_value = None
+    # MagicMock returns a non-awaitable; async_setup awaits the executor to
+    # warm the holiday calendar off the loop, so run the job inline.
+    async def _run_job(func, *args):
+        """Execute an executor job synchronously in place of a thread."""
+        return func(*args)
+    hass.async_add_executor_job = _run_job
     entry = MagicMock()
     entry.entry_id = "capability_entry"
     entry.data = {**_ENTRY, **(extra or {})}

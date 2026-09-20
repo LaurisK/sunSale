@@ -157,7 +157,7 @@ from ..inbound.consumption_daily import (
 )
 from ..inbound.forecast import SolarTranslator
 from ..inbound.forecast_resolver import combine_forecast_entities, resolve_forecast_entities
-from ..inbound.holiday_calendar import holiday_predicate
+from ..inbound.holiday_calendar import holiday_predicate, preload_holidays
 from ..inbound.household_consumption import HouseholdConsumptionTranslator
 from ..inbound.inverter_entity_resolver import resolve_inverter_entities
 from ..inbound.inverter_mode import InverterModeTranslator
@@ -950,6 +950,13 @@ class SunSaleCoordinator(DataUpdateCoordinator):
                 data.get(CONF_FORECAST_RESERVE_ENABLED, DEFAULT_FORECAST_RESERVE_ENABLED)
             ),
             price_levels=price_level_config_from_entry(data),
+        )
+
+        # The first holiday lookup imports `holidays`, which reads package
+        # metadata off disk. Warm it here, off the loop, so the DAG never trips
+        # HA's blocking-call detector mid-cycle.
+        await self.hass.async_add_executor_job(
+            preload_holidays, self._sun_sale_config.holiday_country,
         )
 
         # Per-deployment inverter power ratings (config flow, kW → W). Fall back

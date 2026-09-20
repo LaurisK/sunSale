@@ -31,6 +31,11 @@ def holiday_predicate(country: str | None) -> HolidayPredicate | None:
     Cached per country, so the profitability node can ask every cycle; the
     calendar itself fills in further years lazily as dates are checked.
 
+    The first call for a country imports ``holidays``, which reads files from
+    disk — blocking work that Home Assistant forbids on the event loop. Warm
+    the cache from an executor with :func:`preload_holidays` before any DAG
+    cycle can reach it; every later call is a cache hit and is loop-safe.
+
     Args:
         country: ISO 3166-1 alpha-2 code (e.g. ``"LT"``), or None when Home
             Assistant has no country configured.
@@ -52,3 +57,17 @@ def holiday_predicate(country: str | None) -> HolidayPredicate | None:
         _LOGGER.info("No public-holiday calendar for country %s; holidays are not classified", country)
         return None
     return calendar.__contains__
+
+
+def preload_holidays(country: str | None) -> None:
+    """Warm the per-country calendar cache; run this in an executor.
+
+    Populates :func:`holiday_predicate`'s cache so the first DAG cycle does not
+    pay for the ``holidays`` import — a blocking disk read — on the event loop.
+    Failures are already swallowed by ``holiday_predicate`` itself, so this
+    never raises.
+
+    Args:
+        country: ISO 3166-1 alpha-2 code, or None to do nothing.
+    """
+    holiday_predicate(country)

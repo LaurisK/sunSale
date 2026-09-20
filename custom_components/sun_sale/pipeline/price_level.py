@@ -160,11 +160,15 @@ def classify_price_levels(
         now: Cycle timestamp, stamped as ``computed_at``.
 
     Returns:
-        One ``PriceLevelSlot`` per price slot (same order) and one
-        ``PriceLevelDay`` per local date covered.
+        One ``PriceLevelSlot`` per *priced* price slot (same order) and one
+        ``PriceLevelDay`` per local date covered. Slots with no known market
+        price are absent — they have no level to rank.
     """
+    # Unpriced slots hold a filler zero, which would both take the "cheapest"
+    # rank itself and drag every real slot's rank within its day.
+    ranked = series.priced_slots
     by_day: dict[date, list[PriceSlot]] = {}
-    for slot in series.slots:
+    for slot in ranked:
         by_day.setdefault(slot.start.astimezone(local_tz).date(), []).append(slot)
 
     days: list[PriceLevelDay] = []
@@ -183,7 +187,7 @@ def classify_price_levels(
             )
 
     return PriceLevelSeries(
-        slots=tuple(classed[s.start] for s in series.slots),
+        slots=tuple(classed[s.start] for s in ranked),
         days=tuple(days),
         config=config,
         computed_at=now,

@@ -370,3 +370,38 @@ def test_yesterday_cost_survives_month_boundary():
     assert abs(result.today_cost_eur - 0.0) < 1e-6
     # Live slots stay within the new month (today only), never touching yesterday.
     assert all(s.start >= today_start for s in result.slots)
+
+
+# ---------------------------------------------------------------------------
+# Unpriced slots — a slot with no known market price must not be billed
+# ---------------------------------------------------------------------------
+
+def test_compute_bill_slots_skips_unpriced_slots():
+    """A placeholder slot's filler zero must not be charged as a real price."""
+    t0 = datetime(2026, 5, 29, 0, 0, tzinfo=UTC)
+    priced = _slot(t0, t0 + timedelta(minutes=15), buy=0.25, sell=0.10)
+    placeholder = PriceSlot(
+        start=t0 + timedelta(minutes=15), end=t0 + timedelta(minutes=30),
+        buy_eur_kwh=0.19, sell_eur_kwh=-0.02, spot_eur_kwh=0.0,
+        sources=("nordpool", "tariff", "unpriced"), priced=False,
+    )
+    ps = _price_series([priced, placeholder])
+    grid = ObservedGridSeries(
+        slots=(
+            ObservedGridSlot(
+                start=t0, end=t0 + timedelta(minutes=15),
+                imported_kwh=1.0, exported_kwh=0.0, source="inverter",
+            ),
+            ObservedGridSlot(
+                start=t0 + timedelta(minutes=15), end=t0 + timedelta(minutes=30),
+                imported_kwh=1.0, exported_kwh=0.0, source="inverter",
+            ),
+        ),
+        computed_at=t0,
+    )
+
+    out = compute_bill_slots(grid, ps, t0, t0 + timedelta(minutes=30))
+
+    assert len(out) == 1
+    assert out[0].start == t0
+    assert abs(out[0].net_cost_eur - 0.25) < 1e-9

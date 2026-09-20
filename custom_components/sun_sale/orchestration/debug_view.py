@@ -245,7 +245,10 @@ def _coordinator_to_dict(entry_id: str, coordinator: Any) -> dict:
                 "slot_count": len(pricing.slots),
                 "resolution_s": int(pricing.resolution.total_seconds()),
                 "computed_at": pricing.computed_at.isoformat(),
-                "negative_sell_count": sum(1 for s in pricing.slots if s.sell_eur_kwh <= 0),
+                "negative_sell_count": sum(
+                    1 for s in pricing.priced_slots if s.sell_eur_kwh <= 0
+                ),
+                "priced_slot_count": len(pricing.priced_slots),
                 "slots": [
                     {
                         "start": s.start.isoformat(),
@@ -256,6 +259,7 @@ def _coordinator_to_dict(entry_id: str, coordinator: Any) -> dict:
                             round(s.export_eur_kwh, 4)
                             if s.export_eur_kwh is not None else None
                         ),
+                        "priced": s.priced,
                     }
                     for s in pricing.slots
                 ],

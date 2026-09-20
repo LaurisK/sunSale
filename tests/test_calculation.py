@@ -181,3 +181,49 @@ def test_expected_solar_kwh_always_reported():
     slot_10 = next(s for s in result.slots if s.start.hour == 10)
     assert abs(slot_10.expected_solar_kwh - 3.0) < 1e-9
     assert abs(slot_10.expected_solar_negative_sale_kwh - 3.0) < 1e-9
+
+
+# ---------------------------------------------------------------------------
+# Unpriced slots — the choke point keeping fabricated prices out of dispatch
+#
+# A slot with no known market price (tomorrow before the day-ahead auction
+# publishes, or a feed outage) carries a filler zero. Priced as if real, its
+# sell price goes negative, so it would both register as a feed-in lockout and
+# be optimised over. `calculate` drops it, and `build_schedule` only considers
+# price slots that reached a SlotDecision.
+# ---------------------------------------------------------------------------
+
+def _unpriced(hour: int):
+    """Build a placeholder entry for a given hour of BASE_DT."""
+    from custom_components.sun_sale.contract.models import PriceEntry
+    start = NOW.replace(hour=hour, minute=0, second=0, microsecond=0)
+    return PriceEntry(
+        start=start, end=start + timedelta(hours=1),
+        price_eur_kwh=0.0, priced=False,
+    )
+
+
+def test_unpriced_slots_get_no_decision():
+    prices = [make_price(h, 0.10) for h in range(12)] + [_unpriced(h) for h in range(12, 24)]
+    result = run(prices)
+    assert len(result.slots) == 12
+    assert {s.start.hour for s in result.slots} == set(range(12))
+
+
+def test_unpriced_slots_are_not_counted_as_feed_in_lockouts():
+    """Their filler zero makes sell negative; that must not read as a lockout."""
+    priced_only = run([make_price(h, 0.10) for h in range(12)])
+    with_placeholders = run(
+        [make_price(h, 0.10) for h in range(12)] + [_unpriced(h) for h in range(12, 24)]
+    )
+    assert with_placeholders.feed_in_lockout_windows == priced_only.feed_in_lockout_windows
+    assert with_placeholders.feed_in_lockout_windows == ()
+
+
+def test_unpriced_slots_do_not_report_negative_sale_generation():
+    gen = _gen_series({h: 2.0 for h in range(24)})
+    result = run(
+        [make_price(h, 0.10) for h in range(12)] + [_unpriced(h) for h in range(12, 24)],
+        gen=gen,
+    )
+    assert result.total_negative_sale_kwh == 0.0

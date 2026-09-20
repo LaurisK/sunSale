@@ -174,14 +174,24 @@ def test_72h_uses_nordpool_resolution_not_derived():
     assert ps.resolution == timedelta(minutes=15)
 
 
-def test_72h_empty_yesterday_returns_only_today_tomorrow():
+def test_72h_empty_yesterday_pads_the_grid_but_prices_only_today_tomorrow():
+    """With nothing stored for yesterday the grid still spans 72h, unpriced.
+
+    The observed and generation series are resampled onto this grid, so it has
+    to keep its full span; the padding carries ``priced=False`` so no consumer
+    mistakes the filler zero for a market price.
+    """
     today_tomorrow = [_entry(0, h, 0.10) for h in range(24)] + [_entry(1, h, 0.15) for h in range(24)]
     nordpool = NordpoolData(entries=today_tomorrow, resolution=timedelta(hours=1))
     ps = build_price_series_72h(
         nordpool, YesterdayPrices(entries=()), default_tariff_config(), now=NOW
     )
-    assert len(ps.slots) == 48
-    assert ps.slots[0].start == BASE_DT
+    assert len(ps.slots) == 72
+    assert len(ps.priced_slots) == 48
+    assert ps.priced_slots[0].start == BASE_DT
+    # Yesterday's 24 unknown slots are present, but flagged.
+    assert ps.slots[0].start == BASE_DT - timedelta(days=1)
+    assert [s.priced for s in ps.slots[:24]] == [False] * 24
 
 
 # ---------------------------------------------------------------------------
@@ -315,8 +325,10 @@ def test_72h_applies_tariff_to_all_segments():
     nordpool = NordpoolData(entries=today_tomorrow, resolution=timedelta(hours=1))
     ps = build_price_series_72h(nordpool, YesterdayPrices(entries=yesterday), tc, now=NOW)
     expected_buy = (0.10 + 0.03 + 0.01) * 1.21
-    assert abs(ps.slots[0].buy_eur_kwh - expected_buy) < 1e-9
-    assert abs(ps.slots[1].buy_eur_kwh - expected_buy) < 1e-9
+    priced = ps.priced_slots
+    assert len(priced) == 2
+    assert abs(priced[0].buy_eur_kwh - expected_buy) < 1e-9
+    assert abs(priced[1].buy_eur_kwh - expected_buy) < 1e-9
 
 
 def test_source_name_threads_into_provenance_tag():
@@ -496,3 +508,81 @@ def test_build_price_translator_dispatch():
     assert isinstance(p.build_price_translator("fixed", entity_id=""), p.FixedPriceTranslator)
     # Unknown source (including the legacy "tou") falls back to Nordpool.
     assert isinstance(p.build_price_translator("???", entity_id="x"), p.NordpoolTranslator)
+
+
+# ---------------------------------------------------------------------------
+# Price-feed outage — the 2026-09-20 incident
+#
+# A restart with no DNS left the Nordpool sensor permanently `unavailable`, so
+# the translator emitted nothing. The series then consisted of the persisted
+# yesterday entries alone: the slot grid — which the generation and every
+# observed series are resampled onto — collapsed to yesterday, and the
+# resolution was reported as the translator's unused 1h default while the
+# slots were really 15-min, quadrupling every `kW x slot_hours` downstream.
+# ---------------------------------------------------------------------------
+
+def _quarters(day_offset: int, price: float) -> tuple[PriceEntry, ...]:
+    """Build one local day of 15-min entries at a constant price."""
+    start = BASE_DT + timedelta(days=day_offset)
+    q = timedelta(minutes=15)
+    return tuple(
+        PriceEntry(start=start + i * q, end=start + (i + 1) * q, price_eur_kwh=price)
+        for i in range(96)
+    )
+
+
+def test_dead_feed_keeps_the_full_grid_and_marks_it_unpriced():
+    """An empty feed must not shrink the grid the other series are built on."""
+    dead = NordpoolData(entries=[], resolution=timedelta(hours=1))
+    ps = build_price_series_72h(
+        dead, YesterdayPrices(entries=_quarters(-1, 0.05)),
+        default_tariff_config(), now=NOW,
+    )
+    assert ps.slots[0].start == BASE_DT - timedelta(days=1)
+    assert ps.slots[-1].end == BASE_DT + timedelta(days=2)
+    # Only yesterday is real; today and tomorrow are placeholders.
+    assert len(ps.priced_slots) == 96
+    assert all(s.start < BASE_DT for s in ps.priced_slots)
+    assert {s.priced for s in ps.slots} == {True, False}
+
+
+def test_dead_feed_reports_the_resolution_the_slots_actually_use():
+    """Resolution must come from the data, not the empty feed's 1h default."""
+    dead = NordpoolData(entries=[], resolution=timedelta(hours=1))
+    ps = build_price_series_72h(
+        dead, YesterdayPrices(entries=_quarters(-1, 0.05)),
+        default_tariff_config(), now=NOW,
+    )
+    assert ps.resolution == timedelta(minutes=15)
+    assert ps.slots[1].start - ps.slots[0].start == ps.resolution
+
+
+def test_live_feed_resolution_still_wins_over_the_derived_spacing():
+    """With data present the translator stays the source of truth."""
+    today = [_entry(0, h, 0.10) for h in range(24)]
+    feed = NordpoolData(entries=today, resolution=timedelta(hours=1))
+    ps = build_price_series_72h(
+        feed, YesterdayPrices(entries=()), default_tariff_config(), now=NOW,
+    )
+    assert ps.resolution == timedelta(hours=1)
+
+
+def test_unpriced_slots_carry_the_provenance_tag():
+    """Placeholders are greppable in the debug view / provenance tuple."""
+    dead = NordpoolData(entries=[], resolution=timedelta(minutes=15))
+    ps = build_price_series_72h(
+        dead, YesterdayPrices(entries=_quarters(-1, 0.05)),
+        default_tariff_config(), now=NOW,
+    )
+    placeholder = next(s for s in ps.slots if not s.priced)
+    assert "unpriced" in placeholder.sources
+    assert placeholder.spot_eur_kwh == 0.0
+
+
+def test_zero_filled_tomorrow_is_not_presented_as_a_real_price():
+    """Tomorrow before the auction publishes is unknown, not 0.00 EUR/kWh."""
+    today = [_entry(0, h, 0.10) for h in range(24)]
+    filled = _zero_fill_tomorrow(today, timedelta(hours=1), NOW)
+    assert len(filled) == 48
+    assert all(e.priced for e in filled[:24])
+    assert not any(e.priced for e in filled[24:])

@@ -88,8 +88,9 @@ def build_price_series(
             buy_eur_kwh=buy,
             sell_eur_kwh=sell,
             spot_eur_kwh=p.price_eur_kwh,
-            sources=(source, "tariff"),
+            sources=(source, "tariff") if p.priced else (source, "tariff", "unpriced"),
             export_eur_kwh=p.export_price_eur_kwh,
+            priced=p.priced,
         ))
 
     if resolution is None:
@@ -114,8 +115,11 @@ def build_price_series_72h(
     """Assemble the 72h yesterday→today→tomorrow PriceSeries with tariff applied.
 
     Combines persisted yesterday entries with today+tomorrow from the price-feed
-    translator. Resolution is taken from feed.resolution so the translator
-    remains the single source of truth for slot granularity.
+    translator, then pads the result to the full local yesterday→tomorrow window
+    (see :func:`_fill_grid`) so the grid every other series is resampled onto
+    survives a feed outage. Resolution comes from the translator while it has
+    data, and is re-derived from the entries otherwise
+    (see :func:`_effective_resolution`).
 
     Args:
         feed: Today + tomorrow entries from a price-feed translator.
@@ -128,13 +132,98 @@ def build_price_series_72h(
         is_holiday: Public-holiday predicate; see :func:`build_price_series`.
 
     Returns:
-        PriceSeries spanning yesterday 00:00 → tomorrow 23:59.
+        PriceSeries spanning yesterday 00:00 → tomorrow 23:59, with slots the
+        feed had no price for marked ``priced=False``.
     """
-    combined = list(yesterday.entries) + list(feed.entries)
+    if now is None:
+        now = datetime.now(UTC)
+    combined = sorted(
+        list(yesterday.entries) + list(feed.entries), key=lambda e: e.start
+    )
+    resolution = _effective_resolution(feed, combined)
+    gridded = _fill_grid(combined, resolution, now, local_tz)
     return build_price_series(
-        combined, config, now=now, resolution=feed.resolution,
+        gridded, config, now=now, resolution=resolution,
         local_tz=local_tz, source=source, is_holiday=is_holiday,
     )
+
+
+def _effective_resolution(
+    feed: PriceFeedData, combined: Sequence[PriceEntry]
+) -> timedelta:
+    """Return the slot resolution the assembled series actually uses.
+
+    ``feed.resolution`` is authoritative while the feed has data — the
+    translator detects it from the sensor. With an empty feed (sensor missing
+    or unavailable) that value is the translator's 1h default, which would
+    misdescribe a 15-min series stitched from persisted yesterday entries and
+    silently quadruple every ``kW × slot_hours`` energy downstream, so the
+    spacing is re-derived from the entries that do exist.
+
+    Args:
+        feed: Translator output for today + tomorrow.
+        combined: Yesterday + feed entries, sorted by start.
+
+    Returns:
+        The slot duration to record on the series.
+    """
+    if feed.entries or len(combined) < 2:
+        return feed.resolution
+    return combined[1].start - combined[0].start
+
+
+def _fill_grid(
+    entries: Sequence[PriceEntry],
+    resolution: timedelta,
+    now: datetime,
+    local_tz: tzinfo | None,
+) -> list[PriceEntry]:
+    """Pad the entry list with unpriced placeholders across the full 72h window.
+
+    The PriceSeries slot grid is what the generation and observed series are
+    resampled onto, so a feed outage would otherwise shrink every one of them
+    to whatever days the feed still covers — on a dead sensor, yesterday alone.
+    Placeholders keep the grid spanning local yesterday 00:00 → tomorrow 24:00;
+    they carry ``priced=False`` so no consumer trades or bills on their filler
+    zero.
+
+    Args:
+        entries: Real price entries, sorted by start; may be empty.
+        resolution: Slot duration to step the placeholder grid by.
+        now: Cycle timestamp, used to locate the local window.
+        local_tz: HA local timezone; UTC when None.
+
+    Returns:
+        A sorted list of entries covering the window, real where known.
+    """
+    if resolution <= timedelta(0):
+        return list(entries)
+
+    tz = local_tz or UTC
+    local_midnight = now.astimezone(tz).replace(
+        hour=0, minute=0, second=0, microsecond=0
+    )
+    window_start = (local_midnight - timedelta(days=1)).astimezone(UTC)
+    window_end = (local_midnight + timedelta(days=2)).astimezone(UTC)
+
+    def placeholder(start: datetime) -> PriceEntry:
+        """Build one zero-filler entry marked as carrying no known price."""
+        return PriceEntry(
+            start=start, end=start + resolution, price_eur_kwh=0.0, priced=False,
+        )
+
+    out: list[PriceEntry] = []
+    cursor = window_start
+    for entry in entries:
+        while cursor + resolution <= entry.start:
+            out.append(placeholder(cursor))
+            cursor += resolution
+        out.append(entry)
+        cursor = max(cursor, entry.end)
+    while cursor + resolution <= window_end:
+        out.append(placeholder(cursor))
+        cursor += resolution
+    return out
 
 
 # ---------------------------------------------------------------------------
@@ -150,13 +239,18 @@ def _zero_fill_tomorrow(
     a gap when the local day starts before UTC midnight. Filling forward from the
     last entry's end to first_start + 48h is timezone- and resolution-agnostic.
 
+    The stubs are marked ``priced=False``: until the day-ahead auction
+    publishes, tomorrow's price is genuinely unknown, and a filler zero is not
+    a forecast of it. Leaving them priced let the optimiser plan two thirds of
+    its horizon against a fabricated 0.00 €/kWh spot.
+
     Args:
         entries: Existing price entries (must not be empty).
         resolution: Slot duration to use for stub entries.
         now: Unused; kept for signature compatibility.
 
     Returns:
-        entries extended with zero-price PriceEntry stubs up to 48h coverage.
+        entries extended with unpriced PriceEntry stubs up to 48h coverage.
     """
     if not entries:
         return entries
@@ -169,6 +263,7 @@ def _zero_fill_tomorrow(
             start=cur,
             end=cur + resolution,
             price_eur_kwh=0.0,
+            priced=False,
         ))
         cur += resolution
     return entries + fill

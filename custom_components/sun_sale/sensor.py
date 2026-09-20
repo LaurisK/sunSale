@@ -10,7 +10,7 @@ from homeassistant.components.sensor import (
     SensorStateClass,
 )
 from homeassistant.config_entries import ConfigEntry
-from homeassistant.const import UnitOfEnergy
+from homeassistant.const import MATCH_ALL, UnitOfEnergy
 from homeassistant.core import HomeAssistant, callback
 from homeassistant.helpers.entity_platform import AddEntitiesCallback
 from homeassistant.helpers.event import async_track_time_change
@@ -303,6 +303,21 @@ class _BaseSensor(CoordinatorEntity, SensorEntity):
         return pricing.slot_at(now) or pricing.slots[0]
 
 
+class _PanelPayloadSensor(_BaseSensor):
+    """Base for sensors whose attributes are a whole per-cycle pipeline bundle.
+
+    These carry the panel's data (full slot arrays), which runs to tens of kB —
+    past the recorder's 16 kB attribute ceiling, so every cycle it logged
+    "State attributes ... exceed maximum size" and dropped them anyway. None of
+    it is meaningful as history: the panel reads live state and the check
+    harness reads the debug API. Excluding the attributes keeps the *state*
+    recorded (so long-term statistics still work) and takes the churn off the
+    database.
+    """
+
+    _unrecorded_attributes = frozenset({MATCH_ALL})
+
+
 class CurrentActionSensor(_BaseSensor):
     """Sensor reporting the StorageMode scheduled for the current hour."""
 
@@ -523,7 +538,7 @@ class PriceLevelSensor(_BaseSensor):
         return {k: v for k, v in status.items() if k != "level"} if status else {}
 
 
-class ScheduleSensor(_BaseSensor):
+class ScheduleSensor(_PanelPayloadSensor):
     """Sensor exposing the full optimized battery schedule as extra attributes."""
 
     _attr_name = "sunSale Schedule"
@@ -736,7 +751,7 @@ def _fmt(value: Any) -> str:
     return str(value)
 
 
-class DashboardSensor(_BaseSensor):
+class DashboardSensor(_PanelPayloadSensor):
     """Aggregates pipeline outputs into a single sensor attribute bundle for the panel."""
 
     _attr_name = "sunSale Dashboard"
@@ -979,7 +994,7 @@ class DashboardSensor(_BaseSensor):
         }
 
 
-class PricingPipelineSensor(_BaseSensor):
+class PricingPipelineSensor(_PanelPayloadSensor):
     """Diagnostic sensor — exposes full PriceSeries for chart rendering."""
 
     _attr_name = "sunSale Pricing"
@@ -1032,7 +1047,7 @@ class PricingPipelineSensor(_BaseSensor):
         }
 
 
-class ForecastPipelineSensor(_BaseSensor):
+class ForecastPipelineSensor(_PanelPayloadSensor):
     """Diagnostic sensor — exposes full GenerationSeries for chart rendering."""
 
     _attr_name = "sunSale Forecast"
@@ -1086,7 +1101,7 @@ class ForecastPipelineSensor(_BaseSensor):
         }
 
 
-class PriceForecastSensor(_BaseSensor):
+class PriceForecastSensor(_PanelPayloadSensor):
     """Week-ahead price forecast — peak/trough bands and negative-price exposure.
 
     The state is tomorrow's expected 4 h peak, because that is the nearest
@@ -1140,7 +1155,7 @@ class PriceForecastSensor(_BaseSensor):
         }
 
 
-class CalculationPipelineSensor(_BaseSensor):
+class CalculationPipelineSensor(_PanelPayloadSensor):
     """Diagnostic sensor — exposes CalculationResult (lockout windows, etc.)."""
 
     _attr_name = "sunSale Calculation"
@@ -1350,7 +1365,7 @@ class BaseloadConfidenceSensor(_BaseloadSensor):
         return round(profile.confidence, 3)
 
 
-class MonthlyBillSensor(_BaseSensor):
+class MonthlyBillSensor(_PanelPayloadSensor):
     """Sensor reporting the net electricity bill for the current calendar month.
 
     The value is carry (month start → yesterday midnight) plus the live

@@ -299,7 +299,7 @@ def build_day_record(
         The record, or None when the day is not covered densely enough to be
         representative.
     """
-    slots = slots_for_local_day(price_series.slots, day, local_tz)
+    slots = slots_for_local_day(price_series.priced_slots, day, local_tz)
     slot_hours = price_series.resolution.total_seconds() / 3600.0
     if not slots or slot_hours <= 0:
         return None
@@ -722,7 +722,7 @@ def compute_price_forecast(
         day_class = classify_day(day)
 
         settled = (
-            slots_for_local_day(price_series.slots, day, tz) if price_series is not None else []
+            slots_for_local_day(price_series.priced_slots, day, tz) if price_series is not None else []
         )
         covered = bool(settled) and slot_hours > 0 and (
             len(settled) * slot_hours >= 24.0 * _MIN_DAY_COVERAGE
@@ -949,7 +949,7 @@ def settle_days(
     Returns:
         Updated history, or None when nothing changed.
     """
-    if price_series is None or not price_series.slots:
+    if price_series is None or not price_series.priced_slots:
         return None
 
     known = history.by_day()

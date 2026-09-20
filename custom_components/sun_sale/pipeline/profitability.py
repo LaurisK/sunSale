@@ -185,7 +185,7 @@ def today_peak_from_price_series(
         Maximum spot_eur_kwh for the date, or None if no slots fall on it.
     """
     today_slots = [
-        s for s in price_series.slots
+        s for s in price_series.priced_slots
         if s.start.astimezone(local_tz).date() == today
     ]
     if not today_slots:

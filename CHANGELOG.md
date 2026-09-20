@@ -8,6 +8,53 @@ Any behavior-affecting change bumps the `version` in
 `custom_components/sun_sale/manifest.json` and adds an entry here — see
 [`docs/RELEASING.md`](docs/RELEASING.md).
 
+## [Unreleased]
+
+### Fixed
+- **A dead price feed no longer takes the whole dashboard down with it.** The
+  `PriceSeries` slot grid is what the generation and every observed series are
+  resampled onto, so when the price sensor produced nothing the grid shrank to
+  whatever days were left — on a permanently unavailable sensor, the persisted
+  *yesterday* alone. Everything else followed it down: no forecast for today or
+  tomorrow, an empty schedule, no price level, and charts showing yesterday and
+  nothing since. The grid is now always padded out to the full local
+  yesterday→tomorrow window, with the slots the feed had no price for marked
+  `priced=False`.
+  Found after a host restart with no working DNS left the Nordpool integration's
+  sensor permanently `unavailable` (its entity raises on its first fetch inside
+  `async_added_to_hass`, so it is never added and never retries — reloading the
+  entry brings it back).
+- **Nothing trades or bills on a price that was never published.** `priced=False`
+  slots are skipped by `calculation` — the single choke point in front of the
+  optimiser — and by the monthly bill, price level, profitability and price
+  forecast. This also covers tomorrow before the day-ahead auction publishes:
+  `_zero_fill_tomorrow`'s placeholders used to be priced as a real 0.00 €/kWh
+  spot, which on a 15-min grid put 96 fabricated slots — two thirds of the
+  horizon — into the optimiser's plan.
+- **A 4× energy overstatement whenever the feed was empty.** `PriceSeries.resolution`
+  was taken from the price feed even when that feed had no entries, so it
+  reported the translator's unused 1 h default against a 15-min grid. The
+  schedule and the price forecast both read it as `slot_hours`. It is now
+  re-derived from the slots that exist. `tools/checks/pricing.py` gained a
+  declared-resolution-vs-slot-spacing check so this cannot slip through again.
+- **sunSale no longer holds up Home Assistant's startup.** `async_setup_entry`
+  awaited a full coordinator cycle — Modbus reads plus a recorder replay —
+  before returning, which put `sun_sale` in core's "blocking … wrap-up" warning
+  and, with a slow inverter link, stretched startup badly. While HA is still
+  starting the blocking first refresh is skipped; the existing
+  `EVENT_HOMEASSISTANT_STARTED` hook runs the first cycle, and every entity
+  already renders a `None` `coordinator.data`. A later reload keeps the first
+  refresh and its `ConfigEntryNotReady` retry.
+- **The `holidays` import no longer blocks the event loop.** The first lookup
+  imported the package — a disk read — from inside a DAG cycle, tripping HA's
+  blocking-call detector. The per-country cache is now warmed from an executor
+  during coordinator setup.
+- **The recorder stops rejecting the panel sensors.** `sensor.sunsale_dashboard`
+  (~40 kB) and `sunsale_monthly_bill` (~18 kB) carry a whole pipeline bundle in
+  their attributes, past the recorder's 16 kB ceiling — logged and dropped every
+  cycle. The bundle sensors now declare `_unrecorded_attributes`, keeping their
+  *state* recorded (so long-term statistics still work) without the churn.
+
 ## [0.6.0] — 2026-09-20
 
 ### Added

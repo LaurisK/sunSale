@@ -117,10 +117,40 @@ class PricingCheckResult:
     resolution_s: int = 0
     computed_at: str = ""
     negative_sell_count: int = 0
+    priced_slot_count: int = 0
+    unpriced_slot_count: int = 0
     tariff_config: dict = field(default_factory=dict)
     slot_rows: list[dict] = field(default_factory=list)
     mismatches: list[str] = field(default_factory=list)
     overall_ok: bool = True
+
+
+def _check_declared_resolution(result: PricingCheckResult, slots: list[dict]) -> None:
+    """Flag a declared ``resolution_s`` that disagrees with the slot spacing.
+
+    ``PriceSeries.resolution`` is read as ``slot_hours`` by the schedule and the
+    price forecast, so a value that does not match the grid scales every
+    ``kW x slot_hours`` energy by the ratio between them. The 2026-09-20 outage
+    reported 1h against a 15-min grid — a silent 4x — which no per-slot formula
+    comparison could catch.
+
+    Args:
+        result: Check result to append a mismatch to; mutated in place.
+        slots: Raw pricing slot dicts from the debug snapshot.
+    """
+    if len(slots) < 2 or result.resolution_s <= 0:
+        return
+    try:
+        first = datetime.fromisoformat(slots[0]["start"])
+        second = datetime.fromisoformat(slots[1]["start"])
+    except (KeyError, ValueError, AttributeError):
+        return
+    actual_s = int((second - first).total_seconds())
+    if actual_s > 0 and actual_s != result.resolution_s:
+        result.mismatches.append(
+            f"declared resolution {result.resolution_s}s != slot spacing {actual_s}s"
+        )
+        result.overall_ok = False
 
 
 def check_pricing(snap: Snapshot) -> PricingCheckResult:
@@ -152,6 +182,11 @@ def check_pricing(snap: Snapshot) -> PricingCheckResult:
     result.negative_sell_count = pricing.get("negative_sell_count", 0)
     result.tariff_config = dict(tariff)
 
+    slots_raw = pricing.get("slots") or []
+    result.priced_slot_count = sum(1 for s in slots_raw if s.get("priced", True))
+    result.unpriced_slot_count = len(slots_raw) - result.priced_slot_count
+    _check_declared_resolution(result, slots_raw)
+
     buy = tariff.get("buy") or {}
     sell = tariff.get("sell") or {}
     local_tz = _resolve_tz(snap.config.get("time_zone", ""))
@@ -163,7 +198,7 @@ def check_pricing(snap: Snapshot) -> PricingCheckResult:
         return result
     TOL = 1e-3
 
-    for s in pricing.get("slots") or []:
+    for s in slots_raw:
         spot = s.get("spot", 0.0)
         act_buy = s.get("buy", 0.0)
         act_sell = s.get("sell", 0.0)
@@ -274,10 +309,11 @@ class PricingCheckWidget(Static):
         mark = "✓" if pc.overall_ok else "✗"
         status = "PASS" if pc.overall_ok else "FAIL"
         neg = f"  {pc.negative_sell_count} negative-sell" if pc.negative_sell_count else ""
+        unpriced = f"  {pc.unpriced_slot_count} unpriced" if pc.unpriced_slot_count else ""
         res_min = pc.resolution_s // 60
         title = (
             f"[{color}]{mark}[/{color}]  pricing_check   [{color}]{status}[/{color}]"
-            f"   {pc.module_slot_count} slots  res={res_min}min{neg}"
+            f"   {pc.module_slot_count} slots  res={res_min}min{neg}{unpriced}"
         )
 
         with Collapsible(title=title, collapsed=True):

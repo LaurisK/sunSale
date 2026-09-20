@@ -97,6 +97,8 @@ def compute_bill_slots(
 
     result: list[BillSlot] = []
     for price_slot in price_series.window(t_start, t_end):
+        if not price_slot.priced:
+            continue  # no known price: billing this slot would invent a cost
         slot_start = max(price_slot.start, t_start)
         slot_end = min(price_slot.end, t_end)
 
@@ -172,7 +174,9 @@ def build_monthly_bill_result(
     # cycle, as long as it has not yet aged out of the window. Re-pricing a
     # day already in the ledger overwrites it, letting the value track the
     # late-arriving bake-in correction until the window rolls past it.
-    price_start = min((s.start for s in price_series.slots), default=None)
+    # Anchored on priced slots only: the grid now always spans 72h, so using
+    # every slot would re-price (and zero out) a day the feed never covered.
+    price_start = min((s.start for s in price_series.priced_slots), default=None)
     if price_start is not None:
         d = yday_date
         while True:

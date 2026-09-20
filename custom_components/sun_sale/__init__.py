@@ -112,10 +112,19 @@ async def async_setup_entry(hass: HomeAssistant, entry: ConfigEntry) -> bool:
     coordinator = SunSaleCoordinator(hass, entry)
     await coordinator.async_setup()
 
-    try:
-        await coordinator.async_config_entry_first_refresh()
-    except Exception as exc:
-        raise ConfigEntryNotReady from exc
+    # A full cycle reads the inverter over Modbus and replays the recorder, so
+    # awaiting it here holds up HA's whole startup phase (sun_sale shows up in
+    # core's "blocking ... wrap-up" warning, and a slow/flaky inverter link can
+    # stretch that to the better part of an hour). While HA is still starting,
+    # skip the blocking refresh: EVENT_HOMEASSISTANT_STARTED below runs one
+    # anyway, and every entity already renders a None ``coordinator.data``.
+    # On a later reload HA is running, so keep the first refresh and with it
+    # the ConfigEntryNotReady retry.
+    if hass.is_running:
+        try:
+            await coordinator.async_config_entry_first_refresh()
+        except Exception as exc:
+            raise ConfigEntryNotReady from exc
 
     hass.data.setdefault(DOMAIN, {})[entry.entry_id] = coordinator
     await hass.config_entries.async_forward_entry_setups(entry, PLATFORMS)

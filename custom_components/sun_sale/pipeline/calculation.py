@@ -34,6 +34,13 @@ def calculate(
         ``expected_solar_negative_sale_kwh`` (no decision taken — the schedule
         module decides what to do).
 
+    Slots carrying no known market price (``priced=False`` — tomorrow before
+    the day-ahead auction publishes, or a price feed outage) get no
+    ``SlotDecision`` at all. That is the single choke point keeping fabricated
+    prices out of dispatch: ``schedule.build_schedule`` only considers price
+    slots that appear in this result, so an unpriced slot can neither be
+    optimised over nor counted as a feed-in lockout.
+
     Args:
         prices: Full PriceSeries covering the scheduling horizon.
         generation: Expected solar generation aligned to the price grid.
@@ -44,8 +51,9 @@ def calculate(
         CalculationResult with per-slot SlotDecisions and coalesced lockout windows.
     """
     slots: list[SlotDecision] = []
+    priced_slots = prices.priced_slots
 
-    for price_slot in prices.slots:
+    for price_slot in priced_slots:
         locked_out = price_slot.sell_eur_kwh <= 0.0
         expected_kwh = generation.energy_between(price_slot.start, price_slot.end)
         notes: list[str] = []
@@ -68,7 +76,7 @@ def calculate(
             notes=tuple(notes),
         ))
 
-    lockout_windows = _coalesce_lockout_windows(prices.slots)
+    lockout_windows = _coalesce_lockout_windows(priced_slots)
     total_negative_kwh = sum(s.expected_solar_negative_sale_kwh for s in slots)
 
     return CalculationResult(

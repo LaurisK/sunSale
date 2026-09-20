@@ -218,7 +218,8 @@ class YesterdayRotationStep(CycleStep):
         buckets = self._store.value or YesterdayBuckets()
         today_nordpool = [
             e for e in nordpool_data.entries
-            if e.start.astimezone(local).date().isoformat() == today_str
+            if e.priced
+            and e.start.astimezone(local).date().isoformat() == today_str
         ]
         today_solar = [
             e for e in solar_data.entries

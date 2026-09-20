@@ -16,11 +16,18 @@ class PriceEntry:
     markets that publish a distinct feed-in stream (UK Octopus Outgoing, AU
     Amber feed-in); it is None for single-feed sources (Nordpool, ENTSO-e). A
     dynamic sell price uses it in place of ``price_eur_kwh`` where it is set.
+
+    ``priced`` is False on a *placeholder* entry: one that exists only to hold
+    a position in the slot grid because the market price for it is not known
+    (tomorrow not published yet, or the price feed is unavailable). Its
+    ``price_eur_kwh`` is a filler zero and must never be traded or billed on —
+    see :class:`PriceSlot`.
     """
     start: datetime
     end: datetime
     price_eur_kwh: float
     export_price_eur_kwh: float | None = None
+    priced: bool = True
 
 
 @dataclass(frozen=True)
@@ -317,7 +324,15 @@ class CapacityObservation:
 
 @dataclass(frozen=True)
 class PriceSlot:
-    """Effective buy/sell prices for one time slot."""
+    """Effective buy/sell prices for one time slot.
+
+    A slot with ``priced=False`` carries no known market price: it exists only
+    so the slot grid keeps spanning the full yesterday→tomorrow window when the
+    feed has no data for it. Everything that *decides* or *bills* on money
+    (calculation → schedule, monthly bill, price level, profitability, price
+    forecast) must skip it; everything that only needs the grid (generation and
+    the observed series) uses it normally.
+    """
     start: datetime
     end: datetime
     buy_eur_kwh: float    # effective buy price (spot + fees + tax)
@@ -325,14 +340,30 @@ class PriceSlot:
     spot_eur_kwh: float   # raw import/spot price, kept for provenance
     sources: tuple[str, ...]  # (price_source, "tariff") — for diagnostics
     export_eur_kwh: float | None = None  # raw separate export feed (feed mode)
+    priced: bool = True  # False = placeholder; never trade or bill on it
 
 
 @dataclass(frozen=True)
 class PriceSeries:
-    """Normalised price stream for all known slots."""
+    """Normalised price stream for all known slots.
+
+    The series always spans the full yesterday→tomorrow grid so the generation
+    and observed series have somewhere to land; slots the feed had no price for
+    are present but carry ``priced=False``.
+    """
     slots: tuple[PriceSlot, ...]
     resolution: timedelta
     computed_at: datetime
+
+    @property
+    def priced_slots(self) -> tuple[PriceSlot, ...]:
+        """Return only the slots carrying a real market price.
+
+        Returns:
+            The subset of ``slots`` with ``priced=True`` — what every
+            money-deciding consumer should iterate instead of ``slots``.
+        """
+        return tuple(s for s in self.slots if s.priced)
 
     def slot_at(self, t: datetime) -> PriceSlot | None:
         """Return the slot covering time t, or None if outside the series.
