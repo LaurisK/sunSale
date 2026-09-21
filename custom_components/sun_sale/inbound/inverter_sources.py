@@ -85,6 +85,20 @@ Attributes = Callable[[str], Mapping[str, Any]]
 # and picking the wrong one would silently feed the bake-in a day-old total.
 _YESTERDAY = "yesterday"
 
+# Fragments marking a sensor as a *control register read-back* — a limit, a
+# setpoint, a dispatch target — rather than a measurement. An integration
+# publishes both for the same register: solis_modbus mirrors its writable
+# dispatch import / export limits back as ``power`` sensors with state class
+# ``measurement``, so every filter HA exposes says "power reading", and the
+# names make it worse — "Dispatch **Import** Limit" matches the grid-import
+# hints exactly, which is how one became the pre-selected grid-import meter and
+# fed a 6553.5 kW register sentinel into the observed series and the bill.
+# Such a candidate is ranked last and never pre-selected; it is still offered,
+# because this module ranks and never filters.
+_SETPOINT_HINTS: tuple[str, ...] = (
+    "limit", "setpoint", "set_point", "target", "dispatch", "threshold",
+)
+
 
 @dataclass(frozen=True)
 class SourceSpec:
@@ -211,11 +225,15 @@ class DetectedSource:
         name: Its display name, or "" when the registry carries none.
         auto: Whether the platform's own discovery already resolved this entity
             for the role — the strongest possible hint, shown as such.
+        setpoint: Whether the name says this is a control register's read-back
+            (see :data:`_SETPOINT_HINTS`) rather than a measurement. Such a
+            candidate sorts last and is never pre-selected.
     """
 
     entity_id: str
     name: str
     auto: bool
+    setpoint: bool = False
 
 
 @dataclass(frozen=True)
@@ -259,6 +277,19 @@ def _usable(entry: Any) -> bool:
     return entry.disabled_by is None and entry.hidden_by is None
 
 
+def _is_setpoint(entry: Any) -> bool:
+    """Return True when the entry's name says it mirrors a control register.
+
+    Args:
+        entry: Entity-registry entry.
+
+    Returns:
+        True when any of :data:`_SETPOINT_HINTS` appears in its id or names.
+    """
+    searchable = _searchable(entry)
+    return any(hint in searchable for hint in _SETPOINT_HINTS)
+
+
 def _fits(entry: Any, attributes: Mapping[str, Any], spec: SourceSpec) -> bool:
     """Return True when an entry reports the kind of value the source needs.
 
@@ -288,8 +319,9 @@ def role_candidates(
     """Return the entries that could fill a source, likeliest first.
 
     Ordering puts the platform's own resolved entity first, then the ones whose
-    name matches a hint, then the rest alphabetically — so the list stays
-    complete while the right answer sits at the top.
+    name matches a hint, then the rest alphabetically, and a control register's
+    read-back (:func:`_is_setpoint`) last whatever its hints say — so the list
+    stays complete while the right answer sits at the top.
 
     Args:
         entries: Entity-registry entries to consider (duplicates are dropped).
@@ -300,21 +332,21 @@ def role_candidates(
     Returns:
         Candidates in display order.
     """
-    found: dict[str, tuple[bool, str]] = {}
+    found: dict[str, tuple[bool, str, bool]] = {}
     for entry in entries:
         if entry.entity_id in found or not _usable(entry):
             continue
         if not _fits(entry, attributes(entry.entity_id), spec):
             continue
         hinted = any(hint in _searchable(entry) for hint in spec.hints)
-        found[entry.entity_id] = (hinted, _text(entry.name or entry.original_name))
+        found[entry.entity_id] = (hinted, _text(entry.name or entry.original_name), _is_setpoint(entry))
 
-    def rank(entity_id: str) -> tuple[bool, bool, str]:
-        hinted, _name = found[entity_id]
-        return (entity_id != auto, not hinted, entity_id)
+    def rank(entity_id: str) -> tuple[bool, bool, bool, str]:
+        hinted, _name, setpoint = found[entity_id]
+        return (entity_id != auto, setpoint, not hinted, entity_id)
 
     return [
-        DetectedSource(entity_id, found[entity_id][1], entity_id == auto)
+        DetectedSource(entity_id, found[entity_id][1], entity_id == auto, found[entity_id][2])
         for entity_id in sorted(found, key=rank)
     ]
 
@@ -324,8 +356,9 @@ def default_source(candidates: list[DetectedSource], spec: SourceSpec, stored: s
 
     Preference order: what the user already stored (while it is still a
     candidate), then the platform's auto-detected entity, then the best
-    name-hint match. With none of those the row opens unset, because guessing
-    from device class alone would be as likely wrong as right.
+    name-hint match among the candidates that are not a control register's
+    read-back. With none of those the row opens unset, because guessing from
+    device class alone would be as likely wrong as right.
 
     Args:
         candidates: Output of :func:`role_candidates`.
@@ -342,7 +375,8 @@ def default_source(candidates: list[DetectedSource], spec: SourceSpec, stored: s
         return auto
     hinted = [
         source.entity_id for source in candidates
-        if any(hint in source.entity_id.casefold() or hint in source.name.casefold() for hint in spec.hints)
+        if not source.setpoint
+        and any(hint in source.entity_id.casefold() or hint in source.name.casefold() for hint in spec.hints)
     ]
     return hinted[0] if hinted else ""
 

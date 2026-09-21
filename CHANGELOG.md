@@ -11,6 +11,22 @@ Any behavior-affecting change bumps the `version` in
 ## [Unreleased]
 
 ### Fixed
+- **A control register's read-back is no longer pre-selected as a grid meter.**
+  `solis_modbus` mirrors its writable dispatch import / export limits back as
+  `power` sensors with state class `measurement`, and their names — *Dispatch
+  Import Limit* / *Dispatch Export Limit* — match the grid-import / grid-export
+  name hints exactly, so `inbound/inverter_sources.py` offered them *first* and
+  pre-filled them on the "Inverter power sensors" page. Confirming that page
+  bound the per-direction grid-power observers to a register sentinel
+  (6 553 500 W = 6553.5 kW, identical on both directions), which put 1638.375
+  kWh into every 15-minute slot of both directions and 11 696 € into one day of
+  the monthly bill. A candidate whose name says *limit*, *setpoint*, *target*,
+  *dispatch* or *threshold* now sorts last, is never pre-selected, and is
+  labelled *a limit or setpoint, not a meter* — still offered, because the
+  detection ranks and never filters.
+  - Existing entries are not migrated: an install that already stored one keeps
+    it (a visit to the page must never silently change a reading), so clear the
+    row to fall back to the signed `grid_power_net` projection.
 - **A dead price feed no longer takes the whole dashboard down with it.** The
   `PriceSeries` slot grid is what the generation and every observed series are
   resampled onto, so when the price sensor produced nothing the grid shrank to

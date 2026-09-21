@@ -14,7 +14,9 @@ from custom_components.sun_sale.contract.const import (
     CONF_INVERTER_ENTITY_BATTERY_CHARGE_ENERGY,
     CONF_INVERTER_ENTITY_GENERATION_YESTERDAY,
     CONF_INVERTER_ENTITY_GRID_EXPORT_ENERGY,
+    CONF_INVERTER_ENTITY_GRID_EXPORT_POWER,
     CONF_INVERTER_ENTITY_GRID_IMPORT_ENERGY,
+    CONF_INVERTER_ENTITY_GRID_IMPORT_POWER,
     CONF_INVERTER_ENTITY_PV_POWER,
     CONF_INVERTER_PLATFORM,
 )
@@ -111,6 +113,24 @@ def test_a_hidden_disabled_helper_or_own_sensor_is_never_offered():
     assert role_candidates(entries, _no_attributes, _spec(CONF_INVERTER_ENTITY_PV_POWER)) == []
 
 
+def test_a_control_registers_read_back_is_offered_but_ranked_last():
+    """solis_modbus mirrors its writable dispatch limits back as power sensors.
+
+    "Dispatch Import Limit" matches the grid-import hints exactly and carries
+    the same device and state class as a meter, so only the name separates the
+    two — and picking it feeds a register sentinel into the observed series.
+    """
+    entries = [
+        _entry("sensor.dispatch_import_limit", original_name="Dispatch Import Limit"),
+        _entry("sensor.zzz_meter_power", original_name="Grid import power"),
+    ]
+    found = role_candidates(entries, _no_attributes, _spec(CONF_INVERTER_ENTITY_GRID_IMPORT_POWER))
+    assert [source.entity_id for source in found] == [
+        "sensor.zzz_meter_power", "sensor.dispatch_import_limit",
+    ]
+    assert [source.setpoint for source in found] == [False, True]
+
+
 def test_state_attributes_stand_in_for_classes_the_registry_does_not_carry():
     entry = _entry("sensor.today_solar", original_device_class=None, state_class=None)
     attributes = {"sensor.today_solar": {"device_class": "energy", "state_class": "total_increasing"}}
@@ -205,6 +225,26 @@ def test_a_name_hint_is_pre_selected_when_the_platform_resolved_nothing():
     ]
     spec = _spec(CONF_INVERTER_ENTITY_BATTERY_CHARGE_ENERGY)
     assert default_source(candidates, spec) == "sensor.battery_charge_today"
+
+
+def test_a_control_registers_read_back_is_never_pre_selected():
+    """It is the only candidate whose hints match, and still nothing is filled in."""
+    candidates = [DetectedSource("sensor.dispatch_export_limit", "Dispatch Export Limit", False, True)]
+    assert default_source(candidates, _spec(CONF_INVERTER_ENTITY_GRID_EXPORT_POWER)) == ""
+    # A real meter alongside it wins even though it sorts later alphabetically.
+    real = DetectedSource("sensor.zzz_export_power", "Grid export power", False)
+    assert default_source([*candidates, real], _spec(CONF_INVERTER_ENTITY_GRID_EXPORT_POWER)) == (
+        "sensor.zzz_export_power"
+    )
+
+
+def test_a_stored_control_read_back_still_wins_so_a_visit_never_changes_a_reading():
+    """Correcting a stored pick is the user's edit to make, not a silent one."""
+    candidates = [DetectedSource("sensor.dispatch_export_limit", "Dispatch Export Limit", False, True)]
+    spec = _spec(CONF_INVERTER_ENTITY_GRID_EXPORT_POWER)
+    assert default_source(candidates, spec, stored="sensor.dispatch_export_limit") == (
+        "sensor.dispatch_export_limit"
+    )
 
 
 def test_nothing_is_pre_selected_when_no_candidate_looks_right():

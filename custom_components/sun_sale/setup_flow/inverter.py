@@ -428,10 +428,13 @@ def source_label(source: DetectedSource) -> str:
 
     Returns:
         ``"<name> (<entity id>)"`` — or just the entity id when the registry
-        carries no name — marked when the platform itself resolved it.
+        carries no name — marked when the platform itself resolved it, or when
+        its name says it mirrors a control register rather than measuring.
     """
     label = f"{source.name} ({source.entity_id})" if source.name else source.entity_id
-    return f"{label} — detected" if source.auto else label
+    if source.auto:
+        return f"{label} — detected"
+    return f"{label} — a limit or setpoint, not a meter" if source.setpoint else label
 
 
 def source_rows(key: str, d: dict, options: SourceOptions) -> tuple[list[dict[str, str]], str]:
