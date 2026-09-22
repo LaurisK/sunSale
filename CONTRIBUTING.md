@@ -19,7 +19,7 @@ requests are all welcome.
 python -m venv venv && source venv/bin/activate
 pip install -r requirements_dev.txt
 
-git config core.hooksPath .githooks       # gate pushes on the checks below
+scripts/install-hooks.sh                  # gate pushes on the checks below
 ```
 
 `contract/`, `pipeline/`, and the pure helpers run without Home Assistant imports, so most
@@ -44,9 +44,17 @@ workflow. Both add rules in minor releases, so floating them means an upstream
 release can turn master red with no change here. Bump the pins deliberately,
 with any resulting fixes in the same commit.
 
-With `core.hooksPath` set (above), `.githooks/pre-push` runs the same script and
-refuses a push that would fail CI. `git push --no-verify` bypasses it for a
-genuine emergency.
+`scripts/install-hooks.sh` (above) writes a `pre-push` hook into `.git/hooks/`
+that runs the same script and refuses a push that would fail CI. `git push
+--no-verify` bypasses it for a genuine emergency.
+
+It installs into `.git/hooks/` rather than setting `core.hooksPath` to a tracked
+directory on purpose. `core.hooksPath` resolves against the **working tree**, so
+a tracked hooks directory disappears as soon as you check out a branch that does
+not carry it, and git runs no hook and says nothing — the gate looks installed
+and is not. `.git/hooks/` is per-clone and outside the working tree, so it
+survives every checkout. Run the installer once per clone; if `scripts/checks.sh`
+is missing from the tree being pushed, the hook refuses rather than passing.
 
 ## Pull request checklist
 

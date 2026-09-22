@@ -17,7 +17,7 @@
 #   scripts/checks.sh            # ruff + mypy + pytest
 #   scripts/checks.sh --fast     # ruff + mypy only (skips the suite)
 #
-# Wired to pre-push via .githooks/pre-push; see CONTRIBUTING.md.
+# Wired to pre-push by scripts/install-hooks.sh; see CONTRIBUTING.md.
 
 set -uo pipefail
 

@@ -13,7 +13,6 @@ import pytest
 from custom_components.sun_sale.contract.models import (
     OnlineShapeState,
     PriceCurveHistory,
-    WeatherDaily,
 )
 from custom_components.sun_sale.inbound import price_backfill
 from custom_components.sun_sale.orchestration import store_codecs
@@ -339,7 +338,7 @@ def test_a_prediction_is_frozen_once_and_settles_into_the_record():
 
 def test_the_error_series_covers_the_days_that_have_both_curves():
     """Once a day settles, its hourly error is published for the chart."""
-    from custom_components.sun_sale.contract.models import PriceDayRecord, PriceCurveHistory
+    from custom_components.sun_sale.contract.models import PriceCurveHistory, PriceDayRecord
     from custom_components.sun_sale.pipeline import price_forecast as pf
     from tests.test_price_forecast import _generation, _price_series
 

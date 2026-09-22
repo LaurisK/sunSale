@@ -16,6 +16,13 @@ select = ["E", "F", "I", "UP"]
 python_version = "3.12"
 ignore_missing_imports = true
 
+# Test files are out of scope. CI runs `mypy custom_components/sun_sale`, so the
+# repo's own top-level tests/ is already excluded by path; the vendored 10s
+# subtree only lands in scope because it sits *inside* the package. Without this
+# the local gate fails on fakes and stubs that CI never sees -- and a gate that
+# is red for reasons CI does not share is a gate people learn to bypass.
+exclude = '(^|/)_tenskit/tests/'
+
 # Stricter checking on the pure layers — the contract data model and the
 # pipeline stages have no HA runtime coupling, so they can carry full type
 # rigor. Kept scoped: the HA-facing layers (inbound/orchestration/outbound)

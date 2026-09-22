@@ -24,10 +24,9 @@ from ...contract.models import (
     SolarHealth,
     WeatherForecastData,
 )
-from .. import array_calibration, calculation, forecast_accuracy, solar_health
-from .. import monthly_bill as monthly_bill_module
 from ...inbound.holiday_calendar import holiday_predicate
-from .. import online_shape
+from .. import array_calibration, calculation, forecast_accuracy, online_shape, solar_health
+from .. import monthly_bill as monthly_bill_module
 from .. import price_forecast as price_forecast_module
 from ..dag_engine import DagNode, NodeContext
 

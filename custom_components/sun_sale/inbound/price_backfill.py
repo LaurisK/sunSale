@@ -27,7 +27,7 @@ from __future__ import annotations
 import asyncio
 import logging
 from collections.abc import Callable
-from datetime import date, datetime, timedelta, timezone, tzinfo
+from datetime import UTC, date, datetime, timedelta, tzinfo
 
 from ..contract.models import (
     OnlineShapeState,
@@ -106,7 +106,7 @@ async def _get_json(session, url: str, timeout: float = 30.0) -> dict | list | N
                 _LOGGER.debug("Backfill %s returned HTTP %s", url, response.status)
                 return None
             return await response.json(content_type=None)
-    except (TimeoutError, asyncio.TimeoutError, OSError, ValueError) as err:
+    except (TimeoutError, OSError, ValueError) as err:
         _LOGGER.debug("Backfill %s failed: %s", url, err)
         return None
 
@@ -158,7 +158,7 @@ async def fetch_prices(
             prices = (body or {}).get("price", []) if isinstance(body, dict) else []
             points = [(int(t), float(p)) for t, p in zip(stamps, prices) if p is not None]
         for stamp, price in points:
-            when = datetime.fromtimestamp(stamp, timezone.utc).astimezone(local_tz)
+            when = datetime.fromtimestamp(stamp, UTC).astimezone(local_tz)
             # Both feeds quote EUR/MWh; the integration works in EUR/kWh.
             hourly.setdefault(when.date(), {}).setdefault(when.hour, []).append(price / 1000.0)
         # Give the event loop air between chunks; each parse is thousands of rows.
@@ -170,6 +170,11 @@ async def fetch_prices(
             continue
         out[day] = [sum(hours[h]) / len(hours[h]) for h in range(online_shape.HOURS)]
     return out
+
+
+def _mean(values: list[float]) -> float | None:
+    """Return the arithmetic mean of `values`, or None when there are none."""
+    return (sum(values) / len(values)) if values else None
 
 
 async def fetch_weather(
@@ -218,11 +223,11 @@ async def fetch_weather(
                 if index < len(values) and values[index] is not None:
                     bucket[slot].append(float(values[index]))
         if sums:
+            # Built positionally rather than by comprehension: a generator widens
+            # to tuple[float | None, ...], which does not match the declared
+            # fixed-width triple.
             return {
-                day: tuple(
-                    (sum(values) / len(values)) if values else None
-                    for values in buckets
-                )
+                day: (_mean(buckets[0]), _mean(buckets[1]), _mean(buckets[2]))
                 for day, buckets in sums.items()
             }
     return {}

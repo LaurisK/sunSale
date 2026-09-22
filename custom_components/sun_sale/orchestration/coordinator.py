@@ -148,6 +148,7 @@ from ..contract.models import (
     WeatherForecastData,
 )
 from ..ha_state import normalize_power_to_kw, power_unit_scale, read_power_kw
+from ..inbound import price_backfill
 from ..inbound.battery import BatteryTranslator
 from ..inbound.battery_source import (
     BatterySource,
@@ -161,7 +162,6 @@ from ..inbound.consumption_daily import (
 from ..inbound.forecast import SolarTranslator
 from ..inbound.forecast_resolver import combine_forecast_entities, resolve_forecast_entities
 from ..inbound.holiday_calendar import holiday_predicate, preload_holidays
-from ..inbound import price_backfill
 from ..inbound.household_consumption import HouseholdConsumptionTranslator
 from ..inbound.inverter_entity_resolver import resolve_inverter_entities
 from ..inbound.inverter_mode import InverterModeTranslator
@@ -1666,7 +1666,7 @@ class SunSaleCoordinator(DataUpdateCoordinator):
                 ),
                 timeout=price_backfill.TIMEOUT_S,
             )
-        except (TimeoutError, asyncio.TimeoutError):
+        except TimeoutError:
             _LOGGER.debug("Price backfill timed out; the engine will learn as days settle")
             return
         except Exception:  # noqa: BLE001 — never let an optional fetch block setup
