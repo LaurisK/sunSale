@@ -139,3 +139,40 @@ def test_missing_battery_energy_counters_are_optional(registry_scan, caplog):
         if record.levelname == "WARNING":
             assert "battery_charge_energy_today" not in record.getMessage()
             assert "battery_discharge_energy_today" not in record.getMessage()
+
+
+# --- Disabled-by-default canonical sensors --------------------------------- #
+
+
+def test_storage_control_falls_back_to_the_33132_mirror(registry_scan):
+    # The canonical 43110 readback is ``hidden: True`` upstream, so a config
+    # entry created after that flag landed never registers an enabled entity
+    # for it. Without the fallback the role resolves to nothing and the
+    # observed mode reads ``unknown`` forever (live: sodas, 2026-09-22).
+    registry_scan.append(
+        _Entry(
+            "solis_modbus_SN123_solis_modbus_inverter_storage_control_switching_value",
+            "sensor.solis_s6_eh3p_storage_control_switching_value",
+        ),
+    )
+    result = r.resolve_solis_entities(MagicMock(), "entry")
+    assert result["storage_control_readback"] == \
+        "sensor.solis_s6_eh3p_storage_control_switching_value"
+
+
+def test_storage_control_prefers_the_canonical_43110_sensor(registry_scan):
+    # Where an older entry still carries both, the primary map wins — and must
+    # do so regardless of which order the registry hands them back.
+    registry_scan.extend([
+        _Entry(
+            "solis_modbus_SN123_solis_modbus_inverter_storage_control_switching_value",
+            "sensor.namai_inv_storage_control_switching_value_2",
+        ),
+        _Entry(
+            "solis_modbus_SN123_solis_modbus_inverter_storage_control_switch_value",
+            "sensor.namai_inv_storage_control_switch_value_2",
+        ),
+    ])
+    result = r.resolve_solis_entities(MagicMock(), "entry")
+    assert result["storage_control_readback"] == \
+        "sensor.namai_inv_storage_control_switch_value_2"

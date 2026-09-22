@@ -46,6 +46,7 @@ from datetime import datetime
 from typing import Any
 
 from homeassistant.core import HomeAssistant
+from homeassistant.helpers import entity_registry as er
 from homeassistant.helpers.event import async_call_later
 
 from ..contract.models import InverterCapability, InverterModeReading, StorageMode
@@ -146,6 +147,9 @@ class SolisDispatchDriver:
         # Resolved support, latched only once positive. ``None`` = not yet
         # determined. See :meth:`_supported`.
         self._support: bool | None = None
+        # The ``host`` / ``slave`` fields addressing this install's inverter,
+        # latched only once resolved. See :meth:`_service_target`.
+        self._target: dict[str, Any] = {}
 
     @property
     def control_path(self) -> str:
@@ -582,8 +586,67 @@ class SolisDispatchDriver:
         self._commanded = None
         await self._call(SERVICE_DISPATCH_STOP, {})
 
+    def _service_target(self) -> dict[str, Any]:
+        """Return the ``host`` / ``slave`` fields addressing this install's inverter.
+
+        **An unaddressed call is rejected outright once a second inverter
+        exists.** ``solis_modbus``'s ``_resolve_controller`` refuses to guess
+        with more than one config entry loaded ("Multiple Solis inverters
+        configured — specify the \'host\' field"), :meth:`_call` swallows the
+        ``ServiceValidationError``, and the 44100 block is simply never
+        written: :meth:`apply_mode` falls through to the register path, whose
+        Discharge composition (43110 = 64, RC stood down) is byte-identical to
+        FeedIn. The inverter then sits in Feed-in priority with every register
+        row reporting ``match`` — the failure mode seen on 2026-09-22, where
+        adding one inverter stopped both installs discharging.
+
+        The address is recovered from the capability sensor's own config entry
+        rather than from sunSale's config, so it is by construction the
+        inverter every dispatch readback already comes from. A serial-connected
+        inverter has no host — its controller uses the serial port as one, which
+        the entry stores under ``serial_port``.
+
+        A resolved address is latched; an unresolved one is not, since it may
+        just be "registry not populated yet".
+
+        Returns:
+            ``{"host": …, "slave": …}``, or ``{}`` when the entry cannot be
+            resolved — an unaddressed call, which still works on the
+            single-inverter installs it worked on before.
+        """
+        if self._target:
+            return self._target
+        entity_id = self._entity_ids.get("dispatch_capability", "")
+        registry_entry = er.async_get(self._hass).async_get(entity_id) if entity_id else None
+        config_entry_id = getattr(registry_entry, "config_entry_id", None)
+        config_entry = (
+            self._hass.config_entries.async_get_entry(config_entry_id)
+            if config_entry_id else None
+        )
+        if config_entry is None:
+            _LOGGER.debug(
+                "solis_dispatch: no solis_modbus config entry behind %s — "
+                "calling unaddressed", entity_id or "<unresolved capability sensor>",
+            )
+            return {}
+        data = {**config_entry.data, **config_entry.options}
+        host = data.get("host") or data.get("serial_port")
+        if not host:
+            _LOGGER.debug(
+                "solis_dispatch: config entry %s declares no host or serial "
+                "port — calling unaddressed", config_entry_id,
+            )
+            return {}
+        self._target = {"host": str(host), "slave": int(data.get("slave", 1))}
+        _LOGGER.debug("solis_dispatch: addressing %s", self._target)
+        return self._target
+
     async def _call(self, service: str, data: dict[str, Any]) -> None:
         """Call one ``solis_modbus`` service, logging (not raising) on failure.
+
+        Every payload carries :meth:`_service_target` so the call names which
+        inverter it is for — without it the service rejects the call outright
+        on a multi-inverter install.
 
         Mirrors ``EntityActuator._call_service``: a mode is a sequence of
         actions and a single rejected call must not abort the ones after it —
@@ -592,15 +655,18 @@ class SolisDispatchDriver:
 
         Args:
             service: Service name within the ``solis_modbus`` domain.
-            data: Service payload.
+            data: Service payload, before the inverter address is merged in.
         """
-        _LOGGER.debug("solis_dispatch: %s(%s)", service, data)
+        payload = {**data, **self._service_target()}
+        _LOGGER.debug("solis_dispatch: %s(%s)", service, payload)
         try:
-            await self._hass.services.async_call(_DOMAIN, service, data, blocking=True)
+            await self._hass.services.async_call(
+                _DOMAIN, service, payload, blocking=True,
+            )
         except Exception:  # noqa: BLE001 — one bad call must not abort the sequence
             _LOGGER.error(
                 "solis_dispatch: %s.%s(%s) failed; continuing (the verify loop "
-                "will flag the mismatch)", _DOMAIN, service, data, exc_info=True,
+                "will flag the mismatch)", _DOMAIN, service, payload, exc_info=True,
             )
 
     def _row(

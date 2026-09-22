@@ -11,6 +11,30 @@ Any behavior-affecting change bumps the `version` in
 ## [Unreleased]
 
 ### Fixed
+- **Remote Dispatch now names the inverter it is for, so forced modes work on a
+  multi-inverter install.** `solis_modbus`'s `solis_dispatch` /
+  `solis_dispatch_stop` services refuse to guess a target once more than one
+  Solis config entry is loaded (`_resolve_controller`: *"Multiple Solis
+  inverters configured — specify the 'host' field"*). sunSale called them
+  unaddressed and swallowed the resulting `ServiceValidationError`, so the
+  44100 block was never written: `apply_mode` fell through to the register
+  path, whose Discharge composition (43110 = 64, RC stood down) is
+  byte-identical to FeedIn. Both installs sat in Feed-in priority at 0 W with
+  every register row reporting `match` — adding a second inverter silently
+  stopped the first one discharging too. Each payload now carries the `host` /
+  `slave` of the config entry the dispatch readbacks come from (a serial
+  inverter is addressed by its `serial_port`, which is what its controller uses
+  as a host); an install whose entry cannot be resolved still calls
+  unaddressed, which is what single-inverter installs always did.
+- **The Storage Control word is read again on newly added inverters.** The
+  canonical 43110 readback sensor is `hidden: True` upstream, which makes it
+  disabled by default, so a `solis_modbus` config entry created after that flag
+  landed never registers an enabled entity for it — older entries keep theirs
+  only as a registry leftover. The role resolved to nothing, leaving
+  `raw_state = None`, an observed mode of `unknown` and a permanently
+  unverifiable 43110 row. The resolver now falls back to register 33132's
+  mirror of the same word, which is enabled and polled faster; where both
+  exist the canonical sensor still wins.
 - **A control register's read-back is no longer pre-selected as a grid meter.**
   `solis_modbus` mirrors its writable dispatch import / export limits back as
   `power` sensors with state class `measurement`, and their names — *Dispatch

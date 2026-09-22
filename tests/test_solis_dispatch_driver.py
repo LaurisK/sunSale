@@ -611,3 +611,77 @@ def test_capability_keeps_the_rc_leg_until_dispatch_is_confirmed() -> None:
     base = SolisDriver(inv, default_battery_config(), 20_000, 15_000)
     drv = SolisDispatchDriver(base, hass, dict(_ROLES))
     assert drv.capability(NOW).max_grid_discharge_kw == 10.0
+
+
+# --- Inverter addressing ---------------------------------------------------- #
+
+
+def _addressed(entry_data: dict) -> tuple:
+    """Return (driver, hass) whose capability sensor belongs to ``entry_data``.
+
+    Stubs the two lookups :meth:`SolisDispatchDriver._service_target` walks:
+    entity registry → config entry id → that entry's data.
+    """
+    inv = _inverter()
+    hass = _hass(_capable())
+    config_entry = MagicMock()
+    config_entry.data = entry_data
+    config_entry.options = {}
+    hass.config_entries.async_get_entry = MagicMock(return_value=config_entry)
+    base = SolisDriver(inv, default_battery_config(), 10_000, 10_000)
+    return SolisDispatchDriver(base, hass, dict(_ROLES)), hass
+
+
+@pytest.fixture
+def registry(monkeypatch):
+    """Point the driver's registry lookup at a stub entry with a config entry id."""
+    registry_entry = MagicMock()
+    registry_entry.config_entry_id = "solis_entry"
+    monkeypatch.setattr(
+        "custom_components.sun_sale.outbound.solis_dispatch_driver.er.async_get",
+        lambda _hass: MagicMock(async_get=MagicMock(return_value=registry_entry)),
+    )
+    return registry_entry
+
+
+@pytest.mark.asyncio
+async def test_dispatch_names_the_inverter_it_is_for(registry) -> None:
+    # solis_modbus rejects an unaddressed call outright once a second inverter
+    # is configured, and sunSale swallows the error — so a missing host is a
+    # silent no-write, not a loud failure (live: 2026-09-22, both installs).
+    drv, hass = _addressed({"host": "192.168.1.101", "port": 502, "slave": 1})
+    await drv.apply_mode(StorageMode.Discharge, drv.spec_for(StorageMode.Discharge))
+    _, payload = _dispatch_calls(hass)[0]
+    assert payload["host"] == "192.168.1.101"
+    assert payload["slave"] == 1
+
+
+@pytest.mark.asyncio
+async def test_release_is_addressed_too(registry) -> None:
+    drv, hass = _addressed({"host": "192.168.1.101", "slave": 3})
+    await drv.apply_mode(StorageMode.Discharge, drv.spec_for(StorageMode.Discharge))
+    await drv.apply_mode(StorageMode.SelfUse, drv.spec_for(StorageMode.SelfUse))
+    service, payload = _dispatch_calls(hass)[-1]
+    assert service == SERVICE_DISPATCH_STOP
+    assert payload == {"host": "192.168.1.101", "slave": 3}
+
+
+@pytest.mark.asyncio
+async def test_a_serial_inverter_is_addressed_by_its_port(registry) -> None:
+    # solis_modbus's controller uses the serial port as its ``host``, but the
+    # config entry stores it under ``serial_port``.
+    drv, hass = _addressed({"connection_type": "serial", "serial_port": "/dev/ttyUSB0"})
+    await drv.apply_mode(StorageMode.Discharge, drv.spec_for(StorageMode.Discharge))
+    _, payload = _dispatch_calls(hass)[0]
+    assert payload["host"] == "/dev/ttyUSB0"
+    assert payload["slave"] == 1
+
+
+@pytest.mark.asyncio
+async def test_an_unresolvable_entry_still_calls_unaddressed(registry) -> None:
+    # The single-inverter install the service accepts without a host: degrade
+    # to the old behaviour rather than refusing to dispatch at all.
+    drv, hass = _addressed({})
+    await drv.apply_mode(StorageMode.Discharge, drv.spec_for(StorageMode.Discharge))
+    _, payload = _dispatch_calls(hass)[0]
+    assert "host" not in payload

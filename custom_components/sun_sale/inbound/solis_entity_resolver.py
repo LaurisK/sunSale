@@ -291,6 +291,25 @@ _OPTIONAL_ROLES: frozenset[str] = frozenset({
 })
 
 
+# Second-choice sensors, scanned only for roles the primary map left unresolved.
+# A role lands here when its canonical entity carries ``hidden: True`` upstream:
+# that sets ``entity_registry_enabled_default = False``, so a solis_modbus config
+# entry created after the flag was added never registers an enabled entity for it
+# and the role resolves to nothing (older entries keep theirs as a registry
+# leftover, which is why this only bites on newly added inverters).
+_SENSOR_FALLBACKS: dict[str, tuple[str, str]] = {
+    # Storage Control word. The canonical readback is the hidden 43110 sensor;
+    # register 33132 mirrors the same word in the running-state frame, is
+    # enabled, and is polled FAST rather than SLOW — so where both exist the
+    # primary still wins, and where only this one does the mode stays decodable
+    # instead of reading ``unknown`` forever.
+    "storage_control_readback": (
+        "solis_modbus_inverter_storage_control_switching_value",
+        "storage_control_switching_value",
+    ),
+}
+
+
 def _matches(uid: str, entity_id: str, suffix: str, entity_id_tail: str) -> bool:
     """Return True when an entry's identifiers match ``suffix``/``entity_id_tail``.
 
@@ -377,6 +396,21 @@ def resolve_solis_entities(hass: HomeAssistant, config_entry_id: str) -> dict[st
             )
         ):
             result[_RC_ADJUSTMENT_SELECT_ROLE] = entity_id
+
+    # Fallback pass: roles whose canonical entity is disabled-by-default
+    # upstream. Scanned separately (rather than as extra patterns in the first
+    # pass) so the primary always wins regardless of registry iteration order.
+    for role, (suffix, tail) in _SENSOR_FALLBACKS.items():
+        if role in result:
+            continue
+        for entry in er.async_entries_for_config_entry(registry, config_entry_id):
+            if _matches(entry.unique_id or "", entry.entity_id or "", suffix, tail):
+                _LOGGER.debug(
+                    "solis_modbus resolver: %s resolved via fallback %s",
+                    role, entry.entity_id,
+                )
+                result[role] = entry.entity_id
+                break
 
     # Second pass: for writable roles the first pass may have resolved a
     # sensor.* readback entity (both domains share the same entity_id tail).
