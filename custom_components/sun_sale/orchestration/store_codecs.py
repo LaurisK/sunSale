@@ -52,6 +52,7 @@ from ..contract.models import (
     InverterModeHistory,
     MonthlyBillState,
     OnlineShapeState,
+    PredictedDay,
     PriceCurveHistory,
     PriceDayRecord,
     PriceEntry,
@@ -307,6 +308,8 @@ def _serialize_price_curve_history(history: PriceCurveHistory) -> dict:
                 # Four decimals is a hundredth of a cent per kWh — below any
                 # price the market quotes, and it keeps 24 floats a day cheap.
                 "curve": ([round(v, 4) for v in r.curve] if r.curve else None),
+                "pcurve": ([round(v, 4) for v in r.predicted_curve]
+                           if r.predicted_curve else None),
             }
             for r in history.records
         ],
@@ -320,6 +323,14 @@ def _serialize_price_curve_history(history: PriceCurveHistory) -> dict:
                 "cloud": v.cloud_coverage_pct,
             }
             for v in history.vintages
+        ],
+        "predictions": [
+            {
+                "day": p.day.isoformat(),
+                "lead": p.lead_days,
+                "curve": [round(v, 4) for v in p.curve],
+            }
+            for p in history.predictions
         ],
         "shape": _serialize_shape_state(history.shape_state),
     }
@@ -392,6 +403,7 @@ def _deserialize_price_curve_history(d: dict) -> PriceCurveHistory:
                 negative_generation_kwh=_opt_float(r.get("ngen")),
                 cloud_coverage_pct=_opt_float(r.get("cloud")),
                 curve=_opt_curve(r.get("curve")),
+                predicted_curve=_opt_curve(r.get("pcurve")),
             ))
         except (KeyError, ValueError, TypeError):
             continue
@@ -411,9 +423,24 @@ def _deserialize_price_curve_history(d: dict) -> PriceCurveHistory:
         except (KeyError, ValueError, TypeError):
             continue
     vintages.sort(key=lambda v: v.day)
+    predictions: list[PredictedDay] = []
+    for entry in d.get("predictions", []):
+        curve = _opt_curve(entry.get("curve"))
+        if curve is None:
+            continue
+        try:
+            predictions.append(PredictedDay(
+                day=date.fromisoformat(entry["day"]),
+                lead_days=int(entry.get("lead", 1)),
+                curve=curve,
+            ))
+        except (KeyError, ValueError, TypeError):
+            continue
+    predictions.sort(key=lambda p: p.day)
     return PriceCurveHistory(
         records=tuple(records),
         vintages=tuple(vintages),
+        predictions=tuple(predictions),
         shape_state=_deserialize_shape_state(d.get("shape")),
     )
 

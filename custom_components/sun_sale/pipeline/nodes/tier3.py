@@ -237,4 +237,5 @@ class PriceForecastNode(DagNode):
             neighbour_share=online_shape.neighbour_share_fn(
                 ctx.config.holiday_country, holiday_predicate,
             ),
+            tariff=ctx.config.tariff,
         )

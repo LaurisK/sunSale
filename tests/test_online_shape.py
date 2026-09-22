@@ -272,3 +272,119 @@ def test_a_flat_forecast_still_appears_without_weather():
         longitude=23.9,
     )
     assert len(forecast.days) == 7
+
+
+def _trained_history(days: int = 60):
+    """Return a history the engine has learned from, with curves on record."""
+    curves = {
+        _MONDAY + timedelta(days=offset): _curve(0.10 + offset / 200)
+        for offset in range(days)
+    }
+    return price_backfill.build_history(
+        curves, {}, UTC, 54.9, 23.9, negative_threshold_eur_kwh=0.02,
+    )
+
+
+def test_the_forecast_publishes_an_hourly_curve_for_unsettled_days():
+    """The predicted day is drawable, not just summarised into four numbers."""
+    from custom_components.sun_sale.pipeline import price_forecast as pf
+    from tests.test_price_forecast import _generation, _price_series
+
+    history = _trained_history()
+    forecast = pf.compute_price_forecast(
+        price_series=_price_series(),
+        history=history,
+        weather=None,
+        generation=_generation(),
+        negative_threshold_eur_kwh=0.02,
+        now=datetime(2026, 8, 1, 9, tzinfo=UTC),
+        local_tz=UTC,
+        latitude=54.9, longitude=23.9,
+    )
+    from custom_components.sun_sale.contract.models import PRICE_STAT_SOURCE_MODEL
+    modelled = [d for d in forecast.days if d.source == PRICE_STAT_SOURCE_MODEL]
+    assert modelled
+    assert len(forecast.predicted_slots) == 24 * len(modelled)
+    assert forecast.predicted_slots == tuple(
+        sorted(forecast.predicted_slots, key=lambda p: p.start)
+    )
+    # Without a tariff the buy and sell repeat the spot rather than inventing one.
+    first = forecast.predicted_slots[0]
+    assert first.buy_eur_kwh == first.spot_eur_kwh == first.sell_eur_kwh
+
+
+def test_a_prediction_is_frozen_once_and_settles_into_the_record():
+    """The error published later is what the forecast said at the time."""
+    from custom_components.sun_sale.contract.models import PriceCurvePoint, PriceForecast
+    from custom_components.sun_sale.pipeline import price_forecast as pf
+
+    today = _MONDAY + timedelta(days=60)
+    target = today + timedelta(days=1)
+    curve = _curve(0.30)
+    forecast = PriceForecast(predicted_slots=tuple(
+        PriceCurvePoint(
+            start=datetime.combine(target, datetime.min.time(), tzinfo=UTC)
+            + timedelta(hours=hour),
+            spot_eur_kwh=curve[hour], buy_eur_kwh=curve[hour], sell_eur_kwh=curve[hour],
+        )
+        for hour in range(24)
+    ))
+    history = _trained_history()
+    frozen = pf.capture_prediction(history, forecast, today, UTC)
+    assert frozen is not None
+    assert frozen.prediction_by_day()[target].curve == pytest.approx(curve)
+    # A second cycle on the same day must not revise it.
+    assert pf.capture_prediction(frozen, forecast, today, UTC) is None
+
+
+def test_the_error_series_covers_the_days_that_have_both_curves():
+    """Once a day settles, its hourly error is published for the chart."""
+    from custom_components.sun_sale.contract.models import PriceDayRecord, PriceCurveHistory
+    from custom_components.sun_sale.pipeline import price_forecast as pf
+    from tests.test_price_forecast import _generation, _price_series
+
+    history = _trained_history()
+    yesterday = datetime(2026, 8, 1, tzinfo=UTC).date() - timedelta(days=1)
+    settled = _curve(0.20)
+    predicted = _curve(0.18)
+    record = PriceDayRecord(
+        day=yesterday,
+        day_class=history.records[0].day_class,
+        peak_1h_eur_kwh=max(settled), peak_4h_eur_kwh=max(settled),
+        trough_1h_eur_kwh=min(settled), trough_4h_eur_kwh=min(settled),
+        negative_hours=0.0, mean_eur_kwh=sum(settled) / 24,
+        curve=tuple(settled), predicted_curve=tuple(predicted),
+    )
+    history = PriceCurveHistory(
+        records=(*history.records, record),
+        shape_state=history.shape_state,
+    )
+    forecast = pf.compute_price_forecast(
+        price_series=_price_series(),
+        history=history,
+        weather=None,
+        generation=_generation(),
+        negative_threshold_eur_kwh=0.02,
+        now=datetime(2026, 8, 1, 9, tzinfo=UTC),
+        local_tz=UTC,
+        latitude=54.9, longitude=23.9,
+    )
+    errors = [e for e in forecast.error_slots if e.start.date() == yesterday]
+    assert len(errors) == 24
+    assert all(e.error_eur_kwh == pytest.approx(e.actual_eur_kwh - e.forecast_eur_kwh)
+               for e in errors)
+    assert errors[0].error_eur_kwh == pytest.approx(0.02)
+
+
+def test_predictions_survive_the_store_round_trip():
+    """A frozen prediction outlives a restart, or the error is lost with it."""
+    from custom_components.sun_sale.contract.models import PredictedDay, PriceCurveHistory
+
+    frozen = PredictedDay(day=_MONDAY, lead_days=1, curve=tuple(_curve(0.11)))
+    restored = store_codecs._deserialize_price_curve_history(
+        store_codecs._serialize_price_curve_history(
+            PriceCurveHistory(predictions=(frozen,))
+        )
+    )
+    assert restored.predictions[0].curve == pytest.approx(frozen.curve)
+    assert restored.predictions[0].lead_days == 1

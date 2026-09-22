@@ -36,6 +36,16 @@ Any behavior-affecting change bumps the `version` in
   market or a failed request leaves the engine to learn as days settle. This is
   the only place the integration talks to the internet.
 
+- **The dashboard draws the predicted day-ahead price, and its error once the
+  auction settles.** While tomorrow is unpriced, the engine's own hourly curve
+  appears as dashed buy and sell lines picking up where the settled ones stop
+  (`forecast_price_slots`, tariff already applied). Once the auction publishes,
+  each hour gets a translucent green/red rect spanning forecast → actual
+  (`price_error_slots`), read exactly like the solar forecast error above it.
+  The prediction is frozen when it is made and never re-run in hindsight, so
+  the error shown is the forecast that was actually published. Both series are
+  for visualisation only — nothing in the pipeline reads either.
+
 ### Removed
 - **The band-by-band ridge model and its skill gate are gone.** Fitting four
   rank statistics independently, then repairing the contradictions and gating

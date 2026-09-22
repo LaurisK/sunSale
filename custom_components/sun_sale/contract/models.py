@@ -899,6 +899,9 @@ class PriceDayRecord:
     # online shape engine trains on these; records written before it existed
     # carry None and are skipped rather than migrated.
     curve: tuple[float, ...] | None = None
+    # What the engine said this day would look like, frozen a day ahead. Kept
+    # beside the settled curve so the two can be drawn against each other.
+    predicted_curve: tuple[float, ...] | None = None
     # Daily weather as it was forecast a day ahead, frozen at capture time so
     # the engine trains on the kind of input it is served.
     cloud_coverage_pct: float | None = None
@@ -923,6 +926,18 @@ class DayFeatureVintage:
 
 
 @dataclass(frozen=True)
+class PredictedDay:
+    """A prediction frozen at issue time, waiting for its day to settle.
+
+    Captured once per target day so the error published afterwards is what the
+    forecast actually said at the time, not a hindsight re-run.
+    """
+    day: date
+    lead_days: int
+    curve: tuple[float, ...] = ()
+
+
+@dataclass(frozen=True)
 class OnlineShapeState:
     """Learned state of the online shape forecaster.
 
@@ -944,10 +959,16 @@ class PriceCurveHistory:
     """Primary data: rolling settled-day statistics plus pending feature vintages."""
     records: tuple[PriceDayRecord, ...] = ()      # sorted by day ascending
     vintages: tuple[DayFeatureVintage, ...] = ()  # captured, not yet settled
+    # Predictions frozen at issue time, consumed when their day settles.
+    predictions: tuple[PredictedDay, ...] = ()
     # Learned state of the online shape engine. Kept beside the records rather
     # than recomputed each start: the records are what it was trained on, and
     # replaying them is only needed when this is absent.
     shape_state: OnlineShapeState | None = None
+
+    def prediction_by_day(self) -> dict[date, PredictedDay]:
+        """Return the frozen predictions keyed by target local date."""
+        return {p.day: p for p in self.predictions}
 
     def by_day(self) -> dict[date, PriceDayRecord]:
         """Return the records keyed by local date."""
@@ -1035,6 +1056,34 @@ class PriceDayStats:
 
 
 @dataclass(frozen=True)
+class PriceCurvePoint:
+    """One hour of predicted price, for drawing beside the settled ones.
+
+    Carries the tariff-applied buy and sell alongside the raw spot so the
+    dashboard can continue its own buy/sell lines past the auction edge
+    without re-deriving the formula.
+    """
+    start: datetime
+    spot_eur_kwh: float
+    buy_eur_kwh: float
+    sell_eur_kwh: float
+
+
+@dataclass(frozen=True)
+class PriceErrorPoint:
+    """One hour of settled price against what was predicted for it.
+
+    ``error_eur_kwh`` is ``actual − forecast``, the same sign convention the
+    generation forecast error uses: positive means the day came in dearer than
+    the forecast said.
+    """
+    start: datetime
+    forecast_eur_kwh: float
+    actual_eur_kwh: float
+    error_eur_kwh: float
+
+
+@dataclass(frozen=True)
 class PriceForecast:
     """Secondary data: week-ahead price statistics, one entry per local day.
 
@@ -1046,6 +1095,11 @@ class PriceForecast:
     computed_at: datetime | None = None
     history_days: int = 0                  # settled days available for fitting
     shape_days: int = 0                    # settled days the shape engine has learned from
+    # Hourly predicted prices for the days the auction has not settled, and the
+    # hourly error for recent days it has. Published for the dashboard only —
+    # nothing in the pipeline reads either.
+    predicted_slots: tuple[PriceCurvePoint, ...] = ()
+    error_slots: tuple[PriceErrorPoint, ...] = ()
 
     def by_day(self) -> dict[date, PriceDayStats]:
         """Return the per-day statistics keyed by local date."""

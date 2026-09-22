@@ -785,6 +785,29 @@ class DashboardSensor(_PanelPayloadSensor):
             for s in (err.slots if err else ())
         ]
 
+        # The predicted price curve for the days the auction has not settled,
+        # and the hourly error for the days it has. Both are drawn by the panel
+        # and read by nothing else.
+        price_forecast: PriceForecast | None = self.coordinator.data.get("price_forecast")
+        forecast_price_slots = [
+            {
+                "t": int(point.start.timestamp() * 1000),
+                "spot_eur_kwh": round(point.spot_eur_kwh, 4),
+                "buy_eur_kwh": round(point.buy_eur_kwh, 4),
+                "sell_eur_kwh": round(point.sell_eur_kwh, 4),
+            }
+            for point in (price_forecast.predicted_slots if price_forecast else ())
+        ]
+        price_error_slots = [
+            {
+                "t": int(point.start.timestamp() * 1000),
+                "forecast_eur_kwh": round(point.forecast_eur_kwh, 4),
+                "actual_eur_kwh": round(point.actual_eur_kwh, 4),
+                "error_eur_kwh": round(point.error_eur_kwh, 4),
+            }
+            for point in (price_forecast.error_slots if price_forecast else ())
+        ]
+
         status = self.coordinator.data.get("battery_status")
         estimated_capacity = self.coordinator.data.get("estimated_capacity")
         # The dashboard's total/remaining use the *learned* (estimated) usable
@@ -919,6 +942,8 @@ class DashboardSensor(_PanelPayloadSensor):
             "currency": self._currency,
             "forecast_slots": _serialize_forecast_slots(self.coordinator.data.get("forecast")),
             "forecast_error_slots": forecast_error_slots,
+            "forecast_price_slots": forecast_price_slots,
+            "price_error_slots": price_error_slots,
             "observed_power_slots": _serialize_observed_power(
                 self.coordinator.data.get("observed_consumption"),
                 self.coordinator.data.get("observed_grid"),

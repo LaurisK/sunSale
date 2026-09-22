@@ -25,7 +25,7 @@ from __future__ import annotations
 
 from collections.abc import Callable, Sequence
 from dataclasses import replace
-from datetime import UTC, date, datetime, timedelta, tzinfo
+from datetime import UTC, date, datetime, time, timedelta, tzinfo
 
 from ..contract.const import (
     ENERGY_DYNAMIC,
@@ -34,6 +34,9 @@ from ..contract.const import (
     PRICE_FORECAST_VINTAGE_LEAD_DAYS,
 )
 from ..contract.models import (
+    PredictedDay,
+    PriceCurvePoint,
+    PriceErrorPoint,
     PRICE_STAT_SOURCE_ACTUAL,
     PRICE_STAT_SOURCE_MODEL,
     BaseLoadProfile,
@@ -49,6 +52,7 @@ from ..contract.models import (
     WeatherForecastData,
 )
 from . import online_shape
+from . import tariff as tariff_module
 from .profitability import classify_day
 
 # Band widths, in hours, behind the 1 h / 4 h statistics. Each band is the
@@ -456,6 +460,7 @@ def compute_price_forecast(
     longitude: float | None = None,
     is_holiday: Callable[[date], bool] | None = None,
     neighbour_share: Callable[[date], float] | None = None,
+    tariff: TariffConfig | None = None,
 ) -> PriceForecast:
     """Build the week-ahead price forecast.
 
@@ -486,6 +491,8 @@ def compute_price_forecast(
         is_holiday: Local public-holiday predicate.
         neighbour_share: Returns the share of neighbouring bidding zones on
             holiday for a local date.
+        tariff: User tariff, used only to publish the predicted buy and sell
+            prices alongside the predicted spot.
 
     Returns:
         PriceForecast covering ``horizon_days`` local days; empty when there is
@@ -511,6 +518,7 @@ def compute_price_forecast(
     solar_by_day = _forecast_solar_by_day(generation, today)
 
     days: list[PriceDayStats] = []
+    predicted_curves: dict[date, list[float]] = {}
     for horizon in range(horizon_days):
         day = today + timedelta(days=horizon)
         day_class = classify_day(day)
@@ -576,6 +584,7 @@ def compute_price_forecast(
         if engine_curve is None:
             continue
 
+        predicted_curves[day] = engine_curve
         stats = _modelled_day_from_curve(engine_curve, negative_threshold_eur_kwh)
         peak_1h = stats["peak_1h_eur_kwh"]
         peak_4h = stats["peak_4h_eur_kwh"]
@@ -614,7 +623,86 @@ def compute_price_forecast(
         computed_at=now,
         history_days=len(records),
         shape_days=shape_state.days_seen if shape_state is not None else 0,
+        predicted_slots=_predicted_slots(predicted_curves, tz, tariff, is_holiday),
+        error_slots=_error_slots(records, tz, today),
     )
+
+
+def _predicted_slots(
+    curves: dict[date, list[float]],
+    local_tz: tzinfo,
+    tariff: TariffConfig | None,
+    is_holiday: Callable[[date], bool] | None,
+) -> tuple[PriceCurvePoint, ...]:
+    """Flatten the predicted day curves into an hourly series for the dashboard.
+
+    Buy and sell are applied here rather than left to the consumer: the tariff
+    formula knows about seasons, day types and time-of-use bands, and a chart
+    drawing a predicted buy line beside a settled one must use the same rules
+    for both.
+
+    Args:
+        curves: Predicted spot prices per local day, 24 values each.
+        local_tz: Local timezone.
+        tariff: User tariff; without it only the spot is meaningful and buy and
+            sell repeat it.
+        is_holiday: Public-holiday predicate for the tariff's holiday bands.
+
+    Returns:
+        Hourly points, ascending.
+    """
+    out: list[PriceCurvePoint] = []
+    for day in sorted(curves):
+        for hour, spot in enumerate(curves[day]):
+            start = datetime.combine(day, time(hour=hour), tzinfo=local_tz)
+            if tariff is None:
+                out.append(PriceCurvePoint(start, spot, spot, spot))
+                continue
+            out.append(PriceCurvePoint(
+                start=start,
+                spot_eur_kwh=spot,
+                buy_eur_kwh=tariff_module.buy_price(spot, tariff, start, is_holiday),
+                sell_eur_kwh=tariff_module.sell_price(spot, tariff, start,
+                                                      is_holiday=is_holiday),
+            ))
+    return tuple(out)
+
+
+def _error_slots(
+    records: Sequence[PriceDayRecord],
+    local_tz: tzinfo,
+    today: date,
+    days_back: int = 2,
+) -> tuple[PriceErrorPoint, ...]:
+    """Return the hourly forecast error for the days that have both curves.
+
+    Only the days the dashboard's own window covers are published — the store
+    keeps far more, but nothing draws them.
+
+    Args:
+        records: Settled history.
+        local_tz: Local timezone.
+        today: Local date of the cycle.
+        days_back: How many days before today to include.
+
+    Returns:
+        Hourly points, ascending.
+    """
+    cutoff = today - timedelta(days=days_back)
+    out: list[PriceErrorPoint] = []
+    for record in records:
+        if record.day < cutoff or not record.curve or not record.predicted_curve:
+            continue
+        for hour, (actual, forecast) in enumerate(
+            zip(record.curve, record.predicted_curve)
+        ):
+            out.append(PriceErrorPoint(
+                start=datetime.combine(record.day, time(hour=hour), tzinfo=local_tz),
+                forecast_eur_kwh=forecast,
+                actual_eur_kwh=actual,
+                error_eur_kwh=actual - forecast,
+            ))
+    return tuple(out)
 
 
 def _forecast_solar_by_day(
@@ -696,6 +784,53 @@ def capture_feature_vintage(
     return PriceCurveHistory(records=history.records, vintages=tuple(vintages))
 
 
+def capture_prediction(
+    history: PriceCurveHistory,
+    forecast: PriceForecast | None,
+    today: date,
+    local_tz: tzinfo | None,
+    lead_days: int = 1,
+) -> PriceCurveHistory | None:
+    """Freeze what the engine says about the day ``lead_days`` ahead.
+
+    Stored once per target day and never revised, so the error published after
+    the auction settles is what the forecast actually said at the time. This is
+    the same contract ``capture_feature_vintage`` keeps for the features.
+
+    Args:
+        history: Current history.
+        forecast: This cycle's forecast, or None.
+        today: Local date of the cycle.
+        local_tz: Local timezone.
+        lead_days: Lead to capture at.
+
+    Returns:
+        Updated history, or None when nothing changed.
+    """
+    if forecast is None or not forecast.predicted_slots:
+        return None
+    target = today + timedelta(days=lead_days)
+    if target in history.prediction_by_day():
+        return None
+    tz = local_tz or UTC
+    by_hour = {
+        point.start.astimezone(tz).hour: point.spot_eur_kwh
+        for point in forecast.predicted_slots
+        if point.start.astimezone(tz).date() == target
+    }
+    if len(by_hour) != online_shape.HOURS:
+        return None
+    frozen = PredictedDay(
+        day=target,
+        lead_days=lead_days,
+        curve=tuple(by_hour[hour] for hour in range(online_shape.HOURS)),
+    )
+    return replace(
+        history,
+        predictions=tuple(sorted([*history.predictions, frozen], key=lambda p: p.day)),
+    )
+
+
 def settle_days(
     history: PriceCurveHistory,
     price_series: PriceSeries | None,
@@ -744,6 +879,7 @@ def settle_days(
 
     known = history.by_day()
     vintages = history.vintage_by_day()
+    predictions = history.prediction_by_day()
     added: list[PriceDayRecord] = []
     for offset in (1, 0):
         day = today - timedelta(days=offset)
@@ -755,6 +891,9 @@ def settle_days(
         )
         if record is None:
             continue
+        predicted = predictions.get(day)
+        if predicted is not None and len(predicted.curve) == online_shape.HOURS:
+            record = replace(record, predicted_curve=predicted.curve)
         vintage = vintages.get(day)
         if vintage is not None:
             record = replace(
@@ -772,7 +911,11 @@ def settle_days(
     # Vintages are consumed once their day settles, and dropped if their day
     # passed without ever settling, so the list cannot grow without bound.
     kept_vintages = tuple(v for v in history.vintages if v.day > today)
-    if not added and len(kept_vintages) == len(history.vintages):
+    # A prediction is consumed by the day it was made for, and dropped if that
+    # day passed without settling, so the list cannot grow without bound.
+    kept_predictions = tuple(p for p in history.predictions if p.day > today)
+    if (not added and len(kept_vintages) == len(history.vintages)
+            and len(kept_predictions) == len(history.predictions)):
         return None
 
     cutoff = today - timedelta(days=retention_days)
@@ -783,6 +926,7 @@ def settle_days(
     updated = PriceCurveHistory(
         records=tuple(records),
         vintages=kept_vintages,
+        predictions=kept_predictions,
         shape_state=history.shape_state,
     )
     return replace(

@@ -14,6 +14,12 @@
  * Left Y axis — currency/kWh (label follows the configured CONF_CURRENCY):
  *   Buy price   amber  solid stepline  — past history + future from pricing sensor (one continuous line)
  *   Sell price  coral  solid stepline  — past history + future from pricing sensor (one continuous line)
+ *   Buy/Sell (forecast)  same hues, dashed — the shape engine's own curve for the
+ *     days the day-ahead auction has not settled. Starts where the solid line
+ *     stops; never merged into it. Data: forecast_price_slots.
+ *   Price forecast error — translucent rect per settled hour spanning forecast
+ *     → actual: green when the hour cleared dearer than predicted, red when
+ *     cheaper. Same reading as the generation error. Data: price_error_slots.
  *
  * Right Y axis — kWh/slot (15-min):
  *   Solar forecast — vertical bar per 15-min slot (scalar y = forecast_kwh), grey 25 % opacity.
@@ -1704,6 +1710,44 @@
       };
     }
 
+    // ── Data: predicted hourly prices past the auction edge ───────────────────
+    // The shape engine's own curve for days the day-ahead auction has not
+    // settled. Drawn dashed beside the real lines and never merged into them:
+    // it is a forecast, and the chart should say so.
+
+    _readForecastPrices(dashAttrs, windowStart, windowEnd, afterMs) {
+      const buy = [], sell = [];
+      for (const s of (dashAttrs?.forecast_price_slots || [])) {
+        if (typeof s?.t !== 'number') continue;
+        if (s.t < windowStart || s.t > windowEnd) continue;
+        // Only past the last settled price: where both exist, the real one wins.
+        if (s.t <= afterMs) continue;
+        if (typeof s.buy_eur_kwh  === 'number') buy.push([s.t, s.buy_eur_kwh]);
+        if (typeof s.sell_eur_kwh === 'number') sell.push([s.t, s.sell_eur_kwh]);
+      }
+      return {
+        buy:  buy.sort((a, b)  => a[0] - b[0]),
+        sell: sell.sort((a, b) => a[0] - b[0]),
+      };
+    }
+
+    // ── Data: hourly price forecast error, once the auction has settled ───────
+    // Returns [{x, forecast, actual, error}] with error = actual - forecast, the
+    // same sign convention the generation error uses.
+
+    _readPriceErrors(dashAttrs, windowStart, windowEnd) {
+      const out = [];
+      for (const s of (dashAttrs?.price_error_slots || [])) {
+        if (typeof s?.t !== 'number') continue;
+        if (s.t < windowStart || s.t > windowEnd) continue;
+        const forecast = Number(s.forecast_eur_kwh);
+        const actual   = Number(s.actual_eur_kwh);
+        if (!isFinite(forecast) || !isFinite(actual)) continue;
+        out.push({ x: s.t, forecast, actual, error: actual - forecast });
+      }
+      return out.sort((a, b) => a.x - b.x);
+    }
+
     // ── Data: 15-min forecast kWh slots from dashboard sensor ─────────────────
 
     _buildForecastSlots(dashAttrs, windowStart, windowEnd) {
@@ -1924,6 +1968,19 @@
       const buyData  = _merge(history.buyPrice,  pricingSlots.buy,  windowStart);
       const sellData = _merge(history.sellPrice, pricingSlots.sell, windowStart);
 
+      // Predicted prices start where the settled ones stop, so the dashed line
+      // picks up exactly at the auction edge instead of overlapping it.
+      const lastPriced = buyData.length ? buyData[buyData.length - 1][0] : windowStart;
+      const forecastPrices = this._readForecastPrices(
+        dashAttrs, windowStart, windowEnd, lastPriced,
+      );
+      // Join the dashed line to the solid one so there is no visual gap.
+      if (forecastPrices.buy.length && buyData.length)
+        forecastPrices.buy.unshift(buyData[buyData.length - 1]);
+      if (forecastPrices.sell.length && sellData.length)
+        forecastPrices.sell.unshift(sellData[sellData.length - 1]);
+      const priceErrors = this._readPriceErrors(dashAttrs, windowStart, windowEnd);
+
       if (!buyData.length && !sellData.length) {
         this._setStatus('No price data — waiting for sunSale coordinator to run.');
         return;
@@ -2134,6 +2191,30 @@
         };
       };
 
+      // Price-forecast error: one rect per settled hour, spanning from what
+      // the engine predicted to what the auction actually cleared. Green when
+      // the day came in dearer than forecast, red when cheaper — the same
+      // reading as the generation error above, on the price axis.
+      const HOUR_MS = 3600 * 1000;
+      const renderPriceErrorRect = (params, api) => {
+        const slot = priceErrors[params.dataIndex];
+        if (!slot) return;
+        const xLeft  = api.coord([slot.x,           0])[0];
+        const xRight = api.coord([slot.x + HOUR_MS, 0])[0];
+        const yUpper = api.coord([slot.x, Math.max(slot.forecast, slot.actual)])[1];
+        const yLower = api.coord([slot.x, Math.min(slot.forecast, slot.actual)])[1];
+        return {
+          type: 'rect',
+          shape: {
+            x: xLeft,
+            y: yUpper,
+            width: Math.max(1, xRight - xLeft),
+            height: Math.max(1, yLower - yUpper),
+          },
+          style: { fill: slot.error > 0 ? '#66bb6a' : '#ef5350', opacity: 0.30 },
+        };
+      };
+
       // Inverter-mode strip: a thin lane above the plot area that paints each
       // (history + plan) band as a solid block, so mode is always visible even
       // for slots whose forecast is zero (e.g. night, no expected generation).
@@ -2220,6 +2301,37 @@
           itemStyle:  { color: '#ff7043' },
           data:       sellData,
           z:          4,
+        },
+        {
+          name:       'Buy price (forecast)',
+          type:       'line',
+          yAxisIndex: 0,
+          step:       'end',
+          showSymbol: false,
+          lineStyle:  { color: '#ffb300', width: 2, type: 'dashed', opacity: 0.85 },
+          itemStyle:  { color: '#ffb300' },
+          data:       forecastPrices.buy,
+          z:          3,
+        },
+        {
+          name:       'Sell price (forecast)',
+          type:       'line',
+          yAxisIndex: 0,
+          step:       'end',
+          showSymbol: false,
+          lineStyle:  { color: '#ff7043', width: 2, type: 'dashed', opacity: 0.85 },
+          itemStyle:  { color: '#ff7043' },
+          data:       forecastPrices.sell,
+          z:          3,
+        },
+        {
+          name:        'Price forecast error',
+          type:        'custom',
+          yAxisIndex:  0,
+          renderItem:  renderPriceErrorRect,
+          data:        priceErrors.map(s => [s.x, s.actual]),
+          silent:      true,
+          z:           2,
         },
         {
           name:       'Net billing',
@@ -2354,7 +2466,9 @@
       // so reserve the top margin dynamically (top already includes the ~16 px
       // inverter-mode strip lane — see renderModeStripBlock) and grow the
       // canvas height to match, keeping the legend out of the plot on mobile.
-      const legendLabels = ['Solar forecast', 'Buy price', 'Sell price', 'Net billing', 'Grid import', 'Grid export', 'Battery SOC', 'SOC forecast', 'Consumption', 'Grid import (kW)', 'Grid export (kW)', 'Inverter losses'];
+      const legendLabels = ['Solar forecast', 'Buy price', 'Sell price',
+        'Buy price (forecast)', 'Sell price (forecast)', 'Price forecast error',
+        'Net billing', 'Grid import', 'Grid export', 'Battery SOC', 'SOC forecast', 'Consumption', 'Grid import (kW)', 'Grid export (kW)', 'Inverter losses'];
       this._chartLegendLabels = legendLabels;
       const layout = this._chartLayout(legendLabels);
 

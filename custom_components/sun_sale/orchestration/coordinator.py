@@ -1596,6 +1596,12 @@ class SunSaleCoordinator(DataUpdateCoordinator):
         if updated is not None:
             history = updated
 
+        frozen = price_forecast_module.capture_prediction(
+            history, secondary.get(PriceForecast), today_local, local_tz,
+        )
+        if frozen is not None:
+            history = frozen
+
         config = self._sun_sale_config
         is_holiday = holiday_predicate(config.holiday_country)
         settled = price_forecast_module.settle_days(
@@ -1617,7 +1623,7 @@ class SunSaleCoordinator(DataUpdateCoordinator):
         if settled is not None:
             history = settled
 
-        if updated is not None or settled is not None:
+        if updated is not None or frozen is not None or settled is not None:
             await self._price_curve_store.save(history)
 
     async def _async_backfill_price_history(self) -> None:
