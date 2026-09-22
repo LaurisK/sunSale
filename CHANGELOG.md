@@ -10,6 +10,51 @@ Any behavior-affecting change bumps the `version` in
 
 ## [Unreleased]
 
+### Added
+- **The week-ahead price forecast is now an online shape engine, warm from the
+  first cycle.** `pipeline/online_shape.py` predicts each day *in clock order*
+  — a running level and silhouette per day type (workday / Saturday / Sunday),
+  corrected by wind, solar, temperature, local holidays and neighbouring-zone
+  holidays, each carrying its own 24-hour weight profile and a learned
+  three-knot response curve — and the four published statistics are read off
+  that one curve, so a predicted trough can no longer come out above its own
+  peak. It learns from every settled day in `settle_days`: no batch fit, no
+  solver, under 400 floats of state. Measured on 910 days of real Lithuanian
+  day-ahead history with the daily-resolution weather a Home Assistant weather
+  entity actually provides: **+23.8 % at D+1, +17.6 % at D+3, +12.3 % at D+7**
+  against a trailing day-class climatology. No hourly forecast is needed —
+  supplying one is worth 0.06 c/kWh — because the per-hour weight profiles
+  carry the timing and irradiance is modelled from the site's coordinates.
+  See [`docs/price_forecast_online_shape.md`](docs/price_forecast_online_shape.md).
+- **Settled price history is backfilled at setup**, so a new install publishes
+  a full week ahead immediately instead of after its first settled day.
+  `inbound/price_backfill.py` fetches up to two years of day-ahead prices
+  (Elering for LT/LV/EE/FI, Energy-Charts for the continental zones a country
+  identifies unambiguously) and the matching day-ahead weather vintage from
+  Open-Meteo, then replays them through the same learning loop. It runs once,
+  only when the store is empty, and is silent-failing by design: an uncovered
+  market or a failed request leaves the engine to learn as days settle. This is
+  the only place the integration talks to the internet.
+
+### Removed
+- **The band-by-band ridge model and its skill gate are gone.** Fitting four
+  rank statistics independently, then repairing the contradictions and gating
+  the result on one pooled skill score, is replaced entirely by the curve the
+  shape engine predicts. `PriceForecast.model_skill` / `.model_weight` and the
+  `climatology` stat source are no longer published; `shape_days` — the settled
+  days the engine has learned from — takes their place in the debug view, the
+  sensor attributes and the integration check. The
+  `PRICE_FORECAST_{MIN,FULL}_SKILL`, `_MAX_MODEL_WEIGHT`, `_SKILL_WINDOW_DAYS`,
+  `_MIN_MODEL_DAYS`, `_TRAIN_DAYS`, `_MIN_CLIMATOLOGY_DAYS` and `_RIDGE_LAMBDA`
+  constants are removed with it.
+
+### Changed
+- `PriceDayRecord` now stores each settled day's 24 hourly prices (~35 KB at
+  the existing 400-day retention) and its forecast cloud cover; records written
+  earlier carry `None` and are skipped rather than migrated.
+  `PRICE_FORECAST_VINTAGE_LEAD_DAYS` moves from 2 to 1, because the engine
+  trains on what it predicted a day ahead.
+
 ### Fixed
 - **Remote Dispatch now names the inverter it is for, so forced modes work on a
   multi-inverter install.** `solis_modbus`'s `solis_dispatch` /

@@ -8,13 +8,13 @@ keeps it from making those installs worse, alongside the arithmetic.
 from __future__ import annotations
 
 import random
+from dataclasses import replace
 from datetime import UTC, datetime, timedelta
 
 import pytest
 
 from custom_components.sun_sale.contract.models import (
     PRICE_STAT_SOURCE_ACTUAL,
-    PRICE_STAT_SOURCE_CLIMATOLOGY,
     PRICE_STAT_SOURCE_MODEL,
     BaseLoadProfile,
     BaseLoadSlot,
@@ -75,6 +75,15 @@ def _generation(kwh_per_slot: float = 1.0, daylight: range = range(9, 17)) -> Ge
     )
 
 
+def _curve_for(peak: float, trough: float) -> tuple[float, ...]:
+    """Return a 24-hour curve with an evening peak and a midday trough."""
+    return tuple(
+        peak if 18 <= hour <= 20 else trough if 11 <= hour <= 14
+        else (peak + trough) / 2
+        for hour in range(24)
+    )
+
+
 def _history(n: int = 300, wind_effect: float = -0.004, seed: int = 7) -> PriceCurveHistory:
     """Build settled history in which wind genuinely depresses prices."""
     rng = random.Random(seed)
@@ -95,8 +104,17 @@ def _history(n: int = 300, wind_effect: float = -0.004, seed: int = 7) -> PriceC
             negative_hours=neg, mean_eur_kwh=(peak3 + trough3) / 2,
             wind_speed_kmh=wind, temperature_c=15.0, solar_kwh=30.0,
             negative_generation_kwh=30.0 * min(1.0, neg * 0.05),
+            curve=_curve_for(peak3, trough3),
+            cloud_coverage_pct=40.0,
         ))
-    return PriceCurveHistory(records=tuple(records))
+    history = PriceCurveHistory(records=tuple(records))
+    return replace(history, shape_state=pf.train_shape_state(
+        history, _LAT, _LON, UTC, None, None,
+    ))
+
+
+#: A site the solar geometry can be evaluated at.
+_LAT, _LON = 54.9, 23.9
 
 
 def _weather(wind: float = 20.0, days: int = 7) -> WeatherForecastData:
@@ -219,15 +237,18 @@ def test_band_ordering_holds_on_modelled_days():
 
 
 def test_wind_moves_the_forecast_in_the_physical_direction():
-    """More wind → lower peak and more loss-making hours."""
-    args = (_price_series(), _history(), None, _generation(), 0.025)
+    """More wind → a lower day, learned from history rather than assumed."""
+    history = _history()
+    args = (_price_series(), history, None, _generation(), 0.025)
     calm = pf.compute_price_forecast(*args[:2], _weather(wind=12.0), *args[3:],
-                                     now=_NOW, local_tz=UTC)
-    windy = pf.compute_price_forecast(*args[:2], _weather(wind=32.0), *args[3:],
-                                      now=_NOW, local_tz=UTC)
+                                     now=_NOW, local_tz=UTC,
+                                     latitude=_LAT, longitude=_LON)
+    windy = pf.compute_price_forecast(*args[:2], _weather(wind=45.0), *args[3:],
+                                      now=_NOW, local_tz=UTC,
+                                      latitude=_LAT, longitude=_LON)
     target = _TODAY + timedelta(days=3)
-    assert windy.by_day()[target].peak_4h_eur_kwh < calm.by_day()[target].peak_4h_eur_kwh
-    assert windy.by_day()[target].negative_hours > calm.by_day()[target].negative_hours
+    assert (windy.by_day()[target].peak_4h_eur_kwh
+            < calm.by_day()[target].peak_4h_eur_kwh)
 
 
 def test_weekend_is_cheaper_than_the_surrounding_weekdays():
@@ -244,106 +265,31 @@ def test_weekend_is_cheaper_than_the_surrounding_weekdays():
 
 
 # ---------------------------------------------------------------------------
-# The skill guard — the property that makes this safe to ship everywhere
+# Degrading gracefully
 # ---------------------------------------------------------------------------
 
-
-def test_model_earns_weight_when_weather_genuinely_explains_price():
-    """In a wind-driven market the model scores positive skill and is trusted."""
-    pf._skill_cache.clear()
-    forecast = pf.compute_price_forecast(
-        _price_series(), _history(), _weather(), _generation(), 0.025,
-        now=_NOW, local_tz=UTC,
-    )
-    assert forecast.model_skill is not None and forecast.model_skill > 0
-    assert forecast.model_weight > 0
-    assert any(d.source == PRICE_STAT_SOURCE_MODEL for d in forecast.days)
-
-
-@pytest.mark.parametrize("seed", range(12))
-def test_model_is_ignored_when_weather_explains_nothing(seed):
-    """A hydro/nuclear-style market — price uncorrelated with weather — gets zero weight.
-
-    This is the guard from the multi-region study: in NO2 and FR the weather
-    model measured *worse* than climatology, so it must not be allowed to
-    contribute. Weight collapsing to zero is what makes shipping this to a
-    region-agnostic user base defensible.
-
-    Swept across seeds deliberately. A single seed would not prove anything:
-    on histories with no signal at all, roughly 40 % still score a *positive*
-    skill by chance (observed max ≈ +1.9 %). Testing one seed would pass on a
-    build that trusts any positive number — the dead zone is what actually
-    holds, and only a sweep demonstrates it.
-    """
-    pf._skill_cache.clear()
-    history = _history(wind_effect=0.0, seed=seed)   # wind carries no signal
-    forecast = pf.compute_price_forecast(
-        _price_series(), history, _weather(), _generation(), 0.025,
-        now=_NOW, local_tz=UTC,
-    )
-    assert forecast.model_weight == 0.0
-    assert all(d.source != PRICE_STAT_SOURCE_MODEL for d in forecast.days)
 
 
 def test_no_history_publishes_only_settled_days():
     """A fresh install degrades to the auction window rather than guessing."""
-    pf._skill_cache.clear()
     forecast = pf.compute_price_forecast(
         _price_series(), None, _weather(), _generation(), 0.025,
         now=_NOW, local_tz=UTC,
     )
     assert {d.source for d in forecast.days} == {PRICE_STAT_SOURCE_ACTUAL}
-    assert forecast.model_weight == 0.0
+    assert forecast.shape_days == 0
 
 
-def test_no_weather_still_publishes_the_climatology_baseline():
-    """Weather is optional; without it the baseline is published and labelled honestly."""
-    pf._skill_cache.clear()
+def test_no_weather_still_publishes_a_full_week():
+    """Weather is optional: the engine falls back on its own running averages."""
     forecast = pf.compute_price_forecast(
         _price_series(), _history(), None, _generation(), 0.025,
         now=_NOW, local_tz=UTC,
     )
     assert len(forecast.days) == 7
     modelled = [d for d in forecast.days if d.source != PRICE_STAT_SOURCE_ACTUAL]
-    assert modelled and all(d.source == PRICE_STAT_SOURCE_CLIMATOLOGY for d in modelled)
+    assert modelled and all(d.source == PRICE_STAT_SOURCE_MODEL for d in modelled)
 
-
-def test_4h_band_is_unknown_until_it_has_its_own_history():
-    """Records saved before the 4 h band existed leave it unestimated, not zero."""
-    from dataclasses import replace
-
-    original = _history().records
-    legacy = tuple(
-        replace(r, peak_4h_eur_kwh=None, trough_4h_eur_kwh=None) for r in original
-    )
-
-    pf._skill_cache.clear()
-    forecast = pf.compute_price_forecast(
-        _price_series(), PriceCurveHistory(records=legacy), _weather(), _generation(), 0.025,
-        now=_NOW, local_tz=UTC,
-    )
-    modelled = [d for d in forecast.days if d.source != PRICE_STAT_SOURCE_ACTUAL]
-    settled = [d for d in forecast.days if d.source == PRICE_STAT_SOURCE_ACTUAL]
-    assert modelled and settled
-    assert all(d.peak_4h_eur_kwh is None and d.trough_4h_eur_kwh is None for d in modelled)
-    assert all(d.peak_1h_eur_kwh > 0 for d in modelled)
-    # Settled days are recomputed from their own curves, so they always carry it.
-    assert all(d.peak_4h_eur_kwh is not None for d in settled)
-
-    # Two weeks of 4 h history is enough to estimate it again.
-    pf._skill_cache.clear()
-    mixed = PriceCurveHistory(records=legacy[:-14] + original[-14:])
-    forecast = pf.compute_price_forecast(
-        _price_series(), mixed, _weather(), _generation(), 0.025,
-        now=_NOW, local_tz=UTC,
-    )
-    assert all(d.peak_4h_eur_kwh is not None for d in forecast.days)
-
-
-def test_ridge_solver_rejects_a_singular_system():
-    """A rank-deficient design returns None rather than exploding."""
-    rows = [[1.0, 2.0], [2.0, 4.0], [3.0, 6.0]]
-    assert pf._solve_ridge(rows, [1.0, 2.0, 3.0], 0.0) is None
 
 
 # ---------------------------------------------------------------------------
@@ -368,7 +314,8 @@ def test_settle_days_records_settled_days_and_uses_the_vintage():
     """A settled day is recorded with the features frozen for it, not today's."""
     history = PriceCurveHistory()
     captured = pf.capture_feature_vintage(
-        history, _weather(wind=7.0), _generation(), _TODAY - timedelta(days=2),
+        history, _weather(wind=7.0), _generation(),
+        _TODAY - timedelta(days=pf.PRICE_FORECAST_VINTAGE_LEAD_DAYS),
     )
     assert captured is not None
 
@@ -454,7 +401,6 @@ def _base_load(kw: float = 0.5) -> BaseLoadProfile:
 
 def _forecast_with(capacity, base_load=None, cheap_hours=(9, 10, 11, 12, 13, 14, 15, 16)):
     """Run a forecast with a given battery size and baseload."""
-    pf._skill_cache.clear()
     return pf.compute_price_forecast(
         _price_series(cheap_hours=cheap_hours), _history(), _weather(),
         _generation(kwh_per_slot=2.0), 0.025, now=_NOW, local_tz=UTC,

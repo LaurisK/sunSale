@@ -283,12 +283,8 @@ def _coordinator_to_dict(entry_id: str, coordinator: Any) -> dict:
                     price_forecast.computed_at.isoformat()
                     if price_forecast.computed_at is not None else None
                 ),
-                "model_skill": (
-                    round(price_forecast.model_skill, 4)
-                    if price_forecast.model_skill is not None else None
-                ),
-                "model_weight": round(price_forecast.model_weight, 4),
                 "history_days": price_forecast.history_days,
+                "shape_days": price_forecast.shape_days,
                 "day_count": len(price_forecast.days),
                 "days": [d.as_dict(4) for d in price_forecast.days],
             } if price_forecast is not None else None,

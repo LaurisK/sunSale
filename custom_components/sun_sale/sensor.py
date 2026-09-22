@@ -1107,10 +1107,10 @@ class PriceForecastSensor(_PanelPayloadSensor):
     The state is tomorrow's expected 4 h peak, because that is the nearest
     figure a hold-or-sell decision turns on; everything else (today through
     d6, the trough bands, negative hours and the PV exposed to them) is in the
-    attributes. ``model_skill`` and ``model_weight`` are published alongside so
-    the forecast's own trustworthiness is visible: in a market where the
-    weather model earns no skill the weight sits at zero and the numbers are a
-    pure day-class climatology.
+    attributes. ``shape_days`` is published alongside so the forecast's own
+    maturity is visible: it counts the settled days the shape engine has
+    learned from, and a day the engine cannot yet speak for is absent from the
+    horizon rather than guessed.
     """
 
     _attr_name = "sunSale Price Forecast"
@@ -1142,12 +1142,8 @@ class PriceForecastSensor(_PanelPayloadSensor):
             return {}
         return {
             **forecast.daily_price_stats(4),
-            "model_skill": (
-                round(forecast.model_skill, 4)
-                if forecast.model_skill is not None else None
-            ),
-            "model_weight": round(forecast.model_weight, 4),
             "history_days": forecast.history_days,
+            "shape_days": forecast.shape_days,
             "computed_at": (
                 forecast.computed_at.isoformat()
                 if forecast.computed_at is not None else None

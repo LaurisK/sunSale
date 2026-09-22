@@ -9,6 +9,7 @@ Responsibilities:
 """
 from __future__ import annotations
 
+import asyncio
 import logging
 from collections.abc import Callable
 from contextlib import contextmanager
@@ -23,11 +24,13 @@ except ImportError:    # pragma: no cover — Python < 3.9 fallback
 from homeassistant.components import persistent_notification
 from homeassistant.config_entries import ConfigEntry
 from homeassistant.core import Event, HomeAssistant, callback
+from homeassistant.helpers.aiohttp_client import async_get_clientsession
 from homeassistant.helpers.event import (
     async_track_state_change_event,
     async_track_utc_time_change,
 )
 from homeassistant.helpers.update_coordinator import DataUpdateCoordinator, UpdateFailed
+from homeassistant.util import dt as dt_util
 
 from ..contract.const import (
     CAPACITY_OBS_COUNTER_RESET_EPS_KWH,
@@ -158,6 +161,7 @@ from ..inbound.consumption_daily import (
 from ..inbound.forecast import SolarTranslator
 from ..inbound.forecast_resolver import combine_forecast_entities, resolve_forecast_entities
 from ..inbound.holiday_calendar import holiday_predicate, preload_holidays
+from ..inbound import price_backfill
 from ..inbound.household_consumption import HouseholdConsumptionTranslator
 from ..inbound.inverter_entity_resolver import resolve_inverter_entities
 from ..inbound.inverter_mode import InverterModeTranslator
@@ -207,6 +211,7 @@ from ..outbound.inverter import (
     InverterPlatform,
 )
 from ..outbound.inverter_control_module import InverterControlModule
+from ..pipeline import online_shape
 from ..pipeline import price_forecast as price_forecast_module
 from ..pipeline import profitability as profitability_module
 from ..pipeline import tariff as tariff_module
@@ -1191,6 +1196,8 @@ class SunSaleCoordinator(DataUpdateCoordinator):
         self._counter_snapshot_store = self._stores[STORAGE_KEY_COUNTER_SNAPSHOT]
         self._baked_observed_store = self._stores[STORAGE_KEY_BAKED_OBSERVED]
 
+        await self._async_backfill_price_history()
+
         # Backfill the consumption-daily store from any complete local days
         # already present in the derived-power history. With the standard
         # 2-day derived retention this seeds 1–2 records (typically
@@ -1589,6 +1596,8 @@ class SunSaleCoordinator(DataUpdateCoordinator):
         if updated is not None:
             history = updated
 
+        config = self._sun_sale_config
+        is_holiday = holiday_predicate(config.holiday_country)
         settled = price_forecast_module.settle_days(
             history,
             price_series,
@@ -1598,12 +1607,68 @@ class SunSaleCoordinator(DataUpdateCoordinator):
             local_tz,
             threshold,
             PRICE_CURVE_RETENTION_DAYS,
+            latitude=config.latitude,
+            longitude=config.longitude,
+            is_holiday=is_holiday,
+            neighbour_share=online_shape.neighbour_share_fn(
+                config.holiday_country, holiday_predicate,
+            ),
         )
         if settled is not None:
             history = settled
 
         if updated is not None or settled is not None:
             await self._price_curve_store.save(history)
+
+    async def _async_backfill_price_history(self) -> None:
+        """Fetch settled price history once, so the week ahead is ready at boot.
+
+        Runs only when the store is empty — a fresh install, or the first start
+        after this engine shipped. Setup waits for it so the very first cycle
+        publishes a full week-ahead view instead of the flat one an untrained
+        engine would produce, and everything about it is best-effort: an
+        uncovered market, a failed request or a slow network leaves the engine
+        to learn from the first day it settles, exactly as it would have.
+        """
+        store = self._price_curve_store
+        config = self._sun_sale_config
+        if store is None or config is None:
+            return
+        existing = store.value
+        if existing is not None and existing.records:
+            return
+        if config.latitude is None or config.longitude is None:
+            return
+        country = config.holiday_country or getattr(self.hass.config, "country", None)
+        try:
+            session = async_get_clientsession(self.hass)
+            history = await asyncio.wait_for(
+                price_backfill.backfill(
+                    session,
+                    country=country,
+                    latitude=config.latitude,
+                    longitude=config.longitude,
+                    local_tz=config.local_tz,
+                    today=dt_util.now().astimezone(config.local_tz).date(),
+                    negative_threshold_eur_kwh=price_forecast_module.export_break_even(
+                        config.tariff
+                    ),
+                    is_holiday=holiday_predicate(config.holiday_country),
+                    neighbour_share=online_shape.neighbour_share_fn(
+                        config.holiday_country, holiday_predicate,
+                    ),
+                ),
+                timeout=price_backfill.TIMEOUT_S,
+            )
+        except (TimeoutError, asyncio.TimeoutError):
+            _LOGGER.debug("Price backfill timed out; the engine will learn as days settle")
+            return
+        except Exception:  # noqa: BLE001 — never let an optional fetch block setup
+            _LOGGER.debug("Price backfill failed", exc_info=True)
+            return
+        if history is None or not history.records:
+            return
+        await store.save(history)
 
     @staticmethod
     def _validate_driver_role_contract(

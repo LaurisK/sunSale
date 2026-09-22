@@ -51,6 +51,7 @@ from ..contract.models import (
     InverterModeChange,
     InverterModeHistory,
     MonthlyBillState,
+    OnlineShapeState,
     PriceCurveHistory,
     PriceDayRecord,
     PriceEntry,
@@ -58,7 +59,7 @@ from ..contract.models import (
     SolarEntry,
     StorageMode,
 )
-from ..pipeline import forecast_accuracy
+from ..pipeline import forecast_accuracy, online_shape
 
 # ---------------------------------------------------------------------------
 # Spec type + registry
@@ -302,6 +303,10 @@ def _serialize_price_curve_history(history: PriceCurveHistory) -> dict:
                 "temp": r.temperature_c,
                 "solar": r.solar_kwh,
                 "ngen": r.negative_generation_kwh,
+                "cloud": r.cloud_coverage_pct,
+                # Four decimals is a hundredth of a cent per kWh — below any
+                # price the market quotes, and it keeps 24 floats a day cheap.
+                "curve": ([round(v, 4) for v in r.curve] if r.curve else None),
             }
             for r in history.records
         ],
@@ -312,10 +317,56 @@ def _serialize_price_curve_history(history: PriceCurveHistory) -> dict:
                 "wind": v.wind_speed_kmh,
                 "temp": v.temperature_c,
                 "solar": v.solar_kwh,
+                "cloud": v.cloud_coverage_pct,
             }
             for v in history.vintages
         ],
+        "shape": _serialize_shape_state(history.shape_state),
     }
+
+
+def _serialize_shape_state(state: OnlineShapeState | None) -> dict | None:
+    """Serialise the online shape engine's learned state.
+
+    Args:
+        state: Learned state, or None when the engine has never run.
+
+    Returns:
+        A plain dict, or None. Positions are meaningful only against
+        ``pipeline.online_shape``; a state whose shape no longer matches that
+        module's effector table is discarded on read rather than migrated,
+        because the engine relearns a usable state within weeks.
+    """
+    if state is None:
+        return None
+    return {
+        "levels": [round(v, 6) for v in state.levels],
+        "silhouettes": [[round(v, 6) for v in row] for row in state.silhouettes],
+        "bucket_days": list(state.bucket_days),
+        "weights": [[[round(v, 6) for v in knot] for knot in effector]
+                    for effector in state.weights],
+        "days_seen": state.days_seen,
+    }
+
+
+def _deserialize_shape_state(d: dict | None) -> OnlineShapeState | None:
+    """Rebuild the online shape engine's state, or None when unusable."""
+    if not isinstance(d, dict):
+        return None
+    try:
+        state = OnlineShapeState(
+            levels=tuple(float(v) for v in d["levels"]),
+            silhouettes=tuple(tuple(float(v) for v in row) for row in d["silhouettes"]),
+            bucket_days=tuple(int(v) for v in d["bucket_days"]),
+            weights=tuple(
+                tuple(tuple(float(v) for v in knot) for knot in effector)
+                for effector in d["weights"]
+            ),
+            days_seen=int(d.get("days_seen", 0)),
+        )
+    except (KeyError, ValueError, TypeError):
+        return None
+    return state if online_shape.state_matches(state) else None
 
 
 def _deserialize_price_curve_history(d: dict) -> PriceCurveHistory:
@@ -339,6 +390,8 @@ def _deserialize_price_curve_history(d: dict) -> PriceCurveHistory:
                 temperature_c=_opt_float(r.get("temp")),
                 solar_kwh=_opt_float(r.get("solar")),
                 negative_generation_kwh=_opt_float(r.get("ngen")),
+                cloud_coverage_pct=_opt_float(r.get("cloud")),
+                curve=_opt_curve(r.get("curve")),
             ))
         except (KeyError, ValueError, TypeError):
             continue
@@ -353,11 +406,26 @@ def _deserialize_price_curve_history(d: dict) -> PriceCurveHistory:
                 wind_speed_kmh=_opt_float(v.get("wind")),
                 temperature_c=_opt_float(v.get("temp")),
                 solar_kwh=_opt_float(v.get("solar")),
+                cloud_coverage_pct=_opt_float(v.get("cloud")),
             ))
         except (KeyError, ValueError, TypeError):
             continue
     vintages.sort(key=lambda v: v.day)
-    return PriceCurveHistory(records=tuple(records), vintages=tuple(vintages))
+    return PriceCurveHistory(
+        records=tuple(records),
+        vintages=tuple(vintages),
+        shape_state=_deserialize_shape_state(d.get("shape")),
+    )
+
+
+def _opt_curve(value: object) -> tuple[float, ...] | None:
+    """Return a stored 24-hour curve, or None when absent or the wrong length."""
+    if not isinstance(value, (list, tuple)) or len(value) != online_shape.HOURS:
+        return None
+    try:
+        return tuple(float(v) for v in value)
+    except (TypeError, ValueError):
+        return None
 
 
 def _opt_float(value: Any) -> float | None:

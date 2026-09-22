@@ -8,24 +8,16 @@ the mean of the highest and lowest 1 h and 4 h of the day, how many hours sit
 at or below the export break-even, and how much PV is expected to land in
 them.
 
-Two properties drive the design, both established by the multi-region study in
-``docs/price_forecast_week_ahead.md``:
+Days the auction has already settled are reported verbatim. The rest come from
+:mod:`pipeline.online_shape`, which predicts the day **in clock order** and
+learns online from each day as it settles; this module reads the four published
+statistics off that predicted curve, so they are always mutually consistent and
+a day is either forecast or withheld — never averaged into a shape nobody
+expects. See ``docs/price_forecast_online_shape.md``.
 
-**The baseline is a trailing day-class median, and it is hard to beat.** A
-naive weather regression measured *worse* than doing nothing (−5.9 %) until it
-was reframed to predict the anomaly against that baseline (+33.7 %). So the
-climatology is not a fallback bolted on afterwards — it is the prediction, and
-the weather model only ever contributes a correction on top of it.
-
-**The weather model does not work in every market.** Where variable renewables
-set the price it is worth +25…+37 %; where dispatchable hydro or nuclear sets
-it (reservoir water value, outage scheduling) it is worth −16 %, because price
-follows an operator's optimisation rather than the weather. Since sunSale is
-region-agnostic and cannot know which case an install is in, the model's
-contribution is **weighted by its own measured out-of-sample skill** against
-the climatology baseline (``_backtest_skill``). An install in Norway scores
-zero or negative skill, the weight collapses to zero, and the published
-forecast is the climatology — no per-region configuration, no special casing.
+This module also owns the settled-day history the engine trains on
+(``settle_days``, ``build_day_record``) and the PV-in-loss-making-hours figure
+that rides alongside the price statistics.
 
 Pure Python — no Home Assistant imports, no third-party deps.
 """
@@ -38,25 +30,16 @@ from datetime import UTC, date, datetime, timedelta, tzinfo
 from ..contract.const import (
     ENERGY_DYNAMIC,
     PRICE_FORECAST_CONFIDENCE_DECAY,
-    PRICE_FORECAST_FULL_SKILL,
     PRICE_FORECAST_HORIZON_DAYS,
-    PRICE_FORECAST_MAX_MODEL_WEIGHT,
-    PRICE_FORECAST_MIN_CLIMATOLOGY_DAYS,
-    PRICE_FORECAST_MIN_MODEL_DAYS,
-    PRICE_FORECAST_MIN_SKILL,
-    PRICE_FORECAST_RIDGE_LAMBDA,
-    PRICE_FORECAST_SKILL_WINDOW_DAYS,
-    PRICE_FORECAST_TRAIN_DAYS,
     PRICE_FORECAST_VINTAGE_LEAD_DAYS,
 )
 from ..contract.models import (
     PRICE_STAT_SOURCE_ACTUAL,
-    PRICE_STAT_SOURCE_CLIMATOLOGY,
     PRICE_STAT_SOURCE_MODEL,
     BaseLoadProfile,
-    DayClass,
     DayFeatureVintage,
     GenerationSeries,
+    OnlineShapeState,
     PriceCurveHistory,
     PriceDayRecord,
     PriceDayStats,
@@ -65,16 +48,8 @@ from ..contract.models import (
     TariffConfig,
     WeatherForecastData,
 )
+from . import online_shape
 from .profitability import classify_day
-
-# Targets predicted by the model, in the order they are reported.
-_TARGETS: tuple[str, ...] = (
-    "peak_1h_eur_kwh",
-    "peak_4h_eur_kwh",
-    "trough_1h_eur_kwh",
-    "trough_4h_eur_kwh",
-    "negative_hours",
-)
 
 # Band widths, in hours, behind the 1 h / 4 h statistics. Each band is the
 # cheapest / dearest slots anywhere in the day, not a contiguous window: a
@@ -93,11 +68,6 @@ _MIN_DAY_COVERAGE = 0.9
 # deliberately conservative — real negative hours cluster around solar noon,
 # so this understates rather than overstates the exposure.
 _NEUTRAL_DAYLIGHT_HOURS = 12.0
-
-# Cache for the rolling skill backtest, which is far too expensive to redo on
-# every 5-minute cycle and only changes when a new day is settled into the
-# history. Keyed by the shape of the history it was computed from.
-_skill_cache: dict[tuple, tuple[float | None, float]] = {}
 
 
 # ---------------------------------------------------------------------------
@@ -281,6 +251,7 @@ def build_day_record(
     day: date,
     local_tz: tzinfo | None,
     negative_threshold_eur_kwh: float,
+    is_holiday: Callable[[date], bool] | None = None,
 ) -> PriceDayRecord | None:
     """Build the persisted record for one settled local day.
 
@@ -316,7 +287,7 @@ def build_day_record(
 
     return PriceDayRecord(
         day=day,
-        day_class=classify_day(day),
+        day_class=classify_day(day, is_holiday),
         peak_1h_eur_kwh=stats["peak_1h_eur_kwh"],
         peak_4h_eur_kwh=stats["peak_4h_eur_kwh"],
         trough_1h_eur_kwh=stats["trough_1h_eur_kwh"],
@@ -329,291 +300,13 @@ def build_day_record(
         negative_generation_kwh=negative_generation_for_day(
             slots, generation, negative_threshold_eur_kwh
         ),
+        cloud_coverage_pct=wx.cloud_coverage_pct if wx else None,
+        # The hourly curve is what the online shape engine trains on. A day
+        # whose slots do not cover every hour is stored without one rather than
+        # interpolated, because a filled hole is indistinguishable from data.
+        curve=tuple(online_shape.curve_from_slots(slots, day, local_tz or UTC) or ())
+        or None,
     )
-
-
-# ---------------------------------------------------------------------------
-# Ridge regression on daily anomalies
-# ---------------------------------------------------------------------------
-
-
-def _median(values: Sequence[float]) -> float:
-    """Return the median of a non-empty sequence."""
-    ordered = sorted(values)
-    mid = len(ordered) // 2
-    if len(ordered) % 2:
-        return ordered[mid]
-    return (ordered[mid - 1] + ordered[mid]) / 2.0
-
-
-def _solve_ridge(
-    rows: Sequence[Sequence[float]],
-    targets: Sequence[float],
-    lam: float,
-) -> list[float] | None:
-    """Solve a small ridge-regularised least-squares problem.
-
-    Builds the normal equations and solves them by Gaussian elimination with
-    partial pivoting. The design is at most a handful of columns wide, so the
-    cubic solve is irrelevant next to accumulating the matrix.
-
-    Args:
-        rows: Design matrix, one row per observation.
-        targets: Response vector, same length as ``rows``.
-        lam: Ridge penalty; applied to every column except the intercept.
-
-    Returns:
-        Coefficient vector, or None when the system is singular or empty.
-    """
-    if not rows or len(rows) != len(targets):
-        return None
-    width = len(rows[0])
-    if width == 0 or len(rows) < width:
-        return None
-
-    xtx = [[0.0] * width for _ in range(width)]
-    xty = [0.0] * width
-    for row, y in zip(rows, targets):
-        for i in range(width):
-            ri = row[i]
-            if ri:
-                xty[i] += ri * y
-                target_row = xtx[i]
-                for j in range(i, width):
-                    target_row[j] += ri * row[j]
-    for i in range(width):
-        for j in range(i):
-            xtx[i][j] = xtx[j][i]
-    # The intercept is left unpenalised so the fit can still centre itself.
-    for i in range(1, width):
-        xtx[i][i] += lam
-
-    aug = [[*xtx[i], xty[i]] for i in range(width)]
-    for col in range(width):
-        pivot = max(range(col, width), key=lambda r: abs(aug[r][col]))
-        if abs(aug[pivot][col]) < 1e-12:
-            return None
-        aug[col], aug[pivot] = aug[pivot], aug[col]
-        pivot_val = aug[col][col]
-        for r in range(width):
-            if r == col:
-                continue
-            factor = aug[r][col] / pivot_val
-            if factor:
-                for c in range(col, width + 1):
-                    aug[r][c] -= factor * aug[col][c]
-    return [aug[i][width] / aug[i][i] for i in range(width)]
-
-
-def _feature_baseline(records: Sequence[PriceDayRecord]) -> dict[str, float]:
-    """Return the mean of each weather feature across the training records."""
-    def _mean(getter: Callable[[PriceDayRecord], float | None]) -> float:
-        vals = [v for v in (getter(r) for r in records) if v is not None]
-        return sum(vals) / len(vals) if vals else 0.0
-
-    return {
-        "wind": _mean(lambda r: r.wind_speed_kmh),
-        "temp": _mean(lambda r: r.temperature_c),
-        "solar": _mean(lambda r: r.solar_kwh),
-    }
-
-
-def _features(
-    day_class: DayClass,
-    wind_speed_kmh: float | None,
-    temperature_c: float | None,
-    solar_kwh: float | None,
-    base: dict[str, float],
-) -> list[float]:
-    """Build the design row for one day.
-
-    Weather enters as an anomaly against the training-window mean rather than
-    as a level: the level is already carried by the day-class climatology, and
-    regressing on it directly is what made the naive specification lose to the
-    baseline. The weekend interaction is kept because demand responds to wind
-    differently when the working-day load shape is absent.
-
-    Args:
-        day_class: Day bucket.
-        wind_speed_kmh: Daily mean wind speed, or None.
-        temperature_c: Daily mean temperature, or None.
-        solar_kwh: That day's PV forecast total, or None.
-        base: Feature baseline from ``_feature_baseline``.
-
-    Returns:
-        Design row, intercept first.
-    """
-    wind = (wind_speed_kmh if wind_speed_kmh is not None else base["wind"]) - base["wind"]
-    temp = (temperature_c if temperature_c is not None else base["temp"]) - base["temp"]
-    solar = (solar_kwh if solar_kwh is not None else base["solar"]) - base["solar"]
-    weekend = 1.0 if day_class is DayClass.WEEKEND else 0.0
-    return [1.0, wind, temp, solar / 10.0, weekend, wind * weekend]
-
-
-def _class_medians(
-    records: Sequence[PriceDayRecord],
-    target: str,
-) -> dict[DayClass, float]:
-    """Return the per-day-class median of one target across the records.
-
-    Records missing the target (saved before it existed) are skipped, and a
-    target with fewer than ``PRICE_FORECAST_MIN_CLIMATOLOGY_DAYS`` values gets
-    no baseline at all rather than a median of a handful of days.
-
-    Args:
-        records: Settled history.
-        target: ``PriceDayRecord`` attribute to summarise.
-
-    Returns:
-        Dict of day class → median; empty while the target is too short.
-    """
-    buckets: dict[DayClass, list[float]] = {}
-    count = 0
-    for rec in records:
-        value = getattr(rec, target)
-        if value is None:
-            continue
-        buckets.setdefault(rec.day_class, []).append(value)
-        count += 1
-    if count < PRICE_FORECAST_MIN_CLIMATOLOGY_DAYS:
-        return {}
-    return {cls: _median(vals) for cls, vals in buckets.items() if vals}
-
-
-def _climatology_value(
-    medians: dict[DayClass, float],
-    day_class: DayClass,
-) -> float | None:
-    """Return the baseline for a day class, falling back across classes.
-
-    Args:
-        medians: Per-class medians from ``_class_medians``.
-        day_class: Class being predicted.
-
-    Returns:
-        Median for the class, else the weekday median, else the mean of what
-        exists; None when the mapping is empty.
-    """
-    if not medians:
-        return None
-    if day_class in medians:
-        return medians[day_class]
-    if DayClass.WEEKDAY in medians:
-        return medians[DayClass.WEEKDAY]
-    return sum(medians.values()) / len(medians)
-
-
-def _fit_target(
-    records: Sequence[PriceDayRecord],
-    target: str,
-    base: dict[str, float],
-    medians: dict[DayClass, float],
-) -> list[float] | None:
-    """Fit the anomaly model for one target over the training records."""
-    rows: list[list[float]] = []
-    ys: list[float] = []
-    for rec in records:
-        value = getattr(rec, target)
-        baseline = _climatology_value(medians, rec.day_class)
-        if value is None or baseline is None:
-            continue
-        rows.append(_features(
-            rec.day_class, rec.wind_speed_kmh, rec.temperature_c, rec.solar_kwh, base
-        ))
-        ys.append(value - baseline)
-    return _solve_ridge(rows, ys, PRICE_FORECAST_RIDGE_LAMBDA)
-
-
-def _predict(
-    beta: Sequence[float] | None,
-    row: Sequence[float],
-    baseline: float,
-) -> float:
-    """Return the baseline plus the model's anomaly correction."""
-    if beta is None:
-        return baseline
-    return baseline + sum(b * x for b, x in zip(beta, row))
-
-
-# ---------------------------------------------------------------------------
-# Skill measurement — the guard that makes this safe to ship everywhere
-# ---------------------------------------------------------------------------
-
-
-def _backtest_skill(records: Sequence[PriceDayRecord]) -> tuple[float | None, float]:
-    """Measure the model's out-of-sample skill and derive its blend weight.
-
-    Walks the most recent ``PRICE_FORECAST_SKILL_WINDOW_DAYS`` settled days.
-    For each, fits on the days strictly before it and compares the model's
-    absolute error against the climatology baseline's, pooled across targets
-    after normalising each target by its own baseline error (so a large-
-    magnitude target cannot dominate a small one).
-
-    Args:
-        records: Settled history, sorted ascending by day.
-
-    Returns:
-        Tuple of (skill, weight). Skill is the fractional MAE improvement over
-        climatology — negative when the model is losing — or None when there is
-        too little history to judge. Weight is the resulting model contribution
-        in [0, 1], zero whenever skill is not positive.
-    """
-    if len(records) < PRICE_FORECAST_MIN_MODEL_DAYS:
-        return None, 0.0
-
-    cache_key = (len(records), records[-1].day, records[0].day)
-    if cache_key in _skill_cache:
-        return _skill_cache[cache_key]
-
-    start = max(PRICE_FORECAST_MIN_CLIMATOLOGY_DAYS,
-                len(records) - PRICE_FORECAST_SKILL_WINDOW_DAYS)
-    err_clim = 0.0
-    err_model = 0.0
-    scored = 0
-    for i in range(start, len(records)):
-        train = records[max(0, i - PRICE_FORECAST_TRAIN_DAYS):i]
-        if len(train) < PRICE_FORECAST_MIN_CLIMATOLOGY_DAYS:
-            continue
-        actual = records[i]
-        base = _feature_baseline(train)
-        row = _features(
-            actual.day_class, actual.wind_speed_kmh, actual.temperature_c,
-            actual.solar_kwh, base,
-        )
-        for target in _TARGETS:
-            truth = getattr(actual, target)
-            if truth is None:
-                continue
-            medians = _class_medians(train, target)
-            baseline = _climatology_value(medians, actual.day_class)
-            if baseline is None:
-                continue
-            # Normalise so every target contributes comparably to the pooled
-            # score regardless of its units (EUR/kWh versus hours).
-            scale = max(abs(baseline), 1e-3)
-            beta = _fit_target(train, target, base, medians)
-            err_clim += abs(truth - baseline) / scale
-            err_model += abs(truth - _predict(beta, row, baseline)) / scale
-            scored += 1
-
-    if not scored or err_clim <= 0:
-        result: tuple[float | None, float] = (None, 0.0)
-    else:
-        skill = 1.0 - (err_model / err_clim)
-        # A barely-positive score is noise, not evidence — see
-        # PRICE_FORECAST_MIN_SKILL. Below the floor the model gets nothing; above
-        # it the weight ramps in, and the baseline always keeps a stake.
-        if skill <= PRICE_FORECAST_MIN_SKILL:
-            weight = 0.0
-        else:
-            span = max(PRICE_FORECAST_FULL_SKILL - PRICE_FORECAST_MIN_SKILL, 1e-9)
-            ramp = min(1.0, (skill - PRICE_FORECAST_MIN_SKILL) / span)
-            weight = ramp * PRICE_FORECAST_MAX_MODEL_WEIGHT
-        result = (skill, weight)
-
-    _skill_cache.clear()
-    _skill_cache[cache_key] = result
-    return result
 
 
 def _negative_generation_ratio(records: Sequence[PriceDayRecord]) -> float:
@@ -646,6 +339,103 @@ def _negative_generation_ratio(records: Sequence[PriceDayRecord]) -> float:
 
 
 # ---------------------------------------------------------------------------
+# The online shape engine
+# ---------------------------------------------------------------------------
+
+
+def train_shape_state(
+    history: PriceCurveHistory,
+    latitude: float | None,
+    longitude: float | None,
+    local_tz: tzinfo | None,
+    is_holiday: Callable[[date], bool] | None,
+    neighbour_share: Callable[[date], float] | None,
+) -> OnlineShapeState:
+    """Replay every stored day with a curve through the online engine.
+
+    Used when the store has records but no state — a first run after the engine
+    shipped, or after an effector change invalidated the old positions. Replay
+    is the same loop the engine runs live, so a replayed state and a state that
+    grew day by day are the same thing.
+
+    Args:
+        history: Settled history.
+        latitude: Site latitude.
+        longitude: Site longitude.
+        local_tz: Local timezone.
+        is_holiday: Local public-holiday predicate.
+        neighbour_share: Share of neighbouring zones on holiday.
+
+    Returns:
+        The trained state; untrained when no record carries a curve.
+    """
+    state = online_shape.initial_state()
+    tz = local_tz or UTC
+    for record in history.records:
+        if not record.curve:
+            continue
+        state = online_shape.absorb(
+            state,
+            _record_inputs(record, latitude, longitude, tz, is_holiday, neighbour_share),
+            list(record.curve),
+        )
+    return state
+
+
+def _record_inputs(
+    record: PriceDayRecord,
+    latitude: float | None,
+    longitude: float | None,
+    local_tz: tzinfo,
+    is_holiday: Callable[[date], bool] | None,
+    neighbour_share: Callable[[date], float] | None,
+) -> online_shape.DayInputs:
+    """Rebuild one settled day's effector inputs from its stored record."""
+    holiday = bool(is_holiday(record.day)) if is_holiday is not None else False
+    return online_shape.DayInputs(
+        day=record.day,
+        bucket=online_shape.bucket_of(record.day, holiday),
+        wind_index=online_shape.wind_power_index(record.wind_speed_kmh),
+        solar_profile=online_shape.solar_profile(
+            record.day, latitude or 0.0, longitude or 0.0, local_tz,
+            record.cloud_coverage_pct,
+        ),
+        temperature_c=record.temperature_c,
+        is_holiday=holiday and record.day.weekday() < 5,
+        neighbour_share=(neighbour_share(record.day) if neighbour_share else 0.0),
+    )
+
+
+def _modelled_day_from_curve(
+    curve: list[float],
+    negative_threshold_eur_kwh: float,
+) -> dict[str, float]:
+    """Read the published statistics off a predicted hourly curve.
+
+    Reading them off one curve is what makes them mutually consistent: a
+    predicted trough can no longer come out above its own peak, which two
+    independently-fitted band models could and did.
+
+    Args:
+        curve: Twenty-four predicted spot prices, EUR/kWh.
+        negative_threshold_eur_kwh: Export break-even spot price.
+
+    Returns:
+        The same statistics ``day_price_stats`` returns for a settled day.
+    """
+    spot = sorted(curve)
+    below = sum(1 for value in spot if value <= negative_threshold_eur_kwh)
+    return {
+        "peak_1h_eur_kwh": _band_mean(spot, _BAND_1H, 1.0, top=True),
+        "peak_4h_eur_kwh": _band_mean(spot, _BAND_4H, 1.0, top=True),
+        "trough_1h_eur_kwh": _band_mean(spot, _BAND_1H, 1.0, top=False),
+        "trough_4h_eur_kwh": _band_mean(spot, _BAND_4H, 1.0, top=False),
+        "negative_hours": float(below),
+        "mean_eur_kwh": sum(curve) / len(curve),
+    }
+
+
+# ---------------------------------------------------------------------------
 # Public entry point
 # ---------------------------------------------------------------------------
 
@@ -661,13 +451,18 @@ def compute_price_forecast(
     horizon_days: int = PRICE_FORECAST_HORIZON_DAYS,
     battery_capacity_kwh: float | None = None,
     base_load: BaseLoadProfile | None = None,
+    shape_state: OnlineShapeState | None = None,
+    latitude: float | None = None,
+    longitude: float | None = None,
+    is_holiday: Callable[[date], bool] | None = None,
+    neighbour_share: Callable[[date], float] | None = None,
 ) -> PriceForecast:
     """Build the week-ahead price forecast.
 
     Days already covered by the settled auction are reported verbatim from
-    ``price_series``; the rest are predicted from the day-class climatology,
-    optionally corrected by the weather model in proportion to its measured
-    skill (see the module docstring).
+    ``price_series``; the rest come from the online shape engine. A day the
+    engine cannot speak for — a brand-new install, before its first day
+    settles — is left out of the horizon rather than filled in.
 
     Args:
         price_series: Settled prices covering yesterday → tomorrow, or None.
@@ -684,6 +479,13 @@ def compute_price_forecast(
             leaves the split unreported rather than assuming a size.
         base_load: Hourly baseload profile; the household draw through the
             loss-making hours counts as headroom alongside the battery.
+        shape_state: Learned state of the online shape engine, which is what
+            every modelled day comes from.
+        latitude: Site latitude, for the modelled clear-sky solar profile.
+        longitude: Site longitude, same.
+        is_holiday: Local public-holiday predicate.
+        neighbour_share: Returns the share of neighbouring bidding zones on
+            holiday for a local date.
 
     Returns:
         PriceForecast covering ``horizon_days`` local days; empty when there is
@@ -695,19 +497,11 @@ def compute_price_forecast(
     today = now.astimezone(tz).date()
 
     records = tuple(history.records) if history is not None else ()
-    train = records[-PRICE_FORECAST_TRAIN_DAYS:]
-    have_climatology = len(train) >= PRICE_FORECAST_MIN_CLIMATOLOGY_DAYS
-
-    skill, weight = _backtest_skill(records)
-    base = _feature_baseline(train) if have_climatology else {"wind": 0.0, "temp": 0.0, "solar": 0.0}
-    medians_by_target = (
-        {t: _class_medians(train, t) for t in _TARGETS} if have_climatology else {}
-    )
-    betas = (
-        {t: _fit_target(train, t, base, medians_by_target[t]) for t in _TARGETS}
-        if have_climatology and weight > 0 else {}
-    )
-    neg_ratio = _negative_generation_ratio(train)
+    # The state lives on the history, so a caller that passes one need not
+    # also thread the other.
+    if shape_state is None and history is not None:
+        shape_state = history.shape_state
+    neg_ratio = _negative_generation_ratio(records)
 
     slot_hours = (
         price_series.resolution.total_seconds() / 3600.0
@@ -762,47 +556,33 @@ def compute_price_forecast(
                 ))
                 continue
 
-        if not have_climatology:
-            continue
-
         wx = weather_by_day.get(day)
         solar_kwh = solar_by_day.get(day)
-        row = _features(
-            day_class,
-            wx.wind_speed_kmh if wx else None,
-            wx.temperature_c if wx else None,
-            solar_kwh,
-            base,
+
+        # The engine predicts the day in clock order; the four published
+        # bands are read off that one curve, so they cannot contradict each
+        # other. A day it cannot speak for is left out rather than filled with
+        # an average nobody asked for.
+        engine_curve = (
+            online_shape.predict_curve(
+                shape_state,
+                online_shape.build_inputs(
+                    day, wx, latitude or 0.0, longitude or 0.0, tz,
+                    is_holiday, neighbour_share,
+                ),
+            )
+            if shape_state is not None else None
         )
-        predicted: dict[str, float | None] = {}
-        for target in _TARGETS:
-            baseline = _climatology_value(medians_by_target[target], day_class)
-            if baseline is None:
-                # Only a band too new to have history lands here; unknown is
-                # honest, where 0.0 would read as a real price.
-                predicted[target] = None
-                continue
-            modelled = _predict(betas.get(target), row, baseline)
-            predicted[target] = (1.0 - weight) * baseline + weight * modelled
+        if engine_curve is None:
+            continue
 
-        negative_hours = max(0.0, min(24.0, predicted["negative_hours"] or 0.0))
-        peak_1h = predicted["peak_1h_eur_kwh"] or 0.0
-        trough_1h = predicted["trough_1h_eur_kwh"] or 0.0
-        peak_4h = predicted["peak_4h_eur_kwh"]
-        trough_4h = predicted["trough_4h_eur_kwh"]
-        # A predicted trough above its peak is physically impossible and can
-        # occur when two independently-fitted targets disagree at the edges.
-        if peak_4h is not None and trough_4h is not None and trough_4h > peak_4h:
-            trough_4h = peak_4h = (trough_4h + peak_4h) / 2.0
-        if peak_4h is not None:
-            peak_1h = max(peak_1h, peak_4h)
-        if trough_4h is not None:
-            trough_1h = min(trough_1h, trough_4h)
+        stats = _modelled_day_from_curve(engine_curve, negative_threshold_eur_kwh)
+        peak_1h = stats["peak_1h_eur_kwh"]
+        peak_4h = stats["peak_4h_eur_kwh"]
+        trough_1h = stats["trough_1h_eur_kwh"]
+        trough_4h = stats["trough_4h_eur_kwh"]
+        negative_hours = max(0.0, min(24.0, stats["negative_hours"]))
 
-        # With no weather for this day every feature sits at its baseline, so
-        # the model's correction is identically zero — report that honestly as
-        # climatology rather than implying a weather-informed prediction.
-        modelled = weight > 0 and wx is not None
         neg_gen = min(
             solar_kwh or 0.0,
             (solar_kwh or 0.0) * neg_ratio * negative_hours,
@@ -817,7 +597,7 @@ def compute_price_forecast(
             day=day,
             day_class=day_class,
             horizon_days=horizon,
-            source=PRICE_STAT_SOURCE_MODEL if modelled else PRICE_STAT_SOURCE_CLIMATOLOGY,
+            source=PRICE_STAT_SOURCE_MODEL,
             peak_1h_eur_kwh=peak_1h,
             peak_4h_eur_kwh=peak_4h,
             trough_1h_eur_kwh=trough_1h,
@@ -832,9 +612,8 @@ def compute_price_forecast(
     return PriceForecast(
         days=tuple(days),
         computed_at=now,
-        model_skill=skill,
-        model_weight=weight,
         history_days=len(records),
+        shape_days=shape_state.days_seen if shape_state is not None else 0,
     )
 
 
@@ -911,6 +690,7 @@ def capture_feature_vintage(
         wind_speed_kmh=wx.wind_speed_kmh if wx else None,
         temperature_c=wx.temperature_c if wx else None,
         solar_kwh=solar,
+        cloud_coverage_pct=wx.cloud_coverage_pct if wx else None,
     )
     vintages = sorted([*history.vintages, vintage], key=lambda v: v.day)
     return PriceCurveHistory(records=history.records, vintages=tuple(vintages))
@@ -925,6 +705,10 @@ def settle_days(
     local_tz: tzinfo | None,
     negative_threshold_eur_kwh: float,
     retention_days: int,
+    latitude: float | None = None,
+    longitude: float | None = None,
+    is_holiday: Callable[[date], bool] | None = None,
+    neighbour_share: Callable[[date], float] | None = None,
 ) -> PriceCurveHistory | None:
     """Record any settled days not yet in the history, and prune.
 
@@ -945,9 +729,15 @@ def settle_days(
         local_tz: Local timezone.
         negative_threshold_eur_kwh: Export break-even spot price.
         retention_days: Days of settled records to keep.
+        latitude: Site latitude, for the shape engine's solar profile.
+        longitude: Site longitude, same.
+        is_holiday: Local public-holiday predicate.
+        neighbour_share: Share of neighbouring zones on holiday.
 
     Returns:
-        Updated history, or None when nothing changed.
+        Updated history, or None when nothing changed. The online shape
+        engine learns from each newly settled day here, which is the only
+        place its state advances.
     """
     if price_series is None or not price_series.priced_slots:
         return None
@@ -960,7 +750,8 @@ def settle_days(
         if day in known:
             continue
         record = build_day_record(
-            price_series, generation, weather, day, local_tz, negative_threshold_eur_kwh
+            price_series, generation, weather, day, local_tz,
+            negative_threshold_eur_kwh, is_holiday,
         )
         if record is None:
             continue
@@ -971,6 +762,10 @@ def settle_days(
                 wind_speed_kmh=vintage.wind_speed_kmh,
                 temperature_c=vintage.temperature_c,
                 solar_kwh=vintage.solar_kwh if vintage.solar_kwh is not None else record.solar_kwh,
+                cloud_coverage_pct=(
+                    vintage.cloud_coverage_pct
+                    if vintage.cloud_coverage_pct is not None else record.cloud_coverage_pct
+                ),
             )
         added.append(record)
 
@@ -985,4 +780,59 @@ def settle_days(
         [r for r in (*history.records, *added) if r.day >= cutoff],
         key=lambda r: r.day,
     )
-    return PriceCurveHistory(records=tuple(records), vintages=kept_vintages)
+    updated = PriceCurveHistory(
+        records=tuple(records),
+        vintages=kept_vintages,
+        shape_state=history.shape_state,
+    )
+    return replace(
+        updated,
+        shape_state=advance_shape_state(
+            updated, added, latitude, longitude, local_tz,
+            is_holiday, neighbour_share,
+        ),
+    )
+
+
+def advance_shape_state(
+    history: PriceCurveHistory,
+    added: Sequence[PriceDayRecord],
+    latitude: float | None,
+    longitude: float | None,
+    local_tz: tzinfo | None,
+    is_holiday: Callable[[date], bool] | None,
+    neighbour_share: Callable[[date], float] | None,
+) -> OnlineShapeState:
+    """Fold newly settled days into the engine's state.
+
+    A state that is missing — a first run, or one discarded because the
+    effector table changed — is rebuilt by replaying the whole stored history,
+    which costs a few hundred multiply-adds per day and happens once.
+
+    Args:
+        history: The updated history, including the new records.
+        added: The records settled in this pass.
+        latitude: Site latitude.
+        longitude: Site longitude.
+        local_tz: Local timezone.
+        is_holiday: Local public-holiday predicate.
+        neighbour_share: Share of neighbouring zones on holiday.
+
+    Returns:
+        The advanced state.
+    """
+    tz = local_tz or UTC
+    if history.shape_state is None:
+        return train_shape_state(
+            history, latitude, longitude, tz, is_holiday, neighbour_share
+        )
+    state = history.shape_state
+    for record in sorted(added, key=lambda r: r.day):
+        if not record.curve:
+            continue
+        state = online_shape.absorb(
+            state,
+            _record_inputs(record, latitude, longitude, tz, is_holiday, neighbour_share),
+            list(record.curve),
+        )
+    return state

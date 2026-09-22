@@ -40,6 +40,7 @@ _HA_MODULES = [
     "homeassistant.config_entries",
     "homeassistant.exceptions",
     "homeassistant.helpers",
+    "homeassistant.helpers.aiohttp_client",
     "homeassistant.helpers.entity_registry",
     "homeassistant.helpers.event",
     "homeassistant.helpers.restore_state",

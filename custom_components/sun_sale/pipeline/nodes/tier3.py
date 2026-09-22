@@ -26,6 +26,8 @@ from ...contract.models import (
 )
 from .. import array_calibration, calculation, forecast_accuracy, solar_health
 from .. import monthly_bill as monthly_bill_module
+from ...inbound.holiday_calendar import holiday_predicate
+from .. import online_shape
 from .. import price_forecast as price_forecast_module
 from ..dag_engine import DagNode, NodeContext
 
@@ -217,9 +219,10 @@ class PriceForecastNode(DagNode):
     async def _compute(self, ctx: NodeContext) -> PriceForecast:
         """Build the week-ahead price forecast for the configured horizon."""
         battery = ctx.get(BatteryStatus)
+        history = ctx.get(PriceCurveHistory)
         return price_forecast_module.compute_price_forecast(
             price_series=ctx.require(PriceSeries),
-            history=ctx.get(PriceCurveHistory),
+            history=history,
             weather=ctx.get(WeatherForecastData),
             generation=ctx.require(GenerationSeries),
             negative_threshold_eur_kwh=price_forecast_module.export_break_even(ctx.config.tariff),
@@ -227,4 +230,11 @@ class PriceForecastNode(DagNode):
             local_tz=ctx.config.local_tz,
             battery_capacity_kwh=battery.total_capacity_kwh if battery else None,
             base_load=ctx.get(BaseLoadProfile),
+            shape_state=history.shape_state if history is not None else None,
+            latitude=ctx.config.latitude,
+            longitude=ctx.config.longitude,
+            is_holiday=holiday_predicate(ctx.config.holiday_country),
+            neighbour_share=online_shape.neighbour_share_fn(
+                ctx.config.holiday_country, holiday_predicate,
+            ),
         )

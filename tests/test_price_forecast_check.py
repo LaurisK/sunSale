@@ -58,8 +58,7 @@ def _debug(days: list[dict] | None = None, **pf_overrides) -> dict:
         days = [_day(0, "actual"), _day(1, "actual")] + [_day(h) for h in range(2, 7)]
     price_forecast = {
         "computed_at": datetime.now(UTC).isoformat(),
-        "model_skill": 0.30,
-        "model_weight": 0.8,
+        "shape_days": 120,
         "history_days": 300,
         "day_count": len(days),
         "days": days,
@@ -127,11 +126,11 @@ def test_band_ordering_violation_is_caught():
     assert any("band_ordering" in m for m in result.mismatches)
 
 
-def test_weight_without_skill_is_caught():
-    """A positive blend weight on non-positive skill means the guard has failed."""
-    result = check_price_forecast(_Snap(_debug(model_skill=-0.2, model_weight=0.5)))
+def test_engine_cannot_have_learned_from_days_the_store_lacks():
+    """More learned days than stored ones means the two have drifted apart."""
+    result = check_price_forecast(_Snap(_debug(shape_days=9999)))
     assert not result.overall_ok
-    assert "weight_without_skill" in result.mismatches
+    assert "shape_days_exceeds_history" in result.mismatches
 
 
 def test_negative_generation_cannot_exceed_the_day_total():

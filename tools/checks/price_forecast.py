@@ -95,8 +95,7 @@ class PriceForecastCheckResult:
     actual_days: int = 0
     model_days: int = 0
     climatology_days: int = 0
-    model_skill: float | None = None
-    model_weight: float = 0.0
+    shape_days: int = 0
     history_days: int = 0
     computed_at: str = ""
     surplus_kwh_total: float = 0.0
@@ -123,8 +122,7 @@ def check_price_forecast(snap: Snapshot) -> PriceForecastCheckResult:
         result.skip_reason = "pipeline.price_forecast is null (no settled history yet)"
         return result
 
-    result.model_skill = pf.get("model_skill")
-    result.model_weight = pf.get("model_weight", 0.0)
+    result.shape_days = int(pf.get("shape_days", 0) or 0)
     result.history_days = pf.get("history_days", 0)
     result.computed_at = pf.get("computed_at", "") or ""
     days = list(pf.get("days") or [])
@@ -134,11 +132,9 @@ def check_price_forecast(snap: Snapshot) -> PriceForecastCheckResult:
     if pf.get("day_count") != len(days):
         result.mismatches.append("day_count_mismatch")
 
-    # The skill guard: weight may only be positive when skill is positive.
-    if result.model_weight > 0 and not (result.model_skill and result.model_skill > 0):
-        result.mismatches.append("weight_without_skill")
-    if not (0.0 <= result.model_weight <= 1.0):
-        result.mismatches.append("weight_out_of_range")
+    # The engine cannot have learned from more days than the store holds.
+    if result.shape_days > result.history_days:
+        result.mismatches.append("shape_days_exceeds_history")
 
     local_tz = _resolve_local_tz(snap.config.get("time_zone"))
     today_local = datetime.now(UTC).astimezone(local_tz).date()
@@ -282,11 +278,11 @@ class PriceForecastCheckWidget(Static):
         color = "green" if pr.overall_ok else "red"
         mark = "✓" if pr.overall_ok else "✗"
         status = "PASS" if pr.overall_ok else "FAIL"
-        skill_str = f"{pr.model_skill:+.1%}" if pr.model_skill is not None else "n/a"
+        skill_str = f"{pr.shape_days}d learned"
         title = (
             f"[{color}]{mark}[/{color}]  price_forecast_check   [{color}]{status}[/{color}]"
             f"   {pr.day_count}d  actual={pr.actual_days}"
-            f"  skill={skill_str}  weight={pr.model_weight:.2f}  hist={pr.history_days}d"
+            f"  engine={skill_str}  hist={pr.history_days}d"
             f"  surplus={pr.surplus_kwh_total:.1f}kWh"
         )
 
@@ -307,7 +303,7 @@ class PriceForecastCheckWidget(Static):
                     f"{_fmt(d.get('absorbable_kwh')):>8s} {_fmt(d.get('surplus_kwh')):>8s} "
                     f"{d.get('confidence', 0.0):5.2f}"
                 )
-            lines.append(f"  Model skill: {skill_str}   weight: {pr.model_weight:.3f}")
+            lines.append(f"  Shape engine: {skill_str}")
             lines.append(f"  Settled history: {pr.history_days} days")
             lines.append(f"  Computed at: {pr.computed_at or '—'}")
             if pr.mismatches:

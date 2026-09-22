@@ -845,7 +845,6 @@ class ProfitabilityScore:
 
 # Forecast provenance, weakest → strongest evidence.
 PRICE_STAT_SOURCE_MODEL = "model"              # weather-anomaly model
-PRICE_STAT_SOURCE_CLIMATOLOGY = "climatology"  # trailing day-class median only
 PRICE_STAT_SOURCE_ACTUAL = "actual"            # settled day-ahead auction
 
 
@@ -896,6 +895,13 @@ class PriceDayRecord:
     temperature_c: float | None = None
     solar_kwh: float | None = None       # that day's own PV total
     negative_generation_kwh: float | None = None  # PV that landed in those hours
+    # The day's settled prices as 24 hourly means in local clock order. The
+    # online shape engine trains on these; records written before it existed
+    # carry None and are skipped rather than migrated.
+    curve: tuple[float, ...] | None = None
+    # Daily weather as it was forecast a day ahead, frozen at capture time so
+    # the engine trains on the kind of input it is served.
+    cloud_coverage_pct: float | None = None
 
 
 @dataclass(frozen=True)
@@ -913,6 +919,24 @@ class DayFeatureVintage:
     wind_speed_kmh: float | None = None
     temperature_c: float | None = None
     solar_kwh: float | None = None
+    cloud_coverage_pct: float | None = None
+
+
+@dataclass(frozen=True)
+class OnlineShapeState:
+    """Learned state of the online shape forecaster.
+
+    Small enough to persist every cycle — under 400 floats — and meaningless
+    without :mod:`pipeline.online_shape`, which defines what each position
+    means. ``bucket_days`` counts the settled days behind each day-type
+    average, so a bucket that has never seen a day of its own can borrow
+    another's instead of publishing zeroes.
+    """
+    levels: tuple[float, ...] = ()                       # one per day-type bucket
+    silhouettes: tuple[tuple[float, ...], ...] = ()      # bucket → 24 hourly offsets
+    bucket_days: tuple[int, ...] = ()                    # settled days per bucket
+    weights: tuple[tuple[tuple[float, ...], ...], ...] = ()   # effector → knot → 24
+    days_seen: int = 0
 
 
 @dataclass(frozen=True)
@@ -920,6 +944,10 @@ class PriceCurveHistory:
     """Primary data: rolling settled-day statistics plus pending feature vintages."""
     records: tuple[PriceDayRecord, ...] = ()      # sorted by day ascending
     vintages: tuple[DayFeatureVintage, ...] = ()  # captured, not yet settled
+    # Learned state of the online shape engine. Kept beside the records rather
+    # than recomputed each start: the records are what it was trained on, and
+    # replaying them is only needed when this is absent.
+    shape_state: OnlineShapeState | None = None
 
     def by_day(self) -> dict[date, PriceDayRecord]:
         """Return the records keyed by local date."""
@@ -1011,16 +1039,13 @@ class PriceForecast:
     """Secondary data: week-ahead price statistics, one entry per local day.
 
     Days already covered by the settled day-ahead auction are reported as
-    ``actual``; the remainder are modelled. ``model_skill`` is the rolling
-    out-of-sample improvement of the weather model over the climatology
-    baseline — negative means the model is losing, and ``model_weight`` will
-    have collapsed onto climatology accordingly.
+    ``actual``; the remainder come from the online shape engine, and
+    ``shape_days`` says how many settled days it has learned from.
     """
     days: tuple[PriceDayStats, ...] = ()   # sorted by day ascending
     computed_at: datetime | None = None
-    model_skill: float | None = None       # fraction, e.g. 0.25 = 25% better MAE
-    model_weight: float = 0.0              # 0.0 = pure climatology, 1.0 = pure model
     history_days: int = 0                  # settled days available for fitting
+    shape_days: int = 0                    # settled days the shape engine has learned from
 
     def by_day(self) -> dict[date, PriceDayStats]:
         """Return the per-day statistics keyed by local date."""

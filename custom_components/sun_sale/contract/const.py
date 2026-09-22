@@ -353,47 +353,12 @@ PRICE_FORECAST_HORIZON_DAYS = 7
 # on the day's realised weather — training on realised weather flatters the fit
 # and degrades in production. Two days is the shortest horizon the day-ahead
 # auction does not already cover, so it is the one that matters most.
-PRICE_FORECAST_VINTAGE_LEAD_DAYS = 2
+PRICE_FORECAST_VINTAGE_LEAD_DAYS = 1
 
 # How often the daily weather forecast is refetched. The source publishes a
 # daily forecast that changes a few times a day, so polling it every cycle
 # would be pure overhead.
 WEATHER_REFRESH_MINUTES = 60
-
-# Settled days required before the climatology baseline is considered usable
-# at all, and before the weather model is allowed to be fitted on top of it.
-PRICE_FORECAST_MIN_CLIMATOLOGY_DAYS = 14
-PRICE_FORECAST_MIN_MODEL_DAYS = 60
-
-# Trailing window (days) used to fit both the climatology baseline and the
-# weather-anomaly model.
-PRICE_FORECAST_TRAIN_DAYS = 270
-
-# Rolling window (days) over which the model is scored against climatology.
-# The blend weight is derived from this skill, so the model can never make the
-# published forecast worse than the baseline for long.
-PRICE_FORECAST_SKILL_WINDOW_DAYS = 60
-
-# Skill a model must beat before it is granted any weight at all — a dead zone,
-# not a formality. Day-to-day price noise is large relative to any real
-# improvement: over a window this size a model with no signal whatsoever scores
-# a small positive skill about half the time, purely by chance. Trusting that
-# would be selecting on noise. Detecting a genuine 10 % improvement reliably
-# needs roughly 900 days of daily scoring, so anything this window can actually
-# resolve is comfortably above this floor.
-PRICE_FORECAST_MIN_SKILL = 0.05
-
-# Skill at which the model earns its full share of the blend.
-PRICE_FORECAST_FULL_SKILL = 0.20
-
-# Ceiling on the model's contribution. The climatology baseline always keeps a
-# stake: it is the component that is known to work in every market.
-PRICE_FORECAST_MAX_MODEL_WEIGHT = 0.8
-
-# Ridge penalty for the anomaly regression. Small, but non-zero: with ~8
-# correlated daily features and one year of data the unpenalised fit is
-# ill-conditioned in exactly the low-variance markets where it is least useful.
-PRICE_FORECAST_RIDGE_LAMBDA = 1e-3
 
 # Per-day confidence decay with horizon. Day D+n carries
 # ``PRICE_FORECAST_CONFIDENCE_DECAY ** n`` of the base confidence.
