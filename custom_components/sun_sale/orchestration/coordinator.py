@@ -264,6 +264,7 @@ from .persistent_store import (
     PersistentStore,
     entry_storage_key,
 )
+from .price_feed_watchdog import PriceFeedWatchdog
 from .store_codecs import (
     SINGLETON_STORE_SPECS,
     YesterdayBuckets,
@@ -384,6 +385,9 @@ class SunSaleCoordinator(DataUpdateCoordinator):
             update_interval=None,
         )
         self._entry = config_entry
+        # Reloads the integration behind a price sensor that has gone dead and
+        # will not come back on its own; see price_feed_watchdog.py.
+        self._price_feed_watchdog = PriceFeedWatchdog(hass, config_entry.entry_id)
         self._config: dict = {}
         self._sun_sale_config: SunSaleConfig | None = None
         self._capacity_store: PersistentStore[CapacityEstimator] | None = None
@@ -1355,6 +1359,15 @@ class SunSaleCoordinator(DataUpdateCoordinator):
             primary = await run_translators(
                 self._translators, self.hass, self._sun_sale_config, self._config, now
             )
+
+            # A price sensor whose integration dropped it never recovers by
+            # itself, and everything downstream plans on nothing until it does.
+            # Guarded: a failed reload must not take the cycle — or the inverter
+            # dispatch — down with it.
+            with self._guarded("price feed watchdog"):
+                await self._price_feed_watchdog.async_tick(
+                    self._config, self._sun_sale_config.price_source, now,
+                )
 
             # Assemble the DAG's primary inputs through the ordered pre-DAG
             # steps: each seeds its fallback primary value (infallible), then

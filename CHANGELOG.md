@@ -10,6 +10,24 @@ Any behavior-affecting change bumps the `version` in
 
 ## [Unreleased]
 
+### Added
+- **sunSale now recovers a dead price feed by itself.** Some price integrations
+  — the HACS nordpool one among them — fetch inside `async_added_to_hass` and
+  let the exception escape, so a single transient failure at Home Assistant
+  startup aborts the entity add and the sensor stays `restored`/`unavailable`
+  forever: no retry, no `ConfigEntryNotReady`, and the config entry still
+  reporting `loaded`. It happened twice in three days on the author's own
+  install (2026-09-20, no DNS at boot; 2026-09-23, an upstream HTTP 502), each
+  time leaving the inverter with no plan for the rest of the day.
+
+  `orchestration/price_feed_watchdog.py` watches the configured price sensor.
+  After 15 minutes of an unavailable sensor it reloads the config entry that
+  owns it — the one-step fix — up to three times, ten minutes apart. If the
+  sensor is still dead it stops and raises a repair issue instead of retrying
+  silently. Recovery retracts the issue and restores the full budget for next
+  time. sunSale's own entry is never reloaded, and a fixed-price install or one
+  with prices switched off is not watched at all.
+
 ### Changed
 - **An unpriced slot is now filled from the price forecast instead of a
   fabricated zero**, and marked as such. `pipeline/price_fill.py` takes the

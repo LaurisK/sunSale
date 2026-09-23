@@ -42,6 +42,7 @@ _HA_MODULES = [
     "homeassistant.helpers",
     "homeassistant.helpers.aiohttp_client",
     "homeassistant.helpers.entity_registry",
+    "homeassistant.helpers.issue_registry",
     "homeassistant.helpers.event",
     "homeassistant.helpers.restore_state",
     "homeassistant.helpers.selector",

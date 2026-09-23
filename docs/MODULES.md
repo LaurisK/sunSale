@@ -480,6 +480,14 @@ Declarative registry (`HistoryStoreSpec`) for the rolling sample-history stores 
 - **Depends on:** `contract.const`, `orchestration.persistent_store`.
 - **Tests:** `tests/test_history_stores.py`.
 
+### `orchestration/price_feed_watchdog.py`
+Recovers a price sensor whose integration dropped it and never retries — the HACS nordpool failure mode seen live on 2026-09-20 (no DNS at boot) and 2026-09-23 (upstream HTTP 502): it fetches inside `async_added_to_hass` and lets the exception escape, so the entity is never added and stays `restored`/`unavailable` forever while its config entry still reports `loaded`. After a 15-minute grace the watchdog reloads the *owning* config entry, up to 3 times 10 minutes apart, and if the sensor is still dead raises a non-fixable repair issue (`price_feed_dead`, one per sunSale entry). Recovery retracts the issue and resets the budget. `decide()` is pure and holds all the timing logic; the class holds the HA calls. State is in memory only — a restart is itself a recovery attempt.
+- **Exposes:** `PriceFeedWatchdog`, `decide`, `WatchdogState`, the `ACTION_*` constants.
+- **Depends on:** `contract.{const, install_capabilities}`, `ha_state`, HA `entity_registry` + `issue_registry`.
+- **Wired by:** `SunSaleCoordinator._async_update_data`, guarded, right after the translators run.
+- **Never reloads:** sunSale's own entry (that would restart the loop doing the watching), a sensor with no registry-backed config entry, a fixed-price install, or one with prices switched off — the first two go straight to the repair issue, the last two are not watched at all.
+- **Tests:** `tests/test_price_feed_watchdog.py`.
+
 ### `orchestration/debug_view.py`
 HTTP view at `/api/sun_sale/debug` exposing the most recent `primary`, `secondary`, inputs, and outputs as JSON for the panel UI and `tools/integration_check.py`.
 - **Exposes:** `SunSaleDebugView`.

@@ -1174,5 +1174,11 @@
         }
       }
     }
+  },
+  "issues": {
+    "price_feed_dead": {
+      "title": "sunSale has no electricity prices",
+      "description": "The price sensor `{entity_id}` has been unavailable for a while, and reloading the integration that provides it {reloads} times did not bring it back.\n\nWithout market prices sunSale cannot plan: it will not charge, discharge or sell on price, and the inverter is left in its fallback mode.\n\nSome price integrations fetch once when the sensor is created and never retry, so a brief network or upstream API failure at Home Assistant startup disables them permanently. Check that integration, then restart Home Assistant. This message clears itself as soon as the sensor reports a price again."
+    }
   }
 }

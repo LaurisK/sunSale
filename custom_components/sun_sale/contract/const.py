@@ -337,6 +337,25 @@ CONSUMPTION_DAILY_MIN_HOUR_COMPLETENESS = 0.8
 # Rolling price-history retention (days) for profitability scoring.
 PRICE_HISTORY_RETENTION_DAYS = 90
 
+# --- Dead price-feed recovery (orchestration/price_feed_watchdog.py) --------
+
+# How long the price sensor must stay unavailable before the first reload of
+# the integration behind it. Must comfortably outlast an HA restart and a
+# manual integration reload, both of which look identical to an outage for a
+# cycle or two and neither of which wants a reload on top.
+PRICE_FEED_DEAD_GRACE_MINUTES = 15
+
+# Minimum spacing between reload attempts. A reload that is going to work works
+# within a cycle; anything longer is the integration retrying its own fetch,
+# and stacking reloads on top would only interrupt it.
+PRICE_FEED_RELOAD_INTERVAL_MINUTES = 10
+
+# Reload attempts before giving up and raising a repair issue. Three failures
+# spaced ten minutes apart means the fault is not the one the reload fixes, and
+# a silent retry loop from there would hide a problem the user has to see.
+PRICE_FEED_MAX_RELOADS = 3
+
+
 # --- Week-ahead price forecast ---------------------------------------------
 
 # Rolling retention (days) of settled daily price statistics. Longer than the

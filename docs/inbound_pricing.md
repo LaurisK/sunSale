@@ -113,6 +113,19 @@ Each `PriceSlot` carries:
 
 The pricing module emits raw buy/sell price data only. Whether a slot is sellable (the strict `> 0` check) is not a pricing concern — it lives downstream in `pipeline/slot_physics.py` / `pipeline/schedule.py`.
 
+### When the price sensor dies
+
+A price integration can lose its sensor permanently — it fetches inside
+`async_added_to_hass`, the fetch fails once at startup, and the entity is never
+added. It then reads `restored`/`unavailable` forever while its config entry
+still reports `loaded`, so nothing looks broken from the outside.
+`orchestration/price_feed_watchdog.py` reloads the owning config entry after a
+15-minute grace (3 attempts, 10 minutes apart) and raises the `price_feed_dead`
+repair issue if that does not revive it. See `docs/MODULES.md`.
+
+Until it recovers, the feed is simply empty and the grid below is what keeps
+the rest of the pipeline running.
+
 ### Slots the market has not priced
 
 The series always spans local yesterday 00:00 → tomorrow 24:00, because it is the grid every other series is resampled onto; `_fill_grid` pads it with placeholders wherever the feed has nothing. That is most of each day (tomorrow, before the day-ahead auction publishes in the early afternoon) and *all* of it during a feed outage.
