@@ -16,7 +16,9 @@
  *   Sell price  coral  solid stepline  — past history + future from pricing sensor (one continuous line)
  *   Buy/Sell (forecast)  same hues, dashed — the shape engine's own curve for the
  *     days the day-ahead auction has not settled. Starts where the solid line
- *     stops; never merged into it. Data: forecast_price_slots.
+ *     stops; never merged into it. Data: the pricing sensor's forecast:true
+ *     slots (slot resolution, out to end of tomorrow) followed by
+ *     forecast_price_slots (hourly, for the days beyond).
  *   Price forecast error — translucent rect per settled hour spanning forecast
  *     → actual: green when the hour cleared dearer than predicted, red when
  *     cheaper. Same reading as the generation error. Data: price_error_slots.
@@ -1691,22 +1693,31 @@
     }
 
     // ── Data: buy/sell prices from pricing pipeline sensor (all slots) ────────
+    // Split by provenance. A slot flagged forecast:true carries the shape
+    // engine's predicted price, not a cleared one — it belongs on the dashed
+    // line, never the solid one, however plausible the number looks.
 
     _readPricingSlots(beforeMs) {
       const attrs = this._hass.states[this._pricingEid]?.attributes;
-      if (!Array.isArray(attrs?.slots)) return { buy: [], sell: [] };
+      const empty = { buy: [], sell: [], forecastBuy: [], forecastSell: [] };
+      if (!Array.isArray(attrs?.slots)) return empty;
 
-      const buy  = [];
-      const sell = [];
+      const buy = [], sell = [], forecastBuy = [], forecastSell = [];
       for (const slot of attrs.slots) {
         const t = new Date(slot.start).getTime();
         if (!isFinite(t) || t > beforeMs) continue;
-        if (typeof slot.buy_eur_kwh  === 'number') buy.push([t, slot.buy_eur_kwh]);
-        if (typeof slot.sell_eur_kwh === 'number') sell.push([t, slot.sell_eur_kwh]);
+        const predicted = slot.forecast === true;
+        if (typeof slot.buy_eur_kwh === 'number')
+          (predicted ? forecastBuy : buy).push([t, slot.buy_eur_kwh]);
+        if (typeof slot.sell_eur_kwh === 'number')
+          (predicted ? forecastSell : sell).push([t, slot.sell_eur_kwh]);
       }
+      const byTime = (a, b) => a[0] - b[0];
       return {
-        buy:  buy.sort((a, b)  => a[0] - b[0]),
-        sell: sell.sort((a, b) => a[0] - b[0]),
+        buy:          buy.sort(byTime),
+        sell:         sell.sort(byTime),
+        forecastBuy:  forecastBuy.sort(byTime),
+        forecastSell: forecastSell.sort(byTime),
       };
     }
 
@@ -1969,11 +1980,25 @@
       const sellData = _merge(history.sellPrice, pricingSlots.sell, windowStart);
 
       // Predicted prices start where the settled ones stop, so the dashed line
-      // picks up exactly at the auction edge instead of overlapping it.
+      // picks up exactly at the auction edge instead of overlapping it. Two
+      // sources feed it, in order: the pricing sensor's own forecast-filled
+      // slots, which cover yesterday→tomorrow at full slot resolution, and the
+      // hourly engine curve for the days past that window. The two can differ
+      // slightly where they meet — the fill carries the prediction frozen for
+      // that day, the curve this cycle's re-run of the engine — and the fill
+      // wins, because it is the one the planner actually optimised against.
       const lastPriced = buyData.length ? buyData[buyData.length - 1][0] : windowStart;
-      const forecastPrices = this._readForecastPrices(
-        dashAttrs, windowStart, windowEnd, lastPriced,
+      const filledBuy  = pricingSlots.forecastBuy;
+      const filledSell = pricingSlots.forecastSell;
+      const lastFilled = filledBuy.length ? filledBuy[filledBuy.length - 1][0] : lastPriced;
+      const engine = this._readForecastPrices(
+        dashAttrs, windowStart, windowEnd, Math.max(lastPriced, lastFilled),
       );
+      const byTime = (a, b) => a[0] - b[0];
+      const forecastPrices = {
+        buy:  [...filledBuy,  ...engine.buy ].sort(byTime),
+        sell: [...filledSell, ...engine.sell].sort(byTime),
+      };
       // Join the dashed line to the solid one so there is no visual gap.
       if (forecastPrices.buy.length && buyData.length)
         forecastPrices.buy.unshift(buyData[buyData.length - 1]);

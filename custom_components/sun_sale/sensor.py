@@ -452,7 +452,31 @@ class EstimatedCapacitySensor(_BaseSensor):
         return round(self.coordinator.data.get("estimated_capacity", 0.0), 2)
 
 
-class CurrentBuyPriceSensor(_BaseSensor):
+class _CurrentPriceSensor(_BaseSensor):
+    """Base for the current buy/sell price, carrying the slot's provenance.
+
+    The current slot can be forecast-filled — tomorrow's prices are not out
+    yet at 00:05, and a dead price feed can leave a whole day that way. The
+    value is then the engine's estimate, which nothing published here says on
+    its own, so automations templating on these sensors get ``forecast`` to
+    check before they act on the number.
+    """
+
+    @property
+    def extra_state_attributes(self) -> dict[str, Any]:
+        """Return whether this price is a real market price or a forecast.
+
+        Returns:
+            Dict with ``forecast`` (True when the slot was filled from the
+            price forecast) and the slot's provenance tags.
+        """
+        slot = self._current_price_slot()
+        if slot is None:
+            return {}
+        return {"forecast": slot.forecast, "sources": list(slot.sources)}
+
+
+class CurrentBuyPriceSensor(_CurrentPriceSensor):
     """Sensor reporting the effective buy price for the current pricing slot."""
 
     _attr_name = "sunSale Current Buy Price"
@@ -471,7 +495,7 @@ class CurrentBuyPriceSensor(_BaseSensor):
         return round(slot.buy_eur_kwh, 4) if slot else None
 
 
-class CurrentSellPriceSensor(_BaseSensor):
+class CurrentSellPriceSensor(_CurrentPriceSensor):
     """Sensor reporting the effective sell price for the current pricing slot."""
 
     _attr_name = "sunSale Current Sell Price"
@@ -1043,35 +1067,46 @@ class PricingPipelineSensor(_PanelPayloadSensor):
     def extra_state_attributes(self) -> dict[str, Any]:
         """Return full pricing slot data and summary statistics.
 
+        Every slot is published, forecast-filled ones included: the panel needs
+        the unbroken grid, and a filled slot now carries the engine's predicted
+        price rather than the fabricated zero that used to draw as a flat real
+        line. ``forecast: true`` marks those, and is the only thing telling the
+        panel where to switch the line to dashed — so it is emitted per slot,
+        set rather than false, to keep the attribute payload small.
+
         Returns:
             Dict with resolution, computed_at, buy/sell min/max, and per-slot detail.
         """
         pricing: PriceSeries | None = (self.coordinator.data or {}).get("pricing")
         if not pricing:
             return {}
-        # Unpriced filler (tomorrow before the auction) would draw as a real
-        # flat price line and hide the panel's dashed forecast behind it.
-        priced = pricing.priced_slots
-        buy_prices = [s.buy_eur_kwh for s in priced]
-        sell_prices = [s.sell_eur_kwh for s in priced]
+        buy_prices = [s.buy_eur_kwh for s in pricing.slots]
+        sell_prices = [s.sell_eur_kwh for s in pricing.slots]
+
+        def slot_payload(s: PriceSlot) -> dict[str, Any]:
+            """Serialise one slot, flagging it only when it is forecast-filled."""
+            payload = {
+                "start": s.start.isoformat(),
+                "end": s.end.isoformat(),
+                "buy_eur_kwh": round(s.buy_eur_kwh, 4),
+                "sell_eur_kwh": round(s.sell_eur_kwh, 4),
+                "spot_eur_kwh": round(s.spot_eur_kwh, 4),
+            }
+            if s.forecast:
+                payload["forecast"] = True
+            return payload
+
         return {
             "resolution_s": int(pricing.resolution.total_seconds()),
             "computed_at": pricing.computed_at.isoformat(),
-            "negative_sell_count": sum(1 for s in priced if s.sell_eur_kwh <= 0),
+            "negative_sell_count": sum(1 for s in pricing.slots if s.sell_eur_kwh <= 0),
+            "priced_slot_count": len(pricing.priced_slots),
+            "forecast_slot_count": sum(1 for s in pricing.slots if s.forecast),
             "min_buy": round(min(buy_prices), 4) if buy_prices else None,
             "max_buy": round(max(buy_prices), 4) if buy_prices else None,
             "min_sell": round(min(sell_prices), 4) if sell_prices else None,
             "max_sell": round(max(sell_prices), 4) if sell_prices else None,
-            "slots": [
-                {
-                    "start": s.start.isoformat(),
-                    "end": s.end.isoformat(),
-                    "buy_eur_kwh": round(s.buy_eur_kwh, 4),
-                    "sell_eur_kwh": round(s.sell_eur_kwh, 4),
-                    "spot_eur_kwh": round(s.spot_eur_kwh, 4),
-                }
-                for s in priced
-            ],
+            "slots": [slot_payload(s) for s in pricing.slots],
         }
 
 

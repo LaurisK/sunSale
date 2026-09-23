@@ -89,6 +89,11 @@ class PriceSeries:
     resolution: timedelta
     computed_at: datetime
 
+    @property
+    def priced_slots(self) -> tuple[PriceSlot, ...]      # real market prices only
+    @property
+    def plannable_slots(self) -> tuple[PriceSlot, ...]   # priced OR forecast-filled
+
     def slot_at(self, t: datetime) -> PriceSlot | None
     def window(self, t1: datetime, t2: datetime) -> tuple[PriceSlot, ...]
 ```
@@ -103,8 +108,26 @@ Each `PriceSlot` carries:
 | `spot_eur_kwh` | Raw import/spot price, retained for provenance |
 | `export_eur_kwh` | Raw separate export-feed price (dual-feed sources), else `None` |
 | `sources` | `(price_source, "tariff")` for diagnostics — e.g. `("nordpool", "tariff")` |
+| `priced` | `False` on a slot the market has no price for |
+| `forecast` | `True` when that slot has been filled from the price forecast |
 
 The pricing module emits raw buy/sell price data only. Whether a slot is sellable (the strict `> 0` check) is not a pricing concern — it lives downstream in `pipeline/slot_physics.py` / `pipeline/schedule.py`.
+
+### Slots the market has not priced
+
+The series always spans local yesterday 00:00 → tomorrow 24:00, because it is the grid every other series is resampled onto; `_fill_grid` pads it with placeholders wherever the feed has nothing. That is most of each day (tomorrow, before the day-ahead auction publishes in the early afternoon) and *all* of it during a feed outage.
+
+`PricingNode` then hands the assembled series to `pipeline/price_fill.py`, which replaces each placeholder's filler zero with the shape engine's frozen prediction for that day — through the same tariff formula a real slot gets — and sets `forecast=True`. `priced` stays `False`: the slot is an estimate, and only consumers that produce a *plan* may read it.
+
+| View | Contents | Read by |
+|---|---|---|
+| `priced_slots` | Real market prices only | Monthly bill, price level, profitability, the price forecast's settled-day statistics |
+| `plannable_slots` | Priced **or** forecast-filled | `pipeline/calculation.py`, and through it the DP scheduler |
+| `slots` | Everything, placeholders included | Generation/observed resampling, the pricing sensor and the panel |
+
+A day the engine has no prediction for keeps its bare placeholders (`priced=False, forecast=False`) and remains unreadable by everything above — an honest zero beats a guess nobody can attribute.
+
+When the real prices for a filled day arrive they simply overwrite the fill, and the same cycle banks that day's hourly forecast-vs-actual error into `PriceCurveHistory.errors` (`price_fill.bank_fill_errors`, called from the coordinator). See `pipeline/price_fill.py` for the lifecycle.
 
 ---
 

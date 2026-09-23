@@ -578,34 +578,35 @@ def test_daily_cost_attributes_sum_today_flows():
     assert attrs["exported_kwh"] == 0.4
 
 
-def test_pricing_sensor_publishes_only_priced_slots():
-    """Tomorrow's zero-spot filler must not reach the panel as a price line.
+def test_pricing_sensor_flags_forecast_filled_slots():
+    """The flag is the only thing telling the panel where to go dashed.
 
-    The panel starts the dashed forecast where the solid priced line ends, so a
-    filler slot there pushed the forecast off the chart entirely (live,
-    2026-09-23) and would also skew the min/max stats.
+    Every slot is still published — dropping the unpriced tail is what left the
+    chart blank from 'now' onwards on 2026-09-23 — but a slot the engine filled
+    must never pass for a cleared price.
     """
-    from dataclasses import replace
-
     from custom_components.sun_sale.contract.models import PriceSeries, PriceSlot
     from custom_components.sun_sale.sensor import PricingPipelineSensor
 
     step = timedelta(minutes=15)
-    slots = tuple(
-        PriceSlot(
+
+    def slot(i: int, *, priced: bool) -> PriceSlot:
+        return PriceSlot(
             start=BASE + step * i, end=BASE + step * (i + 1),
-            buy_eur_kwh=0.30, sell_eur_kwh=0.10, spot_eur_kwh=0.15, sources=("test",),
+            buy_eur_kwh=0.30, sell_eur_kwh=0.10, spot_eur_kwh=0.15,
+            sources=("test",), priced=priced, forecast=not priced,
         )
-        for i in range(8)
+
+    series = PriceSeries(
+        slots=tuple(slot(i, priced=i < 4) for i in range(8)),
+        resolution=step, computed_at=BASE,
     )
-    filler = tuple(
-        replace(s, start=s.start + step * 8, end=s.end + step * 8,
-                buy_eur_kwh=0.12, sell_eur_kwh=-0.05, spot_eur_kwh=0.0, priced=False)
-        for s in slots
-    )
-    series = PriceSeries(slots=slots + filler, resolution=step, computed_at=BASE)
-    attrs = PricingPipelineSensor(make_coord({"pricing": series}), make_entry()).extra_state_attributes
+    attrs = PricingPipelineSensor(
+        make_coord({"pricing": series}), make_entry()
+    ).extra_state_attributes
 
     assert len(attrs["slots"]) == 8
-    assert attrs["min_buy"] == 0.30
-    assert attrs["negative_sell_count"] == 0
+    assert attrs["priced_slot_count"] == 4
+    assert attrs["forecast_slot_count"] == 4
+    assert "forecast" not in attrs["slots"][0]
+    assert attrs["slots"][4]["forecast"] is True

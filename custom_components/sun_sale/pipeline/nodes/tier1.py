@@ -10,6 +10,7 @@ from ...contract.models import (
     BatteryStatus,
     ConsumptionDailyBuckets,
     EstimatedCapacity,
+    PriceCurveHistory,
     PriceFeedData,
     PriceSeries,
     YesterdayPrices,
@@ -18,13 +19,33 @@ from ...inbound import battery as battery_inbound
 from ...inbound import pricing as pricing_module
 from ...inbound.holiday_calendar import holiday_predicate
 from .. import base_load as base_load_module
+from .. import price_fill as price_fill_module
 from ..dag_engine import DagNode, NodeContext
 
 _LOGGER = logging.getLogger(__name__)
 
 
 class PricingNode(DagNode):
-    """Assemble 72h yesterday→today→tomorrow PriceSeries with tariff applied."""
+    """Assemble 72h yesterday→today→tomorrow PriceSeries with tariff applied.
+
+    Slots the feed has no price for are then filled from the price-forecast
+    engine's frozen prediction for their day and marked ``forecast=True`` (see
+    :mod:`pipeline.price_fill`), so the planner has an estimate to work with
+    past the auction edge instead of a fabricated zero.
+
+    ``PriceCurveHistory`` is a persisted primary with no producer node, so it is
+    read with ``ctx.get`` and deliberately absent from ``consumes``: the fill is
+    an enrichment, and a series without it is still complete. Reading the store
+    rather than this cycle's ``PriceForecast`` is also what keeps the DAG
+    acyclic — the forecast node consumes ``PriceSeries``. The cost is that a
+    prediction frozen this cycle first fills on the next one, which for a
+    once-a-day capture is immaterial.
+
+    Filling from the *frozen* prediction rather than the engine's latest view
+    is also the point, not a limitation: it is the number the error is measured
+    against when the auction publishes, so what the planner optimised over and
+    what the forecast is scored on are the same curve.
+    """
 
     output_type = PriceSeries
     consumes = [PriceFeedData, YesterdayPrices]
@@ -33,11 +54,21 @@ class PricingNode(DagNode):
         """Assemble PriceSeries from PriceFeedData + YesterdayPrices with tariff applied."""
         feed = ctx.require(PriceFeedData)
         yesterday = ctx.require(YesterdayPrices)
+        is_holiday = holiday_predicate(ctx.config.holiday_country)
         series = pricing_module.build_price_series_72h(
             feed, yesterday, ctx.config.tariff, now=ctx.now,
             local_tz=ctx.config.local_tz, source=ctx.config.price_source,
-            is_holiday=holiday_predicate(ctx.config.holiday_country),
+            is_holiday=is_holiday,
         )
+        history: PriceCurveHistory | None = ctx.get(PriceCurveHistory)
+        if history is not None and history.predictions:
+            series = price_fill_module.fill_from_forecast(
+                series,
+                {p.day: p.curve for p in history.predictions},
+                ctx.config.tariff,
+                local_tz=ctx.config.local_tz,
+                is_holiday=is_holiday,
+            )
         return series
 
 

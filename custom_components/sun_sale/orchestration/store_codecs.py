@@ -56,6 +56,7 @@ from ..contract.models import (
     PriceCurveHistory,
     PriceDayRecord,
     PriceEntry,
+    PriceErrorPoint,
     SlotKwh,
     SolarEntry,
     StorageMode,
@@ -332,6 +333,16 @@ def _serialize_price_curve_history(history: PriceCurveHistory) -> dict:
             }
             for p in history.predictions
         ],
+        # Banked on override, not at settlement, so it outlives the prediction
+        # it came from and a restart cannot lose the day's measured error.
+        "errors": [
+            {
+                "t": e.start.isoformat(),
+                "f": round(e.forecast_eur_kwh, 4),
+                "a": round(e.actual_eur_kwh, 4),
+            }
+            for e in history.errors
+        ],
         "shape": _serialize_shape_state(history.shape_state),
     }
 
@@ -437,10 +448,29 @@ def _deserialize_price_curve_history(d: dict) -> PriceCurveHistory:
         except (KeyError, ValueError, TypeError):
             continue
     predictions.sort(key=lambda p: p.day)
+
+    errors: list[PriceErrorPoint] = []
+    for entry in d.get("errors", []):
+        try:
+            forecast = float(entry["f"])
+            actual = float(entry["a"])
+            errors.append(PriceErrorPoint(
+                start=datetime.fromisoformat(entry["t"]),
+                forecast_eur_kwh=forecast,
+                actual_eur_kwh=actual,
+                # Recomputed rather than stored: it is a difference of the two
+                # fields beside it, and a stored third could contradict them.
+                error_eur_kwh=actual - forecast,
+            ))
+        except (KeyError, ValueError, TypeError):
+            continue
+    errors.sort(key=lambda e: e.start)
+
     return PriceCurveHistory(
         records=tuple(records),
         vintages=tuple(vintages),
         predictions=tuple(predictions),
+        errors=tuple(errors),
         shape_state=_deserialize_shape_state(d.get("shape")),
     )
 

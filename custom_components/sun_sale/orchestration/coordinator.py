@@ -77,6 +77,7 @@ from ..contract.const import (
     DOMAIN,
     GRID_POWER_HISTORY_RETENTION_DAYS,
     PRICE_CURVE_RETENTION_DAYS,
+    PRICE_ERROR_RETENTION_DAYS,
     PRICE_HISTORY_RETENTION_DAYS,
     PRICE_SOURCE_FIXED,
     SCHEDULE_SLOT_MINUTES,
@@ -212,6 +213,7 @@ from ..outbound.inverter import (
 )
 from ..outbound.inverter_control_module import InverterControlModule
 from ..pipeline import online_shape
+from ..pipeline import price_fill as price_fill_module
 from ..pipeline import price_forecast as price_forecast_module
 from ..pipeline import profitability as profitability_module
 from ..pipeline import tariff as tariff_module
@@ -1602,6 +1604,16 @@ class SunSaleCoordinator(DataUpdateCoordinator):
         if frozen is not None:
             history = frozen
 
+        # Runs before settle_days, which consumes the predictions this reads.
+        # Any day the market has now priced and the engine had predicted banks
+        # its hourly error here — the afternoon the auction publishes, not at
+        # the next midnight when the day settles.
+        banked = price_fill_module.bank_fill_errors(
+            history, price_series, today_local, local_tz, PRICE_ERROR_RETENTION_DAYS,
+        )
+        if banked is not None:
+            history = banked
+
         config = self._sun_sale_config
         is_holiday = holiday_predicate(config.holiday_country)
         settled = price_forecast_module.settle_days(
@@ -1623,7 +1635,8 @@ class SunSaleCoordinator(DataUpdateCoordinator):
         if settled is not None:
             history = settled
 
-        if updated is not None or frozen is not None or settled is not None:
+        if (updated is not None or frozen is not None or banked is not None
+                or settled is not None):
             await self._price_curve_store.save(history)
 
     async def _async_backfill_price_history(self) -> None:

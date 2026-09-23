@@ -8,6 +8,49 @@ Any behavior-affecting change bumps the `version` in
 `custom_components/sun_sale/manifest.json` and adds an entry here — see
 [`docs/RELEASING.md`](docs/RELEASING.md).
 
+## [Unreleased]
+
+### Changed
+- **An unpriced slot is now filled from the price forecast instead of a
+  fabricated zero**, and marked as such. `pipeline/price_fill.py` takes the
+  shape engine's frozen prediction for the day, runs it through the same tariff
+  formula a real slot gets, and writes it onto the placeholder with
+  `forecast=True` (`priced` stays `False`). Three audiences, three views of the
+  series: `priced_slots` for anything that books a fact (monthly bill, price
+  level, profitability, the forecast's settled-day statistics), the new
+  `plannable_slots` for calculation and schedule, and all `slots` for whoever
+  needs the grid rather than the money.
+
+  The practical effect is that the optimiser keeps producing a plan past the
+  day-ahead auction edge and through a price-feed outage. Through the
+  2026-09-23 outage both live systems sat on an empty schedule for the whole
+  day, because the only thing calculation would look at was prices that were
+  not there.
+- **The forecast error is banked when the real prices override a fill**, not at
+  the next local midnight when the day settles into the history. Tomorrow's
+  error therefore appears the afternoon its auction publishes. The banked set
+  is persisted, survives the prediction it came from, and feeds back into the
+  forecast: a modelled day's confidence is now the horizon decay scaled by
+  measured skill (mean absolute error as a share of the price level it was
+  predicting), floored so a bad fortnight discounts the engine rather than
+  erasing it.
+- The pricing sensor publishes `forecast: true` on filled slots, plus
+  `priced_slot_count` / `forecast_slot_count`; the panel draws a filled stretch
+  on the dashed line rather than the solid one.
+
+### Reverted
+- **The 0.6.2 change that published only priced slots on the pricing sensor.**
+  It cured the symptom — tomorrow's flat zero filler drawn as a real price —
+  by dropping the slots entirely, which on 2026-09-23 left the chart with
+  nothing but a dashed line from "now" onwards once the price feed died. The
+  filler itself is the bug, and the forecast fill above removes it at source.
+- **The 0.6.2 change pairing frozen predictions with live prices inside
+  `_error_slots`.** The same result now comes from banking the error at the
+  override, which also persists it and feeds it back to the engine.
+
+The 0.6.2 inverter-mode-history fix (registry scans skipping disabled
+entities) is unaffected and stays.
+
 ## [0.6.2] — 2026-09-23
 
 ### Fixed

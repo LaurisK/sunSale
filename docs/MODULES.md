@@ -355,9 +355,18 @@ Pure formula: `buy_price` / `sell_price` from spot given a `TariffConfig`; `comp
 - **Tests:** `tests/test_battery.py`.
 
 ### `pipeline/calculation.py`
-Computes feed-in lockout windows from negative-sell slots and per-slot decisions; emits user-facing notes.
+Computes feed-in lockout windows from negative-sell slots and per-slot decisions; emits user-facing notes. Iterates `PriceSeries.plannable_slots` — real prices **plus** the forecast-filled ones (see `price_fill.py`) — so a plan still exists past the day-ahead auction edge and through a price-feed outage. A bare placeholder still gets no `SlotDecision`, which is what keeps fabricated prices out of dispatch.
 - **Exposes:** `compute_calculation(...) → CalculationResult`.
-- **Tests:** `tests/test_calculation.py`.
+- **Tests:** `tests/test_calculation.py`, `tests/test_price_fill.py`.
+
+### `pipeline/price_fill.py`
+Owns the lifecycle of a slot the market has not priced. `fill_from_forecast` replaces the placeholder zero with the shape engine's frozen prediction for that day, run through the same tariff formula a real slot gets, and marks it `forecast=True` (still `priced=False`). `bank_fill_errors` retires the fill the moment real prices arrive: the day's hourly forecast-vs-actual error is banked into `PriceCurveHistory.errors` there and then — the afternoon the auction publishes, not at the next midnight when the day settles.
+- **Exposes:** `fill_from_forecast`, `bank_fill_errors`, `SOURCE_FORECAST`.
+- **Depends on:** `contract.models`, `pipeline.online_shape`, `pipeline.tariff`.
+- **Wired by:** `PricingNode` (Tier 1, fill) and `SunSaleCoordinator._update_price_curve_history` (banking).
+- **Tests:** `tests/test_price_fill.py`.
+
+> **Who may act on an unpriced slot.** `priced_slots` = real market prices, and nothing else may book a fact (monthly bill, price level, profitability, the forecast's own settled-day statistics). `plannable_slots` = priced **or** forecast-filled, for calculation and schedule, which only ever produce a plan the next cycle revises. `slots` = everything, for consumers that need the grid rather than the money (generation/observed resampling, the panel).
 
 ### `pipeline/slot_physics.py`
 Single source of truth for "what does StorageMode X do over one slot, given starting SoC, expected solar/baseload, and buy/sell prices" — `simulate_slot` returns the energy flows (grid in/out, battery charge/discharge, curtailed, …). Both the DP scheduler and any diagnostics route through it so their models agree.

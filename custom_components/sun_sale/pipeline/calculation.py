@@ -34,12 +34,19 @@ def calculate(
         ``expected_solar_negative_sale_kwh`` (no decision taken — the schedule
         module decides what to do).
 
-    Slots carrying no known market price (``priced=False`` — tomorrow before
-    the day-ahead auction publishes, or a price feed outage) get no
+    Slots carrying neither a market price nor a forecast fill get no
     ``SlotDecision`` at all. That is the single choke point keeping fabricated
     prices out of dispatch: ``schedule.build_schedule`` only considers price
-    slots that appear in this result, so an unpriced slot can neither be
+    slots that appear in this result, so a bare placeholder can neither be
     optimised over nor counted as a feed-in lockout.
+
+    A *forecast-filled* slot (``priced=False, forecast=True``) does get one. It
+    carries the engine's predicted price rather than a fabricated zero, and a
+    plan is a proposal the next cycle revises, not a booking — so planning past
+    the auction edge on an estimate is better than planning on nothing, which
+    is what left the inverter with an empty schedule through the 2026-09-23
+    feed outage. Everything that books a fact still reads ``priced_slots``;
+    see :class:`PriceSlot`.
 
     Args:
         prices: Full PriceSeries covering the scheduling horizon.
@@ -51,9 +58,9 @@ def calculate(
         CalculationResult with per-slot SlotDecisions and coalesced lockout windows.
     """
     slots: list[SlotDecision] = []
-    priced_slots = prices.priced_slots
+    plannable = prices.plannable_slots
 
-    for price_slot in priced_slots:
+    for price_slot in plannable:
         locked_out = price_slot.sell_eur_kwh <= 0.0
         expected_kwh = generation.energy_between(price_slot.start, price_slot.end)
         notes: list[str] = []
@@ -76,7 +83,7 @@ def calculate(
             notes=tuple(notes),
         ))
 
-    lockout_windows = _coalesce_lockout_windows(priced_slots)
+    lockout_windows = _coalesce_lockout_windows(plannable)
     total_negative_kwh = sum(s.expected_solar_negative_sale_kwh for s in slots)
 
     return CalculationResult(

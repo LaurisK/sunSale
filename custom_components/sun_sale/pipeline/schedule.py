@@ -368,7 +368,7 @@ def _terminal_value_per_storage_kwh(
     if horizon_discount <= 0:
         return 0.0
     positive_sells = [
-        s.sell_eur_kwh for s in price_series.priced_slots if s.sell_eur_kwh > 0
+        s.sell_eur_kwh for s in price_series.plannable_slots if s.sell_eur_kwh > 0
     ]
     if not positive_sells:
         return 0.0

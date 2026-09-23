@@ -31,6 +31,7 @@ from ..contract.const import (
     ENERGY_DYNAMIC,
     PRICE_FORECAST_CONFIDENCE_DECAY,
     PRICE_FORECAST_HORIZON_DAYS,
+    PRICE_FORECAST_SKILL_FLOOR,
     PRICE_FORECAST_VINTAGE_LEAD_DAYS,
 )
 from ..contract.models import (
@@ -504,6 +505,11 @@ def compute_price_forecast(
     today = now.astimezone(tz).date()
 
     records = tuple(history.records) if history is not None else ()
+    banked = tuple(history.errors) if history is not None else ()
+    # How well the engine has actually been doing lately, folded into every
+    # modelled day's confidence so the number is measured rather than a fixed
+    # decay curve.
+    skill = measured_skill(banked)
     # The state lives on the history, so a caller that passes one need not
     # also thread the other.
     if shape_state is None and history is not None:
@@ -613,7 +619,7 @@ def compute_price_forecast(
             trough_4h_eur_kwh=trough_4h,
             negative_hours=negative_hours,
             negative_generation_kwh=neg_gen,
-            confidence=PRICE_FORECAST_CONFIDENCE_DECAY ** horizon,
+            confidence=(PRICE_FORECAST_CONFIDENCE_DECAY ** horizon) * skill,
             absorbable_kwh=absorbable,
             surplus_kwh=surplus,
         ))
@@ -624,11 +630,7 @@ def compute_price_forecast(
         history_days=len(records),
         shape_days=shape_state.days_seen if shape_state is not None else 0,
         predicted_slots=_predicted_slots(predicted_curves, tz, tariff, is_holiday),
-        error_slots=_error_slots(
-            records, tz, today,
-            price_series=price_series,
-            predictions=history.prediction_by_day() if history is not None else None,
-        ),
+        error_slots=_error_slots(records, tz, today, banked=banked),
     )
 
 
@@ -672,65 +674,90 @@ def _predicted_slots(
     return tuple(out)
 
 
+def measured_skill(
+    banked: Sequence[PriceErrorPoint],
+    floor: float = PRICE_FORECAST_SKILL_FLOOR,
+) -> float:
+    """Return how much of a modelled day's confidence the recent record earns.
+
+    The factor is ``1 − MAE / mean|actual|``: the mean absolute error expressed
+    as a share of the price level it was predicting, so it does not drift with
+    the season the way a raw €/kWh error would. A forecast that is off by the
+    whole price scores 0 before the floor, one that nails every hour scores 1.
+
+    The floor matters more than the formula. The engine is the only view past
+    the auction edge, so a bad fortnight must discount it, not erase it — a
+    confidence of zero would quietly drop those days out of every consumer
+    that weights by it.
+
+    Args:
+        banked: Recent hourly forecast-vs-actual points, from
+            :attr:`PriceCurveHistory.errors`. Empty means unproven, which
+            scores 1.0 — the fixed horizon decay is then the only discount.
+        floor: Lower bound on the returned factor.
+
+    Returns:
+        A factor in ``[floor, 1.0]``.
+    """
+    if not banked:
+        return 1.0
+    scale = sum(abs(e.actual_eur_kwh) for e in banked) / len(banked)
+    if scale <= 0:
+        return 1.0
+    mae = sum(abs(e.error_eur_kwh) for e in banked) / len(banked)
+    return max(floor, min(1.0, 1.0 - mae / scale))
+
+
 def _error_slots(
     records: Sequence[PriceDayRecord],
     local_tz: tzinfo,
     today: date,
     days_back: int = 2,
-    price_series: PriceSeries | None = None,
-    predictions: dict[date, PredictedDay] | None = None,
+    banked: Sequence[PriceErrorPoint] = (),
 ) -> tuple[PriceErrorPoint, ...]:
     """Return the hourly forecast error for the days that have both curves.
 
+    Two sources, the same numbers. A settled record carries both curves and is
+    the long-term one; ``banked`` is what :func:`pipeline.price_fill.bank_fill_errors`
+    wrote the moment the real prices overrode a forecast-filled day, which for
+    tomorrow is the afternoon its auction publishes — hours before it settles.
+    Banked points win on a tie so the chart never loses a day it was already
+    drawing.
+
     Only the days the dashboard's own window covers are published — the store
-    keeps far more, but nothing draws them. A settled record supplies both
-    curves; a day not recorded yet — tomorrow, once its auction publishes in
-    the afternoon — pairs its frozen prediction with the live priced slots, so
-    the error shows as soon as the real prices do instead of from midnight.
+    keeps far more, but nothing draws them.
 
     Args:
         records: Settled history.
         local_tz: Local timezone.
         today: Local date of the cycle.
         days_back: How many days before today to include.
-        price_series: Live prices, for days that have no record yet.
-        predictions: Frozen predictions keyed by target day.
+        banked: Errors banked on override, newest first or last — order is
+            irrelevant, they are re-sorted by hour.
 
     Returns:
         Hourly points, ascending.
     """
     cutoff = today - timedelta(days=days_back)
-    by_day = {record.day: record for record in records if record.day >= cutoff}
-    pending = {
-        day: p.curve for day, p in (predictions or {}).items()
-        if day >= cutoff and len(p.curve) == online_shape.HOURS
-    }
-    pairs: dict[date, tuple[Sequence[float], Sequence[float]]] = {}
-    for day in sorted(by_day.keys() | pending.keys()):
-        record = by_day.get(day)
-        forecast_curve = (record.predicted_curve if record else None) or pending.get(day)
-        if not forecast_curve:
+    by_hour: dict[datetime, PriceErrorPoint] = {}
+    for record in records:
+        if record.day < cutoff or not record.curve or not record.predicted_curve:
             continue
-        actual_curve: Sequence[float] | None = record.curve if record else None
-        if not actual_curve and price_series is not None:
-            actual_curve = online_shape.curve_from_slots(
-                slots_for_local_day(price_series.priced_slots, day, local_tz),
-                day, local_tz,
-            )
-        if actual_curve:
-            pairs[day] = (actual_curve, forecast_curve)
-
-    out: list[PriceErrorPoint] = []
-    for day in sorted(pairs):
-        actuals, forecasts = pairs[day]
-        for hour, (actual, forecast) in enumerate(zip(actuals, forecasts)):
-            out.append(PriceErrorPoint(
-                start=datetime.combine(day, time(hour=hour), tzinfo=local_tz),
+        for hour, (actual, forecast) in enumerate(
+            zip(record.curve, record.predicted_curve)
+        ):
+            start = datetime.combine(record.day, time(hour=hour), tzinfo=local_tz)
+            by_hour[start] = PriceErrorPoint(
+                start=start,
                 forecast_eur_kwh=forecast,
                 actual_eur_kwh=actual,
                 error_eur_kwh=actual - forecast,
-            ))
-    return tuple(out)
+            )
+    for point in banked:
+        if point.start.astimezone(local_tz).date() < cutoff:
+            continue
+        by_hour[point.start] = point
+    return tuple(by_hour[start] for start in sorted(by_hour))
 
 
 def _forecast_solar_by_day(
@@ -939,9 +966,12 @@ def settle_days(
     # Vintages are consumed once their day settles, and dropped if their day
     # passed without ever settling, so the list cannot grow without bound.
     kept_vintages = tuple(v for v in history.vintages if v.day > today)
-    # A prediction is consumed by the day it was made for, and dropped if that
-    # day passed without settling, so the list cannot grow without bound.
-    kept_predictions = tuple(p for p in history.predictions if p.day > today)
+    # A prediction is consumed by the day it was made for and dropped once that
+    # day is behind us, so the list holds at most today + tomorrow. Today's is
+    # kept for the whole of today rather than dropped at midnight: during a feed
+    # outage it is the only thing that can fill today's slots, and it is still
+    # what the day's error is measured against when the prices do arrive.
+    kept_predictions = tuple(p for p in history.predictions if p.day >= today)
     if (not added and len(kept_vintages) == len(history.vintages)
             and len(kept_predictions) == len(history.predictions)):
         return None

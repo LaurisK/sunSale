@@ -22,12 +22,17 @@ class PriceEntry:
     (tomorrow not published yet, or the price feed is unavailable). Its
     ``price_eur_kwh`` is a filler zero and must never be traded or billed on —
     see :class:`PriceSlot`.
+
+    ``forecast`` is True on a placeholder the price-forecast engine has filled
+    in: still ``priced=False``, but carrying the engine's predicted spot rather
+    than a fabricated zero. See :class:`PriceSlot` for what may act on it.
     """
     start: datetime
     end: datetime
     price_eur_kwh: float
     export_price_eur_kwh: float | None = None
     priced: bool = True
+    forecast: bool = False
 
 
 @dataclass(frozen=True)
@@ -328,10 +333,28 @@ class PriceSlot:
 
     A slot with ``priced=False`` carries no known market price: it exists only
     so the slot grid keeps spanning the full yesterday→tomorrow window when the
-    feed has no data for it. Everything that *decides* or *bills* on money
-    (calculation → schedule, monthly bill, price level, profitability, price
-    forecast) must skip it; everything that only needs the grid (generation and
-    the observed series) uses it normally.
+    feed has no data for it.
+
+    Such a slot comes in two kinds, and the difference decides who may act on
+    it:
+
+    * ``forecast=False`` — a bare placeholder holding a filler zero. Nothing
+      may read its prices at all.
+    * ``forecast=True`` — filled from the price-forecast engine's own predicted
+      curve for that day (see :mod:`pipeline.price_fill`). Its buy/sell/spot
+      are the engine's best estimate, passed through the same tariff formula as
+      a real slot, so the *planner* may optimise over it — a predicted price is
+      a far better basis for tomorrow's plan than a fabricated 0.00 €/kWh.
+
+    The split by consumer is therefore:
+
+    * ``plannable_slots`` (priced **or** forecast-filled) — calculation and
+      schedule, which only ever produce a *plan* that the next cycle revises.
+    * ``priced_slots`` (real market prices only) — anything that books a fact:
+      monthly bill, price level, profitability, and the price forecast's own
+      settled-day statistics. None of these may ever see an estimate.
+    * ``slots`` (everything) — consumers that need the grid, not the money:
+      the generation and observed series resampling onto it, and the panel.
     """
     start: datetime
     end: datetime
@@ -341,6 +364,7 @@ class PriceSlot:
     sources: tuple[str, ...]  # (price_source, "tariff") — for diagnostics
     export_eur_kwh: float | None = None  # raw separate export feed (feed mode)
     priced: bool = True  # False = placeholder; never trade or bill on it
+    forecast: bool = False  # True = placeholder filled from the forecast engine
 
 
 @dataclass(frozen=True)
@@ -364,6 +388,19 @@ class PriceSeries:
             money-deciding consumer should iterate instead of ``slots``.
         """
         return tuple(s for s in self.slots if s.priced)
+
+    @property
+    def plannable_slots(self) -> tuple[PriceSlot, ...]:
+        """Return the slots a *plan* may be built over.
+
+        Real prices plus the placeholders the forecast engine has filled in —
+        see :class:`PriceSlot` for why the planner may use an estimate where
+        the billing path may not.
+
+        Returns:
+            The subset of ``slots`` with ``priced=True`` or ``forecast=True``.
+        """
+        return tuple(s for s in self.slots if s.priced or s.forecast)
 
     def slot_at(self, t: datetime) -> PriceSlot | None:
         """Return the slot covering time t, or None if outside the series.
@@ -965,10 +1002,18 @@ class PriceCurveHistory:
     # than recomputed each start: the records are what it was trained on, and
     # replaying them is only needed when this is absent.
     shape_state: OnlineShapeState | None = None
+    # Hourly forecast-vs-actual error, banked the moment the real prices
+    # overrode a forecast-filled day rather than at next midnight when the day
+    # settles. Sorted by hour ascending, pruned to the display window.
+    errors: tuple[PriceErrorPoint, ...] = ()
 
     def prediction_by_day(self) -> dict[date, PredictedDay]:
         """Return the frozen predictions keyed by target local date."""
         return {p.day: p for p in self.predictions}
+
+    def error_days(self) -> set[date]:
+        """Return the local dates the banked error already covers."""
+        return {e.start.date() for e in self.errors}
 
     def by_day(self) -> dict[date, PriceDayRecord]:
         """Return the records keyed by local date."""

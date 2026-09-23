@@ -364,6 +364,17 @@ WEATHER_REFRESH_MINUTES = 60
 # ``PRICE_FORECAST_CONFIDENCE_DECAY ** n`` of the base confidence.
 PRICE_FORECAST_CONFIDENCE_DECAY = 0.85
 
+# Days of banked hourly forecast error kept, and the window the measured-skill
+# factor is computed over. Two weeks is long enough to average out one freak
+# day and short enough to follow a genuine change in the engine's accuracy.
+PRICE_ERROR_RETENTION_DAYS = 14
+
+# Floor under the measured-skill factor that scales a modelled day's
+# confidence. A run of bad days should discount the forecast, not erase it:
+# the engine is still the only view past the auction edge, and a zero
+# confidence would silently drop those days out of every consumer.
+PRICE_FORECAST_SKILL_FLOOR = 0.4
+
 # Update interval (minutes). The coordinator does not free-run on this period —
 # it ticks on the wall-clock minutes that are multiples of it (:00, :05, …), so
 # a cycle always lands *on* a schedule-slot boundary rather than up to one
