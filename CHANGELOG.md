@@ -8,6 +8,26 @@ Any behavior-affecting change bumps the `version` in
 `custom_components/sun_sale/manifest.json` and adds an entry here — see
 [`docs/RELEASING.md`](docs/RELEASING.md).
 
+## [Unreleased]
+
+### Fixed
+- **Observed inverter mode read `unknown` forever on a newly added Solis
+  inverter**, so its panel drew no mode history (self-use / discharge / …
+  bands). solis_modbus registers its hidden 43110 readback *disabled* rather
+  than not at all; the resolver matched that stateless entity and so never
+  reached the enabled 33132 mirror fallback. Registry scans (Solis, the
+  declarative platform profiles and the solar-forecast resolver) now skip
+  disabled entities.
+- **The next-day price forecast never appeared on the chart before the
+  auction.** The pricing sensor published tomorrow's zero-spot placeholder
+  slots as if they were prices, so the solid line ran to the end of tomorrow
+  as a flat filler and the dashed forecast (which starts where the priced line
+  ends) was dropped. The sensor now publishes only priced slots, and its
+  min/max/negative-sell stats ignore the filler too.
+- **Price forecast error now shows as soon as tomorrow's auction publishes**,
+  pairing the frozen prediction with the live prices, instead of only after
+  midnight when the day is settled into the history.
+
 ## [0.6.1] — 2026-09-22
 
 ### Added

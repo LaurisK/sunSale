@@ -11,9 +11,19 @@ from custom_components.sun_sale.inbound import solis_entity_resolver as r
 class _Entry:
     """Minimal entity-registry entry stub."""
 
-    def __init__(self, unique_id: str, entity_id: str) -> None:
+    def __init__(
+        self, unique_id: str, entity_id: str, disabled_by: str | None = None,
+    ) -> None:
+        """Store the identifiers the resolver matches on.
+
+        Args:
+            unique_id: Registry unique_id.
+            entity_id: Registry entity_id.
+            disabled_by: Registry ``disabled_by`` (None = enabled).
+        """
         self.unique_id = unique_id
         self.entity_id = entity_id
+        self.disabled_by = disabled_by
 
 
 @pytest.fixture
@@ -176,3 +186,25 @@ def test_storage_control_prefers_the_canonical_43110_sensor(registry_scan):
     result = r.resolve_solis_entities(MagicMock(), "entry")
     assert result["storage_control_readback"] == \
         "sensor.namai_inv_storage_control_switch_value_2"
+
+
+def test_storage_control_skips_the_disabled_canonical_sensor(registry_scan):
+    # What sodas' registry actually holds: the hidden 43110 sensor *is*
+    # registered, but disabled by the integration, so it never has a state.
+    # Matching it left the role pinned to a stateless entity and kept the
+    # enabled 33132 mirror out of the fallback — observed mode read
+    # ``unknown`` and the panel drew no mode history (live, 2026-09-23).
+    registry_scan.extend([
+        _Entry(
+            "solis_modbus_SN123_solis_modbus_inverter_storage_control_switch_value",
+            "sensor.solis_s6_eh3p_storage_control_switch_value",
+            disabled_by="integration",
+        ),
+        _Entry(
+            "solis_modbus_SN123_solis_modbus_inverter_storage_control_switching_value",
+            "sensor.solis_s6_eh3p_storage_control_switching_value",
+        ),
+    ])
+    result = r.resolve_solis_entities(MagicMock(), "entry")
+    assert result["storage_control_readback"] == \
+        "sensor.solis_s6_eh3p_storage_control_switching_value"

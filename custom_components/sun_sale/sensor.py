@@ -1049,12 +1049,15 @@ class PricingPipelineSensor(_PanelPayloadSensor):
         pricing: PriceSeries | None = (self.coordinator.data or {}).get("pricing")
         if not pricing:
             return {}
-        buy_prices = [s.buy_eur_kwh for s in pricing.slots]
-        sell_prices = [s.sell_eur_kwh for s in pricing.slots]
+        # Unpriced filler (tomorrow before the auction) would draw as a real
+        # flat price line and hide the panel's dashed forecast behind it.
+        priced = pricing.priced_slots
+        buy_prices = [s.buy_eur_kwh for s in priced]
+        sell_prices = [s.sell_eur_kwh for s in priced]
         return {
             "resolution_s": int(pricing.resolution.total_seconds()),
             "computed_at": pricing.computed_at.isoformat(),
-            "negative_sell_count": sum(1 for s in pricing.slots if s.sell_eur_kwh <= 0),
+            "negative_sell_count": sum(1 for s in priced if s.sell_eur_kwh <= 0),
             "min_buy": round(min(buy_prices), 4) if buy_prices else None,
             "max_buy": round(max(buy_prices), 4) if buy_prices else None,
             "min_sell": round(min(sell_prices), 4) if sell_prices else None,
@@ -1067,7 +1070,7 @@ class PricingPipelineSensor(_PanelPayloadSensor):
                     "sell_eur_kwh": round(s.sell_eur_kwh, 4),
                     "spot_eur_kwh": round(s.spot_eur_kwh, 4),
                 }
-                for s in pricing.slots
+                for s in priced
             ],
         }
 

@@ -576,3 +576,36 @@ def test_daily_cost_attributes_sum_today_flows():
     attrs = DailyCostSensor(coord, make_entry()).extra_state_attributes
     assert attrs["imported_kwh"] == 1.5
     assert attrs["exported_kwh"] == 0.4
+
+
+def test_pricing_sensor_publishes_only_priced_slots():
+    """Tomorrow's zero-spot filler must not reach the panel as a price line.
+
+    The panel starts the dashed forecast where the solid priced line ends, so a
+    filler slot there pushed the forecast off the chart entirely (live,
+    2026-09-23) and would also skew the min/max stats.
+    """
+    from dataclasses import replace
+
+    from custom_components.sun_sale.contract.models import PriceSeries, PriceSlot
+    from custom_components.sun_sale.sensor import PricingPipelineSensor
+
+    step = timedelta(minutes=15)
+    slots = tuple(
+        PriceSlot(
+            start=BASE + step * i, end=BASE + step * (i + 1),
+            buy_eur_kwh=0.30, sell_eur_kwh=0.10, spot_eur_kwh=0.15, sources=("test",),
+        )
+        for i in range(8)
+    )
+    filler = tuple(
+        replace(s, start=s.start + step * 8, end=s.end + step * 8,
+                buy_eur_kwh=0.12, sell_eur_kwh=-0.05, spot_eur_kwh=0.0, priced=False)
+        for s in slots
+    )
+    series = PriceSeries(slots=slots + filler, resolution=step, computed_at=BASE)
+    attrs = PricingPipelineSensor(make_coord({"pricing": series}), make_entry()).extra_state_attributes
+
+    assert len(attrs["slots"]) == 8
+    assert attrs["min_buy"] == 0.30
+    assert attrs["negative_sell_count"] == 0

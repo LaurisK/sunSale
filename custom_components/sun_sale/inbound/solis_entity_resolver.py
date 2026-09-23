@@ -294,8 +294,8 @@ _OPTIONAL_ROLES: frozenset[str] = frozenset({
 # Second-choice sensors, scanned only for roles the primary map left unresolved.
 # A role lands here when its canonical entity carries ``hidden: True`` upstream:
 # that sets ``entity_registry_enabled_default = False``, so a solis_modbus config
-# entry created after the flag was added never registers an enabled entity for it
-# and the role resolves to nothing (older entries keep theirs as a registry
+# entry created after the flag was added registers it *disabled* (skipped by the
+# scan) and the role resolves to nothing (older entries keep an enabled registry
 # leftover, which is why this only bites on newly added inverters).
 _SENSOR_FALLBACKS: dict[str, tuple[str, str]] = {
     # Storage Control word. The canonical readback is the hidden 43110 sensor;
@@ -365,9 +365,17 @@ def resolve_solis_entities(hass: HomeAssistant, config_entry_id: str) -> dict[st
         omitted; the caller falls back to the manual-mapping config-flow form.
     """
     registry = er.async_get(hass)
+    # A disabled entity is still in the registry but never gets a state, so
+    # resolving a role to it reads ``None`` forever and — worse — keeps the
+    # role out of the fallback pass below (live: sodas' 43110 readback).
+    entries = [
+        entry
+        for entry in er.async_entries_for_config_entry(registry, config_entry_id)
+        if getattr(entry, "disabled_by", None) is None
+    ]
     result: dict[str, str] = {}
 
-    for entry in er.async_entries_for_config_entry(registry, config_entry_id):
+    for entry in entries:
         uid = entry.unique_id or ""
         entity_id = entry.entity_id or ""
         for role, (suffix, tail) in _SENSOR_SUFFIXES.items():
@@ -403,7 +411,7 @@ def resolve_solis_entities(hass: HomeAssistant, config_entry_id: str) -> dict[st
     for role, (suffix, tail) in _SENSOR_FALLBACKS.items():
         if role in result:
             continue
-        for entry in er.async_entries_for_config_entry(registry, config_entry_id):
+        for entry in entries:
             if _matches(entry.unique_id or "", entry.entity_id or "", suffix, tail):
                 _LOGGER.debug(
                     "solis_modbus resolver: %s resolved via fallback %s",
@@ -416,7 +424,7 @@ def resolve_solis_entities(hass: HomeAssistant, config_entry_id: str) -> dict[st
     # sensor.* readback entity (both domains share the same entity_id tail).
     # Re-scan and override with the number.* entity so that
     # InverterController._set_number can call number.set_value successfully.
-    for entry in er.async_entries_for_config_entry(registry, config_entry_id):
+    for entry in entries:
         uid = entry.unique_id or ""
         entity_id = entry.entity_id or ""
         if not entity_id.startswith("number."):

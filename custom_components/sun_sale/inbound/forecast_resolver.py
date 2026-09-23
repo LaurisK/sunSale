@@ -232,7 +232,13 @@ def _resolve_one(hass: HomeAssistant, registry: er.EntityRegistry, entry_id: str
         )
         return ""
 
-    entities = er.async_entries_for_config_entry(registry, entry_id)
+    # Disabled entities never get a state, so a preferred tail that is disabled
+    # must not shadow an enabled later one.
+    entities = [
+        ent
+        for ent in er.async_entries_for_config_entry(registry, entry_id)
+        if getattr(ent, "disabled_by", None) is None
+    ]
     # Honour tail preference order: a tail earlier in the tuple wins even if a
     # later-tail entity is encountered first in the registry scan.
     for tail in tails:

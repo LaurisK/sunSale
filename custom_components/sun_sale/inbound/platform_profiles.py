@@ -356,6 +356,10 @@ def resolve_profile_entities(
     result: dict[str, str] = {}
 
     for entry in er.async_entries_for_config_entry(registry, config_entry_id):
+        # A disabled entity never gets a state; binding a role to it would read
+        # nothing forever while hiding an enabled sibling that matches too.
+        if getattr(entry, "disabled_by", None) is not None:
+            continue
         uid = entry.unique_id or ""
         entity_id = entry.entity_id or ""
         domain = entity_id.split(".", 1)[0] if "." in entity_id else ""

@@ -624,7 +624,11 @@ def compute_price_forecast(
         history_days=len(records),
         shape_days=shape_state.days_seen if shape_state is not None else 0,
         predicted_slots=_predicted_slots(predicted_curves, tz, tariff, is_holiday),
-        error_slots=_error_slots(records, tz, today),
+        error_slots=_error_slots(
+            records, tz, today,
+            price_series=price_series,
+            predictions=history.prediction_by_day() if history is not None else None,
+        ),
     )
 
 
@@ -673,31 +677,55 @@ def _error_slots(
     local_tz: tzinfo,
     today: date,
     days_back: int = 2,
+    price_series: PriceSeries | None = None,
+    predictions: dict[date, PredictedDay] | None = None,
 ) -> tuple[PriceErrorPoint, ...]:
     """Return the hourly forecast error for the days that have both curves.
 
     Only the days the dashboard's own window covers are published — the store
-    keeps far more, but nothing draws them.
+    keeps far more, but nothing draws them. A settled record supplies both
+    curves; a day not recorded yet — tomorrow, once its auction publishes in
+    the afternoon — pairs its frozen prediction with the live priced slots, so
+    the error shows as soon as the real prices do instead of from midnight.
 
     Args:
         records: Settled history.
         local_tz: Local timezone.
         today: Local date of the cycle.
         days_back: How many days before today to include.
+        price_series: Live prices, for days that have no record yet.
+        predictions: Frozen predictions keyed by target day.
 
     Returns:
         Hourly points, ascending.
     """
     cutoff = today - timedelta(days=days_back)
-    out: list[PriceErrorPoint] = []
-    for record in records:
-        if record.day < cutoff or not record.curve or not record.predicted_curve:
+    by_day = {record.day: record for record in records if record.day >= cutoff}
+    pending = {
+        day: p.curve for day, p in (predictions or {}).items()
+        if day >= cutoff and len(p.curve) == online_shape.HOURS
+    }
+    pairs: dict[date, tuple[Sequence[float], Sequence[float]]] = {}
+    for day in sorted(by_day.keys() | pending.keys()):
+        record = by_day.get(day)
+        forecast_curve = (record.predicted_curve if record else None) or pending.get(day)
+        if not forecast_curve:
             continue
-        for hour, (actual, forecast) in enumerate(
-            zip(record.curve, record.predicted_curve)
-        ):
+        actual_curve: Sequence[float] | None = record.curve if record else None
+        if not actual_curve and price_series is not None:
+            actual_curve = online_shape.curve_from_slots(
+                slots_for_local_day(price_series.priced_slots, day, local_tz),
+                day, local_tz,
+            )
+        if actual_curve:
+            pairs[day] = (actual_curve, forecast_curve)
+
+    out: list[PriceErrorPoint] = []
+    for day in sorted(pairs):
+        actuals, forecasts = pairs[day]
+        for hour, (actual, forecast) in enumerate(zip(actuals, forecasts)):
             out.append(PriceErrorPoint(
-                start=datetime.combine(record.day, time(hour=hour), tzinfo=local_tz),
+                start=datetime.combine(day, time(hour=hour), tzinfo=local_tz),
                 forecast_eur_kwh=forecast,
                 actual_eur_kwh=actual,
                 error_eur_kwh=actual - forecast,
