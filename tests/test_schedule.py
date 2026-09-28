@@ -4,7 +4,8 @@ Pure Python, no HA required. These tests check schedule-level invariants
 (chronology, SoC bounds, profit accounting, mode selection under price
 extremes). Per-mode energy physics is covered by tests/test_slot_physics.py.
 """
-from datetime import UTC
+from dataclasses import replace
+from datetime import UTC, timedelta
 
 import pytest
 
@@ -23,7 +24,11 @@ from custom_components.sun_sale.contract.models import (
 from custom_components.sun_sale.inbound.pricing import build_price_series
 from custom_components.sun_sale.pipeline.battery import degradation_cost_per_kwh
 from custom_components.sun_sale.pipeline.calculation import calculate
-from custom_components.sun_sale.pipeline.schedule import optimize_schedule
+from custom_components.sun_sale.pipeline.schedule import (
+    _load_reserve_value_per_kwh,
+    estimate_load_reserve_kwh,
+    optimize_schedule,
+)
 from custom_components.sun_sale.pipeline.slot_physics import simulate_slot
 from tests.conftest import (
     BASE_DT,
@@ -929,3 +934,169 @@ def test_reserve_larger_than_the_envelope_degrades_to_holding():
     schedule = run(_sell_everything_prices(), soc=0.90, forecast_reserve_soc=5.0)
     assert schedule.slots
     assert all(s.expected_soc_after <= 1.0 for s in schedule.slots)
+
+
+# ---------------------------------------------------------------------------
+# Load reserve — two-tier terminal value (docs/load_reserve_plan.md)
+# ---------------------------------------------------------------------------
+
+
+def _evening_peak_prices(night_spot: float = 0.15):
+    """A day at 0.15 spot with a long 13–20 peak at 0.25, optional cheap night.
+
+    Under the flat tariff a storage kWh sold at the peak nets ~0.16 after
+    efficiency and wear — well above the flat terminal value (~0.07) but below
+    the load-reserve value (0.9 × median buy ≈ 0.21).
+    """
+    return [
+        make_price(h, 0.25 if 13 <= h <= 20 else (night_spot if h < 6 else 0.15))
+        for h in range(24)
+    ]
+
+
+def _run_reserve(prices, load_reserve_kwh, *, soc=0.90, allow_grid_charging=False):
+    """Run the DP with a given load reserve and grid-charging policy."""
+    # 1 kW discharge: each peak hour moves ~1.1 storage kWh, fine enough for
+    # the end SoC to show where the reserve sits.
+    bc = replace(default_battery_config(), max_discharge_power_kw=1.0)
+    state = default_battery_state(soc)
+    state.estimated_capacity_kwh = bc.nominal_capacity_kwh
+    deg = degradation_cost_per_kwh(bc, state)
+    ps = build_price_series(prices, default_tariff_config(), now=NOW)
+    calc = calculate(ps, _make_gen_series([]), state, NOW)
+    return optimize_schedule(
+        ps, calc, bc, state, deg, NOW,
+        allow_grid_charging=allow_grid_charging,
+        load_reserve_kwh=load_reserve_kwh,
+    )
+
+
+def test_zero_load_reserve_leaves_the_schedule_unchanged():
+    """R = 0 is today's flat terminal value, bit for bit."""
+    prices = _evening_peak_prices()
+    baseline = run(prices, soc=0.90,
+                   battery_config=replace(default_battery_config(), max_discharge_power_kw=1.0))
+    reserved = _run_reserve(prices, 0.0, allow_grid_charging=True)
+    assert [s.mode for s in reserved.slots] == [s.mode for s in baseline.slots]
+    assert [s.expected_soc_after for s in reserved.slots] == [
+        s.expected_soc_after for s in baseline.slots
+    ]
+    assert reserved.terminal.reserve_kwh == 0.0
+
+
+def test_without_reserve_the_evening_peak_drains_the_battery():
+    """Control: the flat terminal value sells everything at the evening peak."""
+    schedule = _run_reserve(_evening_peak_prices(), 0.0)
+    assert schedule.slots[-1].expected_soc_after == pytest.approx(0.10, abs=0.03)
+
+
+def test_load_reserve_holds_the_reserve_and_sells_only_the_rest():
+    """With R = 4 kWh the plan ends holding ≈ R above the floor, sells the rest."""
+    schedule = _run_reserve(_evening_peak_prices(), 4.0)
+    final = schedule.slots[-1].expected_soc_after
+    # 10 kWh pack: 4 kWh above the 10 % floor is 50 % SoC; one peak hour
+    # moves ~11 % SoC, so the DP lands within a slot of it.
+    assert 0.45 <= final <= 0.62
+    assert any(s.mode is StorageMode.Discharge for s in schedule.slots)
+
+
+def test_cheap_grid_refill_keeps_the_evening_sale():
+    """Grid charging on + a cheap night caps the reserve at the refill cost."""
+    prices = _evening_peak_prices(night_spot=0.0)
+    held = _run_reserve(prices, 8.0, allow_grid_charging=False)
+    sold = _run_reserve(prices, 8.0, allow_grid_charging=True)
+    assert sold.terminal.reserve_eur_kwh < held.terminal.reserve_eur_kwh
+    evening = [s for s in sold.slots if 13 <= s.start.hour <= 20]
+    assert any(s.mode is StorageMode.Discharge for s in evening)
+    assert sold.slots[-1].expected_soc_after < held.slots[-1].expected_soc_after
+
+
+def test_reserve_value_never_below_flat_value():
+    """Negative buys drag the refill cap down; the flat value is the floor."""
+    ps = build_price_series(
+        [make_price(h, -0.50 if h < 12 else 0.10) for h in range(24)],
+        default_tariff_config(), now=NOW,
+    )
+    for flat in (0.0, 0.05, 0.5):
+        for grid in (False, True):
+            assert _load_reserve_value_per_kwh(ps, 0.9, 0.04, grid, flat) >= flat
+
+
+def _gen_with_totals(tomorrow_hours, **totals) -> GenerationSeries:
+    """Tomorrow's slots at 1 kWh each in the given hours, plus daily totals."""
+    tomorrow = NOW + timedelta(days=1)
+    slots = tuple(
+        GenerationSlot(
+            start=tomorrow.replace(hour=h), end=tomorrow.replace(hour=h) + timedelta(hours=1),
+            expected_kwh=1.0,
+        )
+        for h in tomorrow_hours
+    )
+    return GenerationSeries(
+        slots=slots, total_tomorrow_kwh=float(len(tomorrow_hours)), **totals,
+    )
+
+
+def test_estimate_load_reserve_hand_computed_two_days():
+    """Two dim days: shortfall = 20 dark hours × load + 4 part-covered hours."""
+    gen = _gen_with_totals(range(10, 14), total_d2_kwh=0.4, total_d3_kwh=0.8)
+    reserve = estimate_load_reserve_kwh(
+        gen, _flat_baseload(0.5), horizon_end=NOW + timedelta(days=2),
+        now=NOW, local_tz=UTC, eff=0.9, days=2,
+    )
+    # d2: 4 sunny hours at 0.1 kW → 20×0.5 + 4×0.4 = 11.6
+    # d3: 4 sunny hours at 0.2 kW → 20×0.5 + 4×0.3 = 11.2
+    assert reserve == pytest.approx((11.6 + 11.2) / 0.9)
+
+
+def test_big_solar_next_days_reserve_only_the_nights():
+    """Solar covering every sunny hour leaves only the dark hours' load."""
+    gen = _gen_with_totals(range(10, 14), total_d2_kwh=20.0, total_d3_kwh=20.0,
+                           total_d4_kwh=20.0)
+    reserve = estimate_load_reserve_kwh(
+        gen, _flat_baseload(0.5), horizon_end=NOW + timedelta(days=2),
+        now=NOW, local_tz=UTC, eff=0.9,
+    )
+    assert reserve == pytest.approx(3 * 20 * 0.5 / 0.9)
+
+
+def test_missing_day_totals_are_skipped_not_guessed():
+    """A provider that stops at d2 leaves d3/d4 at 0 — those days reserve nothing."""
+    short = _gen_with_totals(range(10, 14), total_d2_kwh=20.0)
+    reserve = estimate_load_reserve_kwh(
+        short, _flat_baseload(0.5), horizon_end=NOW + timedelta(days=2),
+        now=NOW, local_tz=UTC, eff=0.9,
+    )
+    # Only d2 counts: 20 dark hours × 0.5 kW.
+    assert reserve == pytest.approx(20 * 0.5 / 0.9)
+
+
+def test_no_forecast_at_all_reserves_only_the_extra():
+    """No daily totals: no day is reserved for, only the explicit extra kWh."""
+    reserve = estimate_load_reserve_kwh(
+        GenerationSeries(slots=()), _flat_baseload(0.5),
+        horizon_end=NOW + timedelta(days=1), now=NOW, local_tz=UTC, eff=1.0,
+        extra_kwh=7.0,
+    )
+    assert reserve == pytest.approx(7.0)
+
+
+def test_extra_kwh_adds_on_top_of_the_uncovered_load():
+    """Extra AC kWh (an EV charge) converts to storage kWh like the load."""
+    gen = _gen_with_totals(range(10, 14), total_d2_kwh=20.0)
+    kwargs = dict(horizon_end=NOW + timedelta(days=2), now=NOW, local_tz=UTC, eff=0.9)
+    base = estimate_load_reserve_kwh(gen, _flat_baseload(0.5), **kwargs)
+    with_ev = estimate_load_reserve_kwh(gen, _flat_baseload(0.5), extra_kwh=18.0, **kwargs)
+    assert with_ev - base == pytest.approx(18.0 / 0.9)
+
+
+def test_days_beyond_the_forecast_are_skipped():
+    """Six days past tomorrow reach d7, which has no total and adds nothing."""
+    gen = _gen_with_totals(range(10, 14), total_d2_kwh=20.0, total_d3_kwh=20.0,
+                           total_d4_kwh=20.0, total_d5_kwh=20.0, total_d6_kwh=20.0)
+    reserve = estimate_load_reserve_kwh(
+        gen, _flat_baseload(0.5), horizon_end=NOW + timedelta(days=2),
+        now=NOW, local_tz=UTC, eff=0.9, days=6,
+    )
+    # d2–d6: 4 sunny hours fully covered, 20 dark hours at 0.5 kW; d7 skipped.
+    assert reserve == pytest.approx(5 * 20 * 0.5 / 0.9)

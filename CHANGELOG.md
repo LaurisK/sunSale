@@ -8,6 +8,33 @@ Any behavior-affecting change bumps the `version` in
 `custom_components/sun_sale/manifest.json` and adds an entry here — see
 [`docs/RELEASING.md`](docs/RELEASING.md).
 
+## [Unreleased]
+
+### Added
+- **Load reserve — stop selling at the evening peak what the house buys back
+  overnight.** Charge left at the end of the plan used to be worth one flat
+  figure (half the median sell price, ~6.5 c/kWh), so any evening sale beat
+  keeping it. The DP then drained to the minimum at the last peak it could see,
+  and the house bought its night and next-day load at 0.17–0.45 €/kWh. In winter
+  that leaves the battery empty for roughly half of all hours.
+
+  With the new **sunSale Load Reserve** switch on (default **off**), charge up to
+  the household load that forecast solar will not cover over the next few days
+  is valued at what buying that load would cost. **Load Reserve Days** (3–6,
+  default 3) sets how many days, and **Load Reserve Extra** (kWh, default 0)
+  adds energy on top of the house load — e.g. an EV charge the house-load
+  profile never sees. A day the solar forecast does not cover is skipped, not
+  guessed. When grid charging is allowed,
+  that value is capped at the cheapest refill plus wear, so an evening sale
+  followed by a cheap night charge still happens. Charge above the reserve keeps
+  the old flat value, and the reserve can only make the planner hold more,
+  never less. A backtest over last winter's prices recovered €10–27 per winter
+  at ≤ €3 summer cost (docs/load_reserve_plan.md).
+
+  The debug view shows the figures under `outputs.schedule.terminal`, and the
+  integration check recomputes them. Pricing debug rows now carry the
+  `forecast` flag, and `config` carries `round_trip_efficiency`.
+
 ## [0.6.3] — 2026-09-23
 
 ### Added

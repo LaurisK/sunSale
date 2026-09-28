@@ -11,6 +11,7 @@ from custom_components.sun_sale.switch import (
     AllowFeedInSwitch,
     AllowGridChargingSwitch,
     AutomationSwitch,
+    LoadReserveSwitch,
     UseStandbySwitch,
 )
 
@@ -80,6 +81,7 @@ def _make_policy_switch(cls, **coord_attrs):
         (AllowGridChargingSwitch, "allow_grid_charging", "allow_grid_charging"),
         (AllowFeedInSwitch, "allow_feed_in", "allow_feed_in"),
         (AllowDischargeToGridSwitch, "allow_discharge_to_grid", "allow_discharge_to_grid"),
+        (LoadReserveSwitch, "load_reserve_enabled", "load_reserve"),
     ],
 )
 def test_policy_switch_mirrors_coordinator(cls, attr, suffix):
@@ -97,6 +99,7 @@ def test_policy_switch_mirrors_coordinator(cls, attr, suffix):
         (AllowGridChargingSwitch, "allow_grid_charging"),
         (AllowFeedInSwitch, "allow_feed_in"),
         (AllowDischargeToGridSwitch, "allow_discharge_to_grid"),
+        (LoadReserveSwitch, "load_reserve_enabled"),
     ],
 )
 async def test_policy_switch_turn_on_off(cls, attr):

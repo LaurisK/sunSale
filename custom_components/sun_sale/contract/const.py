@@ -475,6 +475,13 @@ DEFAULT_SCHEDULE_USE_STANDBY = True
 DEFAULT_SCHEDULE_ALLOW_GRID_CHARGING = True
 DEFAULT_SCHEDULE_ALLOW_FEED_IN = True
 DEFAULT_SCHEDULE_ALLOW_DISCHARGE_TO_GRID = True
+# Load reserve: value end-of-horizon charge the house will need over the next
+# days at buy price. Dispatch-affecting, hence off by default.
+DEFAULT_SCHEDULE_LOAD_RESERVE = False
+# Days after the horizon end the load reserve covers, and extra AC kWh held on
+# top of the house load (e.g. an EV charge the baseload profile does not see).
+DEFAULT_SCHEDULE_LOAD_RESERVE_DAYS = 3
+DEFAULT_SCHEDULE_LOAD_RESERVE_EXTRA_KWH = 0.0
 
 # Numeric schedule-policy knobs. Values mirror the in-module DEFAULT_* used by
 # pipeline/schedule.py so that the user-facing entities start at the same
@@ -507,3 +514,10 @@ SCHEDULE_TERMINAL_VALUE_DISCOUNT_MIN = 0.0
 SCHEDULE_TERMINAL_VALUE_DISCOUNT_MAX = 1.0
 SCHEDULE_MAX_DISCHARGE_TO_GRID_KW_MIN = 0.5
 SCHEDULE_MAX_DISCHARGE_TO_GRID_KW_MAX = 30.0
+# Load reserve: 3 days matched the backtest; the forecast's daily totals end at
+# d6, and a day without one is skipped, so more days would add nothing. Extra
+# kWh is bounded by any sane pack.
+SCHEDULE_LOAD_RESERVE_DAYS_MIN = 3
+SCHEDULE_LOAD_RESERVE_DAYS_MAX = 6
+SCHEDULE_LOAD_RESERVE_EXTRA_KWH_MIN = 0.0
+SCHEDULE_LOAD_RESERVE_EXTRA_KWH_MAX = 100.0

@@ -1060,6 +1060,8 @@
         info: 'When on, the scheduler may prioritise feed-in to the grid during surplus-solar slots.' },
       { key: 'allow_discharge_to_grid',label: 'Allow discharge to grid',match: ['allow_discharge_to_grid'],
         info: 'When on, the scheduler may pick the explicit Discharge-to-grid mode at high sell prices.' },
+      { key: 'load_reserve',           label: 'Load reserve',           match: ['load_reserve'],
+        info: 'When on, charge the house will need over the next three days (load forecast solar will not cover) is valued at buy price at the end of the plan, so the planner stops selling it at an evening peak only to buy it back overnight.' },
     ];
 
     _SCHEDULE_NUMBERS = [
@@ -1071,6 +1073,10 @@
         info: 'Multiplier on the in-horizon median sell price when valuing leftover end-of-horizon battery charge. Lower → value stored energy less, so the planner discharges more freely before the window ends.' },
       { key: 'max_discharge_to_grid',  label: 'Max discharge to grid',  match: ['max_discharge_to_grid'], unit: 'kW',
         info: 'AC power cap (kW) for Discharge-to-grid mode. Below the hardware max it limits how aggressively the planner schedules grid export.' },
+      { key: 'load_reserve_days',      label: 'Load reserve days',      match: ['load_reserve_days'], unit: 'd',
+        info: 'How many days after the end of the plan the load reserve covers (3–6). Days the solar forecast does not reach are skipped. Only used while the Load reserve switch is on.' },
+      { key: 'load_reserve_extra',     label: 'Load reserve extra',     match: ['load_reserve_extra'], unit: 'kWh',
+        info: 'Extra energy the load reserve keeps on top of the house load, e.g. an EV charge the house-load profile does not see. Only used while the Load reserve switch is on.' },
     ];
 
     _SCHEDULE_SELECTS = [

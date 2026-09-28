@@ -7,6 +7,8 @@ from unittest.mock import MagicMock
 import pytest
 
 from custom_components.sun_sale.number import (
+    LoadReserveDaysNumber,
+    LoadReserveExtraKwhNumber,
     ModeChangePenaltyNumber,
     ProfitabilityTiltAlphaNumber,
     TerminalValueDiscountNumber,
@@ -28,6 +30,8 @@ def _make_number(cls, attr: str, initial: float):
         (ModeChangePenaltyNumber, "mode_change_penalty_eur_per_kwh", "mode_change_penalty", 0.005),
         (ProfitabilityTiltAlphaNumber, "profitability_tilt_alpha", "profitability_tilt_alpha", 0.5),
         (TerminalValueDiscountNumber, "terminal_value_discount", "terminal_value_discount", 0.5),
+        (LoadReserveDaysNumber, "load_reserve_days", "load_reserve_days", 3),
+        (LoadReserveExtraKwhNumber, "load_reserve_extra_kwh", "load_reserve_extra_kwh", 12.5),
     ],
 )
 def test_native_value_mirrors_coordinator(cls, attr, suffix, initial):
@@ -42,6 +46,8 @@ def test_native_value_mirrors_coordinator(cls, attr, suffix, initial):
         (ModeChangePenaltyNumber, "mode_change_penalty_eur_per_kwh"),
         (ProfitabilityTiltAlphaNumber, "profitability_tilt_alpha"),
         (TerminalValueDiscountNumber, "terminal_value_discount"),
+        (LoadReserveDaysNumber, "load_reserve_days"),
+        (LoadReserveExtraKwhNumber, "load_reserve_extra_kwh"),
     ],
 )
 async def test_set_native_value_writes_to_coordinator(cls, attr):
@@ -105,3 +111,14 @@ async def test_restore_numeric_state_overrides_default(monkeypatch):
     await n.async_added_to_hass()
 
     assert coord.terminal_value_discount == pytest.approx(0.25)
+
+
+def test_load_reserve_knob_bounds():
+    """Days span 3–6 in whole days; extra kWh starts at 0."""
+    days, _ = _make_number(LoadReserveDaysNumber, "load_reserve_days", 3)
+    extra, _ = _make_number(LoadReserveExtraKwhNumber, "load_reserve_extra_kwh", 0.0)
+    assert (
+        days._attr_native_min_value, days._attr_native_max_value, days._attr_native_step,
+    ) == (3, 6, 1)
+    assert extra._attr_native_min_value == 0.0
+    assert extra._attr_native_unit_of_measurement == "kWh"

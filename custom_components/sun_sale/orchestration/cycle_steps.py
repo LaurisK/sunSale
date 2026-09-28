@@ -34,6 +34,10 @@ from typing import TYPE_CHECKING
 
 from ..contract.const import (
     COUNTER_SNAPSHOT_HISTORY_RETENTION_DAYS,
+    SCHEDULE_LOAD_RESERVE_DAYS_MAX,
+    SCHEDULE_LOAD_RESERVE_DAYS_MIN,
+    SCHEDULE_LOAD_RESERVE_EXTRA_KWH_MAX,
+    SCHEDULE_LOAD_RESERVE_EXTRA_KWH_MIN,
     SCHEDULE_MAX_DISCHARGE_TO_GRID_KW_MAX,
     SCHEDULE_MAX_DISCHARGE_TO_GRID_KW_MIN,
     SCHEDULE_MODE_CHANGE_PENALTY_MAX,
@@ -146,6 +150,9 @@ class ScheduleKnobs:
     export_limit_kw: float | None = None
     max_battery_charge_kw: float | None = None
     max_battery_discharge_kw: float | None = None
+    load_reserve_enabled: bool = False
+    load_reserve_days: float = 3
+    load_reserve_extra_kwh: float = 0.0
 
 
 class CycleStep:
@@ -627,6 +634,17 @@ class SchedulePolicyStep(CycleStep):
             allow_grid_charging=k.allow_grid_charging,
             allow_feed_in=k.allow_feed_in,
             allow_discharge_to_grid=k.allow_discharge_to_grid,
+            load_reserve_enabled=k.load_reserve_enabled,
+            load_reserve_days=int(round(_clamp(
+                k.load_reserve_days,
+                SCHEDULE_LOAD_RESERVE_DAYS_MIN,
+                SCHEDULE_LOAD_RESERVE_DAYS_MAX,
+            ))),
+            load_reserve_extra_kwh=_clamp(
+                k.load_reserve_extra_kwh,
+                SCHEDULE_LOAD_RESERVE_EXTRA_KWH_MIN,
+                SCHEDULE_LOAD_RESERVE_EXTRA_KWH_MAX,
+            ),
             mode_change_penalty_eur_per_kwh=_clamp(
                 k.mode_change_penalty_eur_per_kwh,
                 SCHEDULE_MODE_CHANGE_PENALTY_MIN,

@@ -13,6 +13,7 @@ from .contract.const import (
     DEFAULT_SCHEDULE_ALLOW_DISCHARGE_TO_GRID,
     DEFAULT_SCHEDULE_ALLOW_FEED_IN,
     DEFAULT_SCHEDULE_ALLOW_GRID_CHARGING,
+    DEFAULT_SCHEDULE_LOAD_RESERVE,
     DEFAULT_SCHEDULE_USE_STANDBY,
     DOMAIN,
 )
@@ -38,6 +39,7 @@ async def async_setup_entry(
         AllowGridChargingSwitch(coordinator, entry),
         AllowFeedInSwitch(coordinator, entry),
         AllowDischargeToGridSwitch(coordinator, entry),
+        LoadReserveSwitch(coordinator, entry),
     ])
 
 
@@ -175,3 +177,20 @@ class AllowDischargeToGridSwitch(_SunSaleSwitchBase):
     _unique_suffix = "allow_discharge_to_grid"
     _coord_attr = "allow_discharge_to_grid"
     _default_on = DEFAULT_SCHEDULE_ALLOW_DISCHARGE_TO_GRID
+
+
+class LoadReserveSwitch(_SunSaleSwitchBase):
+    """When on the scheduler holds charge for the next days' uncovered house load.
+
+    End-of-horizon charge up to the household load that forecast solar will not
+    cover over the next three days is valued at what buying that load would
+    cost, instead of the flat sell-side terminal value — so the planner stops
+    selling at an evening peak what the house then buys back overnight.
+    Dispatch-affecting, hence OFF by default.
+    """
+
+    _attr_name = "sunSale Load Reserve"
+    _attr_icon = "mdi:home-battery"
+    _unique_suffix = "load_reserve"
+    _coord_attr = "load_reserve_enabled"
+    _default_on = DEFAULT_SCHEDULE_LOAD_RESERVE

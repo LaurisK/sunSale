@@ -19,10 +19,16 @@ from homeassistant.helpers.restore_state import RestoreEntity
 from homeassistant.helpers.update_coordinator import CoordinatorEntity
 
 from .contract.const import (
+    DEFAULT_SCHEDULE_LOAD_RESERVE_DAYS,
+    DEFAULT_SCHEDULE_LOAD_RESERVE_EXTRA_KWH,
     DEFAULT_SCHEDULE_MODE_CHANGE_PENALTY_EUR_PER_KWH,
     DEFAULT_SCHEDULE_PROFITABILITY_TILT_ALPHA,
     DEFAULT_SCHEDULE_TERMINAL_VALUE_DISCOUNT,
     DOMAIN,
+    SCHEDULE_LOAD_RESERVE_DAYS_MAX,
+    SCHEDULE_LOAD_RESERVE_DAYS_MIN,
+    SCHEDULE_LOAD_RESERVE_EXTRA_KWH_MAX,
+    SCHEDULE_LOAD_RESERVE_EXTRA_KWH_MIN,
     SCHEDULE_MAX_DISCHARGE_TO_GRID_KW_MAX,
     SCHEDULE_MAX_DISCHARGE_TO_GRID_KW_MIN,
     SCHEDULE_MODE_CHANGE_PENALTY_MAX,
@@ -54,6 +60,8 @@ async def async_setup_entry(
         ProfitabilityTiltAlphaNumber(coordinator, entry),
         TerminalValueDiscountNumber(coordinator, entry),
         MaxDischargeToGridKwNumber(coordinator, entry),
+        LoadReserveDaysNumber(coordinator, entry),
+        LoadReserveExtraKwhNumber(coordinator, entry),
     ])
 
 
@@ -164,6 +172,34 @@ class TerminalValueDiscountNumber(_SunSalePolicyNumber):
     _unique_suffix = "terminal_value_discount"
     _coord_attr = "terminal_value_discount"
     _default_value = DEFAULT_SCHEDULE_TERMINAL_VALUE_DISCOUNT
+
+
+class LoadReserveDaysNumber(_SunSalePolicyNumber):
+    """Days after the plan's end whose uncovered house load the load reserve holds."""
+
+    _attr_name = "sunSale Load Reserve Days"
+    _attr_icon = "mdi:calendar-range"
+    _attr_native_unit_of_measurement = "d"
+    _attr_native_min_value = SCHEDULE_LOAD_RESERVE_DAYS_MIN
+    _attr_native_max_value = SCHEDULE_LOAD_RESERVE_DAYS_MAX
+    _attr_native_step = 1
+    _unique_suffix = "load_reserve_days"
+    _coord_attr = "load_reserve_days"
+    _default_value = DEFAULT_SCHEDULE_LOAD_RESERVE_DAYS
+
+
+class LoadReserveExtraKwhNumber(_SunSalePolicyNumber):
+    """Extra kWh the load reserve holds on top of the house load (e.g. EV charge)."""
+
+    _attr_name = "sunSale Load Reserve Extra"
+    _attr_icon = "mdi:car-electric"
+    _attr_native_unit_of_measurement = "kWh"
+    _attr_native_min_value = SCHEDULE_LOAD_RESERVE_EXTRA_KWH_MIN
+    _attr_native_max_value = SCHEDULE_LOAD_RESERVE_EXTRA_KWH_MAX
+    _attr_native_step = 0.5
+    _unique_suffix = "load_reserve_extra_kwh"
+    _coord_attr = "load_reserve_extra_kwh"
+    _default_value = DEFAULT_SCHEDULE_LOAD_RESERVE_EXTRA_KWH
 
 
 class MaxDischargeToGridKwNumber(CoordinatorEntity, RestoreEntity, NumberEntity):

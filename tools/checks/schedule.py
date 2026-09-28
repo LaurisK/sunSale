@@ -2,7 +2,9 @@
 from __future__ import annotations
 
 from dataclasses import dataclass, field
-from datetime import UTC, datetime
+from datetime import UTC, datetime, timedelta
+from statistics import median
+from zoneinfo import ZoneInfo
 
 from rich.text import Text
 from textual.app import ComposeResult
@@ -24,6 +26,33 @@ class ScheduleCheckResult:
     slot_rows: list[dict] = field(default_factory=list)
     mismatches: list[str] = field(default_factory=list)
     overall_ok: bool = True
+    terminal: TerminalCheck | None = None
+
+
+# Tolerances for the terminal recompute. Prices reach the debug view rounded to
+# 4 decimals, so a median can drift by ~1e-4; the reserve sums 72 hours of
+# baseload rounded to 4 decimals.
+_EUR_TOL = 1e-3
+_KWH_TOL = 0.05
+
+# Mirrors pipeline.schedule.LOAD_RESERVE_DAYS — used when the snapshot's
+# policy block predates the load_reserve_days knob.
+_LOAD_RESERVE_DAYS = 3
+
+
+@dataclass
+class TerminalCheck:
+    """Declared vs recomputed end-of-horizon valuation (docs/load_reserve_plan.md)."""
+
+    enabled: bool = False
+    declared_flat_eur_kwh: float = 0.0
+    computed_flat_eur_kwh: float | None = None
+    declared_reserve_eur_kwh: float = 0.0
+    computed_reserve_eur_kwh: float | None = None
+    declared_reserve_kwh: float = 0.0
+    computed_reserve_kwh: float | None = None
+    skip_reason: str = ""
+    ok: bool = True
 
 
 def check_schedule(snap: Snapshot) -> ScheduleCheckResult:
@@ -104,7 +133,137 @@ def check_schedule(snap: Snapshot) -> ScheduleCheckResult:
         result.mismatches.append("profit_sum")
         result.overall_ok = False
 
+    terminal = schedule.get("terminal")
+    if terminal is not None:
+        result.terminal = _check_terminal(snap, terminal, slots, policy)
+        if not result.terminal.ok:
+            result.mismatches.append("terminal")
+            result.overall_ok = False
+
     return result
+
+
+def _check_terminal(
+    snap: Snapshot, terminal: dict, slots: list[dict], policy: dict,
+) -> TerminalCheck:
+    """Recompute the schedule's two-tier terminal valuation from the snapshot.
+
+    Mirrors ``pipeline.schedule`` independently: the flat value is the median
+    positive plannable sell × efficiency × profitability tilt × discount; the
+    reserve price is efficiency × median plannable buy, capped at cheapest buy
+    + wear when grid charging is allowed, never below the flat value; the
+    reserve size is the next ``load_reserve_days`` days' baseload not covered by
+    same-hour forecast solar, plus the extra kWh, divided by efficiency.
+
+    Args:
+        snap: Coordinator snapshot.
+        terminal: ``outputs.schedule.terminal`` block.
+        slots: ``outputs.schedule.slots`` rows (horizon end = last slot end).
+        policy: ``pipeline.schedule_policy`` block.
+
+    Returns:
+        TerminalCheck with declared and recomputed figures.
+    """
+    tc = TerminalCheck(
+        enabled=bool(policy.get("load_reserve_enabled")),
+        declared_flat_eur_kwh=terminal.get("flat_eur_kwh") or 0.0,
+        declared_reserve_eur_kwh=terminal.get("reserve_eur_kwh") or 0.0,
+        declared_reserve_kwh=terminal.get("reserve_kwh") or 0.0,
+    )
+    if not tc.enabled and tc.declared_reserve_kwh > _KWH_TOL:
+        tc.ok = False  # switch off yet a reserve was held
+        return tc
+
+    eff = snap.config.get("round_trip_efficiency")
+    pricing = snap.pipeline.get("pricing") or {}
+    rows = [r for r in pricing.get("slots") or [] if r.get("priced") or r.get("forecast")]
+    if eff is None or not rows:
+        tc.skip_reason = "no efficiency or plannable prices in snapshot"
+        return tc
+
+    discount = policy.get("terminal_value_discount") or 0.0
+    alpha = policy.get("profitability_tilt_alpha") or 0.0
+    score = (snap.pipeline.get("profitability_score") or {}).get("score")
+    score = 0.5 if score is None else score
+    sells = [r["sell"] for r in rows if r["sell"] > 0]
+    flat = 0.0
+    if discount > 0 and sells:
+        flat = median(sells) * eff * (1.0 + alpha * (1.0 - score)) * discount
+    tc.computed_flat_eur_kwh = flat
+
+    buys = [r["buy"] for r in rows]
+    reserve_price = eff * median(buys)
+    if policy.get("allow_grid_charging"):
+        deg = snap.pipeline.get("degradation_cost_per_kwh") or 0.0
+        reserve_price = min(reserve_price, min(buys) + deg)
+    tc.computed_reserve_eur_kwh = max(reserve_price, flat)
+
+    tc.ok = (
+        abs(tc.computed_flat_eur_kwh - tc.declared_flat_eur_kwh) <= _EUR_TOL
+        and abs(tc.computed_reserve_eur_kwh - tc.declared_reserve_eur_kwh) <= _EUR_TOL
+    )
+    if tc.enabled:
+        tc.computed_reserve_kwh = _recompute_reserve_kwh(
+            snap, slots, eff,
+            days=int(policy.get("load_reserve_days") or _LOAD_RESERVE_DAYS),
+            extra_kwh=policy.get("load_reserve_extra_kwh") or 0.0,
+        )
+        if tc.computed_reserve_kwh is None:
+            tc.skip_reason = "reserve size not recomputable (forecast/baseload missing)"
+        elif abs(tc.computed_reserve_kwh - tc.declared_reserve_kwh) > _KWH_TOL:
+            tc.ok = False
+    return tc
+
+
+def _recompute_reserve_kwh(
+    snap: Snapshot, slots: list[dict], eff: float, *, days: int, extra_kwh: float,
+) -> float | None:
+    """Recompute the load-reserve size from the snapshot's forecast and baseload.
+
+    Args:
+        snap: Coordinator snapshot.
+        slots: Schedule slot rows; the last one's end is the horizon end.
+        eff: Round-trip efficiency.
+        days: Days after the horizon end covered (policy knob).
+        extra_kwh: Extra AC kWh reserved on top of the house load.
+
+    Returns:
+        Storage-side kWh, or None when an input is missing.
+    """
+    forecast = snap.pipeline.get("forecast")
+    base_load = snap.pipeline.get("base_load_profile")
+    computed_at = (snap.outputs.get("schedule") or {}).get("computed_at")
+    if not forecast or not base_load or not slots or not computed_at or eff <= 0:
+        return None
+    tz = ZoneInfo(snap.config.get("time_zone") or "UTC")
+    load_by_hour = {s["hour"]: s["baseload_kw"] for s in base_load.get("slots") or []}
+
+    today = datetime.fromisoformat(computed_at).astimezone(tz).date()
+    keys = ("total_today_kwh", "total_tomorrow_kwh", "total_d2_kwh", "total_d3_kwh",
+            "total_d4_kwh", "total_d5_kwh", "total_d6_kwh")
+    totals = {today + timedelta(days=i): forecast.get(k) or 0.0 for i, k in enumerate(keys)}
+
+    shape = [0.0] * 24
+    for day in (today + timedelta(days=1), today):
+        hourly = [0.0] * 24
+        for g in forecast.get("slots") or []:
+            local = datetime.fromisoformat(g["start"]).astimezone(tz)
+            if local.date() == day:
+                hourly[local.hour] += g["expected_kwh"]
+        if sum(hourly) > 0:
+            shape = [h / sum(hourly) for h in hourly]
+            break
+
+    horizon_end = datetime.fromisoformat(slots[-1]["end"])
+    shortfall = 0.0
+    for i in range(days * 24):
+        local = (horizon_end + timedelta(hours=i)).astimezone(tz)
+        total = totals.get(local.date(), 0.0)
+        if total <= 0:
+            continue  # no forecast for this day — skipped, as in the pipeline
+        solar = shape[local.hour] * total
+        shortfall += max(0.0, load_by_hour.get(local.hour, 0.0) - solar)
+    return (shortfall + max(0.0, extra_kwh)) / eff
 
 
 class ScheduleSlotsTable(Static):
@@ -254,6 +413,20 @@ class ScheduleCheckWidget(Static):
                 for r in sc.slot_rows
                 if r.get("soc_pct") is not None
             ]
+            tc = sc.terminal
+            if tc is not None:
+                t_style = "green" if tc.ok else "red"
+                reserve = (
+                    f"  reserve {tc.declared_reserve_kwh:.2f} kWh"
+                    f" @ {tc.declared_reserve_eur_kwh:.4f}€"
+                    if tc.enabled else "  load reserve off"
+                )
+                yield Static(
+                    f"  terminal: [{t_style}]flat {tc.declared_flat_eur_kwh:.4f}€"
+                    f"{reserve}[/{t_style}]"
+                    + (f"  ({tc.skip_reason})" if tc.skip_reason else ""),
+                    markup=True,
+                )
             yield _SocSparkline(soc_values)
             with Collapsible(title="Slots", collapsed=False):
                 yield ScheduleSlotsTable(sc)

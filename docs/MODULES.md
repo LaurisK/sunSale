@@ -210,7 +210,7 @@ Configuration key names, storage keys, defaults, retention windows. Pure constan
 
 ### `contract/models.py`
 Flat catalogue of every immutable dataclass — configs, primary types, secondary types. New node-level types are added here rather than per-feature submodules.
-- **Exposes (selected):** `SunSaleConfig`, `BatteryConfig`, `TariffConfig`, `SchedulePolicy`, `PriceEntry`, `PriceSlot`, `PriceSeries`, `PriceFeedData`/`NordpoolData` (alias), `YesterdayPrices`, `SolarData`, `GenerationSeries`, `ObservedGenerationSeries`, `ObservedGridSeries`, `ObservedConsumptionSeries`, `ObservedLossesSeries`, `DerivedPowerSample`, `BatteryReading`, `BatteryState`, `BatteryStatus`, `EstimatedCapacity`, `DegradationCost`, `CalculationResult`, `Schedule`, `ScheduleSlot`, `StorageMode`, `StorageModeSpec`, `InverterModeReading`, `InverterModeChange`, `InverterModeHistory`, grid/`*History` types, `MonthlyBillState`/`Result`, `BaseLoadProfile`, `BatteryRuntimeEstimate`, `ForecastAccuracyResult`, `DailyPeak`, `PriceHistory`, `ProfitabilityScore`, baked/consumption-daily types, … (single source of truth — see file).
+- **Exposes (selected):** `SunSaleConfig`, `BatteryConfig`, `TariffConfig`, `SchedulePolicy`, `PriceEntry`, `PriceSlot`, `PriceSeries`, `PriceFeedData`/`NordpoolData` (alias), `YesterdayPrices`, `SolarData`, `GenerationSeries`, `ObservedGenerationSeries`, `ObservedGridSeries`, `ObservedConsumptionSeries`, `ObservedLossesSeries`, `DerivedPowerSample`, `BatteryReading`, `BatteryState`, `BatteryStatus`, `EstimatedCapacity`, `DegradationCost`, `CalculationResult`, `Schedule`, `ScheduleSlot`, `TerminalValuation`, `StorageMode`, `StorageModeSpec`, `InverterModeReading`, `InverterModeChange`, `InverterModeHistory`, grid/`*History` types, `MonthlyBillState`/`Result`, `BaseLoadProfile`, `BatteryRuntimeEstimate`, `ForecastAccuracyResult`, `DailyPeak`, `PriceHistory`, `ProfitabilityScore`, baked/consumption-daily types, … (single source of truth — see file).
 - **Depends on:** none.
 - **Tests:** `tests/test_models.py`.
 
@@ -376,7 +376,9 @@ Single source of truth for "what does StorageMode X do over one slot, given star
 
 ### `pipeline/schedule.py`
 SoC-bucketed **backward dynamic programming** over the price horizon → per-slot `StorageMode`. Action set `{SelfUse, NoExport, StandBy, GridCharge, Discharge, FeedIn}`; per-slot physics delegated to `slot_physics.simulate_slot`; terminal battery value tilted by `ProfitabilityScore`, with a mode-change penalty scaled by battery throughput.
-- **Exposes:** `optimize_schedule(...) → Schedule`.
+
+  **Load reserve** (opt-in, `LoadReserveSwitch` → `SchedulePolicy.load_reserve_enabled`, default off). The terminal value has two tiers: the first `R` storage kWh above the planning floor are worth `max(eff × median plannable buy [capped at cheapest buy + wear when grid charging is allowed], flat value)`, everything above `R` the flat value. `R` = (the next `load_reserve_days` days' baseload not covered by same-hour forecast solar + `load_reserve_extra_kwh`) ÷ eff, with day totals beyond tomorrow shaped by tomorrow's slots. A day with no forecast total (a 0 from a short-horizon provider, or past d6) is skipped, never guessed. Days (3–6, default 3) and extra kWh (e.g. an EV charge) are the `LoadReserveDays` / `LoadReserveExtraKwh` numbers. It can only make the planner hold more, never less. The figures ride on `Schedule.terminal` (`TerminalValuation`) to `outputs.schedule.terminal`, and `check_schedule` recomputes them. Rationale and backtest: [load_reserve_plan.md](load_reserve_plan.md).
+- **Exposes:** `optimize_schedule(...) → Schedule`, `estimate_load_reserve_kwh(...)`.
 - **Depends on:** `contract.models`, `pipeline.slot_physics`.
 - **Tests:** `tests/test_schedule.py`.
 
@@ -524,7 +526,7 @@ All HA sensor entities; reads from the string-keyed `coordinator.data` dict.
 - **Tests:** `tests/test_sensor.py`.
 
 ### `switch.py`
-`AutomationSwitch` (master kill-switch; when off the scheduler path issues no commands) plus the scheduler-policy switches `UseStandby` / `AllowGridCharging` / `AllowFeedIn` / `AllowDischargeToGrid` (folded into `SchedulePolicy`).
+`AutomationSwitch` (master kill-switch; when off the scheduler path issues no commands) plus the scheduler-policy switches `UseStandby` / `AllowGridCharging` / `AllowFeedIn` / `AllowDischargeToGrid` / `LoadReserve` (folded into `SchedulePolicy`).
 - **Tests:** `tests/test_switch.py`.
 
 ### `select.py`
@@ -532,7 +534,7 @@ All HA sensor entities; reads from the string-keyed `coordinator.data` dict.
 - **Tests:** `tests/test_select.py`.
 
 ### `number.py`
-Scheduler-policy number knobs: `ModeChangePenalty`, `ProfitabilityTiltAlpha`, `TerminalValueDiscount`, `MaxDischargeToGridKw` — each mirrors a coordinator attribute folded into `SchedulePolicy`.
+Scheduler-policy number knobs: `ModeChangePenalty`, `ProfitabilityTiltAlpha`, `TerminalValueDiscount`, `MaxDischargeToGridKw`, `LoadReserveDays`, `LoadReserveExtraKwh` — each mirrors a coordinator attribute folded into `SchedulePolicy`.
 - **Tests:** `tests/test_number.py`.
 
 ### `ha_state.py`

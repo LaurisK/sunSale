@@ -246,6 +246,20 @@ class ScheduleSlot:
     reason: str                  # Human-readable explanation
 
 
+@dataclass(frozen=True)
+class TerminalValuation:
+    """How the DP valued battery charge left at the end of the horizon.
+
+    Storage kWh above the planning floor are worth ``reserve_eur_kwh`` each up
+    to ``reserve_kwh`` (the load reserve — house load the next days' solar will
+    not cover), and ``flat_eur_kwh`` each above that. ``reserve_kwh == 0`` is
+    the single flat value the planner always used.
+    """
+    reserve_kwh: float       # storage-side kWh valued at reserve_eur_kwh
+    reserve_eur_kwh: float   # EUR per storage kWh inside the reserve
+    flat_eur_kwh: float      # EUR per storage kWh above the reserve
+
+
 @dataclass
 class Schedule:
     """Complete battery optimization result."""
@@ -253,6 +267,9 @@ class Schedule:
     total_expected_profit_eur: float
     degradation_cost_per_kwh: float
     computed_at: datetime
+    # None on the degenerate paths (no slots, no SoC envelope) where no
+    # terminal value was applied.
+    terminal: TerminalValuation | None = None
 
 
 @dataclass(frozen=True)
@@ -292,6 +309,14 @@ class SchedulePolicy:
             the shortfall is imported at peak. Holding back roughly one standard
             deviation of day-ahead forecast error bounds that exposure. Raises
             the DP's SoC floor only — never forces a charge. ``None`` = disabled.
+        ``load_reserve_enabled`` — when True, end-of-horizon charge up to the
+            next days' household load that forecast solar will not cover is
+            valued at the price of buying that load instead of the flat
+            sell-side terminal value. Can only make the planner hold more.
+        ``load_reserve_days`` / ``load_reserve_extra_kwh`` — how many days after
+            the horizon end the reserve covers, and extra AC kWh reserved on
+            top of the house load (an EV charge the baseload profile does not
+            see). Read only while ``load_reserve_enabled``.
         ``max_battery_charge_kw`` / ``max_battery_discharge_kw`` — the battery
             legs' live ceilings from ``InverterCapability``, already reduced
             against ``BatteryConfig``. ``ScheduleNode`` substitutes them into the
@@ -311,6 +336,11 @@ class SchedulePolicy:
     max_battery_charge_kw: float | None = None     # None → use BatteryConfig
     max_battery_discharge_kw: float | None = None  # None → use BatteryConfig
     forecast_reserve_soc: float | None = None      # None → no reserve held
+    # Value the next days' uncovered house load at buy price at the horizon end
+    # (see pipeline.schedule.load_reserve_kwh). Off → the flat terminal value.
+    load_reserve_enabled: bool = False
+    load_reserve_days: int = 3              # days after the horizon end covered
+    load_reserve_extra_kwh: float = 0.0     # AC kWh held on top (e.g. EV charge)
 
 
 @dataclass(frozen=True)

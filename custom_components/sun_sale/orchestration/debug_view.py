@@ -130,6 +130,11 @@ def _coordinator_to_dict(entry_id: str, coordinator: Any) -> dict:
             # Country whose public holidays form the profitability HOLIDAY class
             # (None → no holidays); the check mirrors today's class with it.
             "holiday_country": getattr(coordinator._sun_sale_config, "holiday_country", None),  # noqa: SLF001
+            # Battery round-trip efficiency — the check needs it to recompute
+            # the schedule's terminal valuation.
+            "round_trip_efficiency": getattr(
+                coordinator.battery_config, "round_trip_efficiency", None,
+            ),
             "nordpool_entity": cfg.get(CONF_NORDPOOL_ENTITY, ""),
             "price_source": getattr(
                 coordinator._sun_sale_config, "price_source", "nordpool"  # noqa: SLF001
@@ -260,6 +265,7 @@ def _coordinator_to_dict(entry_id: str, coordinator: Any) -> dict:
                             if s.export_eur_kwh is not None else None
                         ),
                         "priced": s.priced,
+                        "forecast": s.forecast,
                     }
                     for s in pricing.slots
                 ],
@@ -550,6 +556,9 @@ def _coordinator_to_dict(entry_id: str, coordinator: Any) -> dict:
                 "allow_grid_charging":     bool(coordinator.allow_grid_charging),
                 "allow_feed_in":           bool(coordinator.allow_feed_in),
                 "allow_discharge_to_grid": bool(coordinator.allow_discharge_to_grid),
+                "load_reserve_enabled":    bool(coordinator.load_reserve_enabled),
+                "load_reserve_days":       int(coordinator.load_reserve_days),
+                "load_reserve_extra_kwh":  round(float(coordinator.load_reserve_extra_kwh), 4),
                 "mode_change_penalty_eur_per_kwh": round(
                     float(coordinator.mode_change_penalty_eur_per_kwh), 6,
                 ),
@@ -586,6 +595,12 @@ def _coordinator_to_dict(entry_id: str, coordinator: Any) -> dict:
                     for s in schedule.slots
                 ],
                 "total_expected_profit_eur": schedule.total_expected_profit_eur,
+                "computed_at": schedule.computed_at.isoformat(),
+                "terminal": {
+                    "reserve_kwh": round(schedule.terminal.reserve_kwh, 4),
+                    "reserve_eur_kwh": round(schedule.terminal.reserve_eur_kwh, 6),
+                    "flat_eur_kwh": round(schedule.terminal.flat_eur_kwh, 6),
+                } if schedule.terminal is not None else None,
             } if schedule is not None else None,
             "inverter_mode": _inverter_mode_block(data, coordinator),
         },

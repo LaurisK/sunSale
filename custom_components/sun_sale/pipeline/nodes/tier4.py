@@ -95,8 +95,7 @@ class ScheduleNode(DagNode):
         battery_state = ctx.require(BatteryState)
         deg_cost = ctx.require(DegradationCost)
         base_load_profile = ctx.require(BaseLoadProfile)
-        # GenerationSeries is consumed for tier-ordering only.
-        ctx.get(GenerationSeries)
+        generation = ctx.require(GenerationSeries)
         # Optional inputs — schedule still runs without them. ProfitabilityScore
         # is tier-ordered via consumes_optional (above); InverterModeReading is
         # a primary input.
@@ -114,6 +113,21 @@ class ScheduleNode(DagNode):
                 ctx.get(ForecastQualityStore),
                 battery_state.estimated_capacity_kwh,
             ) or 0.0
+
+        # Charge the house will need after the horizon, valued at buy price —
+        # see docs/load_reserve_plan.md. The horizon ends where the DP's slots
+        # do: the last slot the calculation priced.
+        load_reserve = 0.0
+        if policy.load_reserve_enabled and calc.slots:
+            load_reserve = schedule_module.estimate_load_reserve_kwh(
+                generation, base_load_profile,
+                horizon_end=calc.slots[-1].end,
+                now=ctx.now,
+                local_tz=ctx.config.local_tz,
+                eff=ctx.config.battery.round_trip_efficiency,
+                days=policy.load_reserve_days,
+                extra_kwh=policy.load_reserve_extra_kwh,
+            )
 
         schedule = schedule_module.optimize_schedule(
             price_series=price_series,
@@ -136,6 +150,7 @@ class ScheduleNode(DagNode):
             max_discharge_to_grid_kw=policy.max_discharge_to_grid_kw,
             export_limit_kw=policy.export_limit_kw,
             forecast_reserve_soc=reserve_soc,
+            load_reserve_kwh=load_reserve,
         )
 
         return schedule

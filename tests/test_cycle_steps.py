@@ -397,3 +397,46 @@ def _battery_reading() -> BatteryReading:
         grid_power_kw=0.0,
         household_load_kw=0.2,
     )
+
+
+def test_schedule_policy_passes_load_reserve_switch():
+    """seed forwards the load-reserve switch; it defaults off."""
+    base = dict(
+        use_standby=True, allow_grid_charging=True, allow_feed_in=True,
+        allow_discharge_to_grid=True,
+        mode_change_penalty_eur_per_kwh=0.005,
+        profitability_tilt_alpha=0.5,
+        terminal_value_discount=0.5,
+        max_discharge_to_grid_kw=None,
+    )
+    primary = {}
+    SchedulePolicyStep(lambda: ScheduleKnobs(**base)).seed(primary, _NOW)
+    assert primary[SchedulePolicy].load_reserve_enabled is False
+    SchedulePolicyStep(
+        lambda: ScheduleKnobs(**base, load_reserve_enabled=True),
+    ).seed(primary, _NOW)
+    assert primary[SchedulePolicy].load_reserve_enabled is True
+
+
+def test_schedule_policy_clamps_load_reserve_knobs():
+    """Days clamp to 3–6 and round to whole days; extra kWh never negative."""
+    base = dict(
+        use_standby=True, allow_grid_charging=True, allow_feed_in=True,
+        allow_discharge_to_grid=True,
+        mode_change_penalty_eur_per_kwh=0.005,
+        profitability_tilt_alpha=0.5,
+        terminal_value_discount=0.5,
+        max_discharge_to_grid_kw=None,
+        load_reserve_enabled=True,
+    )
+    for days, extra, want_days, want_extra in (
+        (1, -5.0, 3, 0.0), (99, 500.0, 6, 100.0), (4.6, 12.5, 5, 12.5),
+    ):
+        primary = {}
+        SchedulePolicyStep(lambda d=days, e=extra: ScheduleKnobs(
+            **base, load_reserve_days=d, load_reserve_extra_kwh=e,
+        )).seed(primary, _NOW)
+        pol = primary[SchedulePolicy]
+        assert pol.load_reserve_days == want_days
+        assert isinstance(pol.load_reserve_days, int)
+        assert pol.load_reserve_extra_kwh == want_extra

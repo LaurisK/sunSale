@@ -1147,6 +1147,9 @@
       },
       "allow_discharge_to_grid": {
         "name": "Allow Discharge to Grid"
+      },
+      "load_reserve": {
+        "name": "Load Reserve"
       }
     },
     "number": {
@@ -1158,6 +1161,12 @@
       },
       "terminal_value_discount": {
         "name": "Terminal-Value Discount"
+      },
+      "load_reserve_days": {
+        "name": "Load Reserve Days"
+      },
+      "load_reserve_extra_kwh": {
+        "name": "Load Reserve Extra"
       }
     },
     "select": {

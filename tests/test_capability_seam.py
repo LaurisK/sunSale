@@ -385,6 +385,9 @@ class _KnobCoordinator:
     allow_grid_charging = True
     allow_feed_in = True
     allow_discharge_to_grid = True
+    load_reserve_enabled = False
+    load_reserve_days = 3
+    load_reserve_extra_kwh = 0.0
     mode_change_penalty_eur_per_kwh = 0.005
     profitability_tilt_alpha = 0.5
     terminal_value_discount = 0.5

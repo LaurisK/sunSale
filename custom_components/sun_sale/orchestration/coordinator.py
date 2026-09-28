@@ -69,6 +69,9 @@ from ..contract.const import (
     DEFAULT_SCHEDULE_ALLOW_DISCHARGE_TO_GRID,
     DEFAULT_SCHEDULE_ALLOW_FEED_IN,
     DEFAULT_SCHEDULE_ALLOW_GRID_CHARGING,
+    DEFAULT_SCHEDULE_LOAD_RESERVE,
+    DEFAULT_SCHEDULE_LOAD_RESERVE_DAYS,
+    DEFAULT_SCHEDULE_LOAD_RESERVE_EXTRA_KWH,
     DEFAULT_SCHEDULE_MAX_DISCHARGE_TO_GRID_KW,
     DEFAULT_SCHEDULE_MODE_CHANGE_PENALTY_EUR_PER_KWH,
     DEFAULT_SCHEDULE_PROFITABILITY_TILT_ALPHA,
@@ -430,6 +433,9 @@ class SunSaleCoordinator(DataUpdateCoordinator):
         self.allow_grid_charging: bool = DEFAULT_SCHEDULE_ALLOW_GRID_CHARGING
         self.allow_feed_in: bool = DEFAULT_SCHEDULE_ALLOW_FEED_IN
         self.allow_discharge_to_grid: bool = DEFAULT_SCHEDULE_ALLOW_DISCHARGE_TO_GRID
+        self.load_reserve_enabled: bool = DEFAULT_SCHEDULE_LOAD_RESERVE
+        self.load_reserve_days: float = DEFAULT_SCHEDULE_LOAD_RESERVE_DAYS
+        self.load_reserve_extra_kwh: float = DEFAULT_SCHEDULE_LOAD_RESERVE_EXTRA_KWH
         self.mode_change_penalty_eur_per_kwh: float = (
             DEFAULT_SCHEDULE_MODE_CHANGE_PENALTY_EUR_PER_KWH
         )
@@ -1288,6 +1294,9 @@ class SunSaleCoordinator(DataUpdateCoordinator):
             allow_grid_charging=self.allow_grid_charging,
             allow_feed_in=self.allow_feed_in,
             allow_discharge_to_grid=self.allow_discharge_to_grid,
+            load_reserve_enabled=self.load_reserve_enabled,
+            load_reserve_days=self.load_reserve_days,
+            load_reserve_extra_kwh=self.load_reserve_extra_kwh,
             mode_change_penalty_eur_per_kwh=self.mode_change_penalty_eur_per_kwh,
             profitability_tilt_alpha=self.profitability_tilt_alpha,
             terminal_value_discount=self.terminal_value_discount,

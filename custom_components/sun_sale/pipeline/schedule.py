@@ -28,7 +28,7 @@ at the exact SoC to keep rewards and projected SoC continuous.
 from __future__ import annotations
 
 from dataclasses import replace
-from datetime import datetime, tzinfo
+from datetime import date, datetime, timedelta, tzinfo
 from statistics import median
 
 from ..contract.models import (
@@ -37,12 +37,14 @@ from ..contract.models import (
     BatteryConfig,
     BatteryState,
     CalculationResult,
+    GenerationSeries,
     PriceSeries,
     PriceSlot,
     ProfitabilityScore,
     Schedule,
     ScheduleSlot,
     StorageMode,
+    TerminalValuation,
 )
 from .slot_physics import SlotOutcome, simulate_slot
 
@@ -74,6 +76,12 @@ DEFAULT_PROFITABILITY_TILT_ALPHA = 0.5
 # it the DP behaves as if end-SoC could be sold at the in-horizon median for
 # certain, which makes it hoard charge past every horizon boundary.
 DEFAULT_TERMINAL_VALUE_DISCOUNT = 0.5
+
+# Default local days after the horizon end whose uncovered household load the
+# load reserve holds charge for (user-tunable 3–6 via SchedulePolicy). Three
+# matched the backtest (docs/load_reserve_plan.md): long enough to span a dark
+# winter spell, short enough that the forecast's daily totals still mean something.
+LOAD_RESERVE_DAYS = 3
 
 # Modes that deliberately send energy to the grid. Neither is offered while the
 # battery is below min_soc, and Discharge is not offered below the cycle cost.
@@ -145,6 +153,7 @@ def optimize_schedule(
     terminal_value_discount: float = DEFAULT_TERMINAL_VALUE_DISCOUNT,
     max_discharge_to_grid_kw: float | None = None,
     forecast_reserve_soc: float = 0.0,
+    load_reserve_kwh: float = 0.0,
 ) -> Schedule:
     """Compute a future StorageMode schedule via SoC-bucketed dynamic programming.
 
@@ -192,6 +201,10 @@ def optimize_schedule(
             floor of the DP's SoC envelope only — it never forces a charge, and
             a battery already below the raised floor is not stranded (the
             bucketer clamps such a state to its lowest bucket). 0 disables it.
+        load_reserve_kwh: Storage-side kWh of end-of-horizon charge valued at
+            the load-reserve price (what buying that house load would cost)
+            instead of the flat terminal value — see
+            :func:`estimate_load_reserve_kwh`. 0 keeps the single flat value.
 
     Two export guards apply regardless of policy: Discharge is never scheduled
     in a slot selling below the battery cycle cost (``2 × deg / eff``), and
@@ -261,10 +274,18 @@ def optimize_schedule(
             planning_config, cap_kwh, degradation_cost, export_limit_kw, now,
         )
 
-    terminal_per_kwh = _terminal_value_per_storage_kwh(
+    flat_per_kwh = _terminal_value_per_storage_kwh(
         price_series, battery_config.round_trip_efficiency,
         profitability_score, profitability_tilt_alpha,
         terminal_value_discount,
+    )
+    terminal = TerminalValuation(
+        reserve_kwh=max(0.0, load_reserve_kwh),
+        reserve_eur_kwh=_load_reserve_value_per_kwh(
+            price_series, battery_config.round_trip_efficiency,
+            degradation_cost, allow_grid_charging, flat_per_kwh,
+        ),
+        flat_eur_kwh=flat_per_kwh,
     )
 
     # Battery energy sold below the wear of cycling it loses money on every kWh,
@@ -278,17 +299,18 @@ def optimize_schedule(
     choice = _run_dp(
         future_slots, baseload_kwh, solar_kwh, slot_hours,
         planning_config, cap_kwh, degradation_cost, export_limit_kw,
-        bucketer, terminal_per_kwh, mode_change_penalty, actions,
+        bucketer, terminal, mode_change_penalty, actions,
         max_discharge_to_grid_kw, floor_soc, discharge_blocked,
     )
 
-    return _forward_roll(
+    schedule = _forward_roll(
         future_slots, baseload_kwh, solar_kwh, slot_hours,
         planning_config, battery_state, cap_kwh, degradation_cost,
         export_limit_kw, bucketer, choice, now,
         current_mode, mode_change_penalty, actions,
         max_discharge_to_grid_kw,
     )
+    return replace(schedule, terminal=terminal)
 
 
 def _filter_actions(
@@ -380,6 +402,177 @@ def _terminal_value_per_storage_kwh(
     )
     tilt = 1.0 + tilt_alpha * (1.0 - score)
     return base * tilt * horizon_discount
+
+
+def _load_reserve_value_per_kwh(
+    price_series: PriceSeries,
+    eff: float,
+    deg_cost: float,
+    allow_grid_charging: bool,
+    flat_per_kwh: float,
+) -> float:
+    """Per storage-side kWh worth of charge held for the next days' house load.
+
+    A storage kWh held for the house saves buying ``eff`` kWh at a typical buy
+    price. When the planner may grid-charge, that saving is capped by what a
+    refill costs — a kWh that can be bought back cheaply tonight is only worth
+    the refill, so an evening sale followed by a cheap night charge still
+    happens. Both figures read the same ``plannable_slots`` window as the flat
+    value; the cap's minimum is a proxy for "a cheap refill exists", and a
+    negative buy in it only drags the cap below the flat value, where the final
+    guard takes over.
+
+    Args:
+        price_series: Full price series (the plannable window).
+        eff: Round-trip efficiency (storage → AC).
+        deg_cost: Wear cost per storage kWh per leg (EUR/kWh).
+        allow_grid_charging: Whether the planner may refill from the grid.
+        flat_per_kwh: The flat terminal value (:func:`_terminal_value_per_storage_kwh`).
+
+    Returns:
+        EUR per storage kWh inside the reserve — never below ``flat_per_kwh``,
+        so the reserve can only make the planner keep more charge.
+    """
+    buys = [s.buy_eur_kwh for s in price_series.plannable_slots]
+    if not buys:
+        return flat_per_kwh
+    value = eff * median(buys)
+    if allow_grid_charging:
+        value = min(value, min(buys) + deg_cost)
+    return max(value, flat_per_kwh)
+
+
+def _terminal_value(soc: float, floor_soc: float, cap_kwh: float,
+                    terminal: TerminalValuation) -> float:
+    """Return the EUR worth of holding ``soc`` at the end of the horizon.
+
+    The first ``reserve_kwh`` storage kWh above the floor are worth the reserve
+    price, everything above them the flat price. The reserve price is never
+    below the flat one, so the function is concave in ``soc``.
+
+    Args:
+        soc: End-of-horizon state of charge (fraction).
+        floor_soc: Planning floor the energy is measured from.
+        cap_kwh: Estimated usable capacity.
+        terminal: The two-tier valuation.
+
+    Returns:
+        Terminal value in EUR (0 at or below the floor).
+    """
+    energy = max(0.0, soc - floor_soc) * cap_kwh
+    reserved = min(energy, terminal.reserve_kwh)
+    return (
+        terminal.reserve_eur_kwh * reserved
+        + terminal.flat_eur_kwh * (energy - reserved)
+    )
+
+
+# ---------------------------------------------------------------------------
+# Load reserve size
+# ---------------------------------------------------------------------------
+
+
+def estimate_load_reserve_kwh(
+    generation: GenerationSeries,
+    base_load_profile: BaseLoadProfile,
+    horizon_end: datetime,
+    now: datetime,
+    local_tz: tzinfo,
+    eff: float,
+    days: int = LOAD_RESERVE_DAYS,
+    extra_kwh: float = 0.0,
+) -> float:
+    """Estimate the storage kWh the house will need from the battery after the horizon.
+
+    Walks the ``days × 24`` hours after ``horizon_end`` and sums the household
+    baseload each hour that same-hour forecast solar will not cover. Per-slot
+    solar only reaches tomorrow 24:00, so each hour's solar is the day's
+    forecast total spread over the hourly shape of the last day that has slot
+    data (tomorrow, else today). Daytime surplus refilling the battery is
+    deliberately ignored — the flat terminal tier above the reserve prices it.
+
+    A day the forecast has no total for is skipped rather than guessed:
+    providers with a short horizon leave ``total_d2_kwh`` onwards at their 0
+    default (indistinguishable from "no data" — a real array never forecasts a
+    flat 0 for a whole day), and days past d6 carry no total at all. Treating
+    them as dark would reserve full days of load all summer, and borrowing a
+    neighbour's total would invent a forecast; neither is reserved for.
+
+    ``extra_kwh`` is AC energy reserved on top of the house load — an EV charge
+    the baseload profile never sees — and converts to storage kWh the same way.
+
+    Args:
+        generation: Forecast series (slots to tomorrow 24:00, daily totals to d6).
+        base_load_profile: Household baseload per local hour (kW).
+        horizon_end: End of the last scheduled slot.
+        now: Cycle timestamp — anchors "today" for the daily totals.
+        local_tz: HA local timezone.
+        eff: Round-trip efficiency; converts AC load to storage kWh.
+        days: Days after ``horizon_end`` to reserve for.
+        extra_kwh: Extra AC kWh to reserve on top of the uncovered load.
+
+    Returns:
+        Storage-side kWh (≥ 0).
+    """
+    today = now.astimezone(local_tz).date()
+    totals = _daily_solar_totals(generation, today)
+    shape = _hourly_solar_shape(generation, local_tz, today)
+
+    shortfall_ac = 0.0
+    for i in range(days * 24):
+        t = horizon_end + timedelta(hours=i)
+        local = t.astimezone(local_tz)
+        total = totals.get(local.date(), 0.0)
+        if total <= 0:
+            continue  # no forecast for this day — don't invent one
+        solar = shape[local.hour] * total
+        shortfall_ac += max(0.0, base_load_profile.at(t, local_tz) - solar)
+    need_ac = shortfall_ac + max(0.0, extra_kwh)
+    return need_ac / eff if eff > 0 else need_ac
+
+
+def _daily_solar_totals(generation: GenerationSeries, today: date) -> dict[date, float]:
+    """Map local dates today … today + 6 to the forecast's daily solar kWh.
+
+    Args:
+        generation: Forecast series carrying the daily totals.
+        today: Local date the totals are relative to.
+
+    Returns:
+        Daily kWh keyed by local date.
+    """
+    by_offset = (
+        generation.total_today_kwh, generation.total_tomorrow_kwh,
+        generation.total_d2_kwh, generation.total_d3_kwh, generation.total_d4_kwh,
+        generation.total_d5_kwh, generation.total_d6_kwh,
+    )
+    return {today + timedelta(days=i): v for i, v in enumerate(by_offset)}
+
+
+def _hourly_solar_shape(
+    generation: GenerationSeries, local_tz: tzinfo, today: date,
+) -> list[float]:
+    """Return the normalised 24-hour solar profile of the latest day with slot data.
+
+    Args:
+        generation: Forecast series whose slots cover up to tomorrow.
+        local_tz: HA local timezone.
+        today: Local date of the cycle.
+
+    Returns:
+        24 weights summing to 1 — tomorrow's shape, else today's — or all
+        zeros when neither day carries any forecast energy.
+    """
+    for day in (today + timedelta(days=1), today):
+        hourly = [0.0] * 24
+        for slot in generation.slots:
+            local = slot.start.astimezone(local_tz)
+            if local.date() == day:
+                hourly[local.hour] += slot.expected_kwh
+        total = sum(hourly)
+        if total > 0:
+            return [h / total for h in hourly]
+    return [0.0] * 24
 
 
 # ---------------------------------------------------------------------------
@@ -518,7 +711,7 @@ def _run_dp(
     deg_cost: float,
     export_limit_kw: float | None,
     bucketer: _Bucketer,
-    terminal_per_kwh: float,
+    terminal: TerminalValuation,
     mode_change_penalty: float,
     actions: tuple[StorageMode, ...],
     max_discharge_to_grid_kw: float | None = None,
@@ -528,10 +721,10 @@ def _run_dp(
     """Backward DP — compute the optimal mode for every (slot, soc_bucket, prev_mode) cell.
 
     State is augmented with ``prev_mode`` so the mode-change penalty can be
-    charged correctly during recursion. The terminal value
-    ``(soc − min_soc) × cap × terminal_per_kwh`` rewards keeping charge in
-    the battery at end-of-horizon; the profitability tilt is already baked
-    into ``terminal_per_kwh``.
+    charged correctly during recursion. The terminal value (see
+    :func:`_terminal_value`) rewards keeping charge in the battery at
+    end-of-horizon — the load reserve at its own price, the rest at the flat
+    price, into which the profitability tilt is already baked.
 
     Args:
         future_slots: Slots to schedule (chronological).
@@ -543,7 +736,7 @@ def _run_dp(
         deg_cost: Degradation cost EUR/kWh.
         export_limit_kw: Deployment export cap.
         bucketer: SoC bucketization helper.
-        terminal_per_kwh: EUR worth per storage-side kWh held at end-of-horizon.
+        terminal: Two-tier worth of storage-side kWh held at end-of-horizon.
         mode_change_penalty: EUR per storage-kWh moved when mode changes.
         actions: Modes the DP may pick from (possibly filtered by policy).
         max_discharge_to_grid_kw: AC-power cap for Discharge mode; ``None``
@@ -582,8 +775,9 @@ def _run_dp(
     ]
     terminal_floor = battery_config.min_soc if floor_soc is None else floor_soc
     for b in range(n_buckets):
-        v_term = max(0.0, (bucketer.to_soc(b) - terminal_floor)) \
-                 * cap_kwh * terminal_per_kwh
+        v_term = _terminal_value(
+            bucketer.to_soc(b), terminal_floor, cap_kwh, terminal,
+        )
         for m in range(n_prev):
             value[n_slots][b][m] = v_term
 

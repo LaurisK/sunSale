@@ -16,6 +16,7 @@ from custom_components.sun_sale.contract.models import (
     SlotDecision,
     StorageMode,
     TariffConfig,
+    TerminalValuation,
 )
 from custom_components.sun_sale.inbound.pricing import build_price_series
 from custom_components.sun_sale.orchestration.debug_view import (
@@ -82,6 +83,8 @@ def make_coordinator(
     mode_change_penalty_eur_per_kwh: float = 0.005,
     profitability_tilt_alpha: float = 0.5,
     terminal_value_discount: float = 0.5,
+    load_reserve_enabled: bool = False,
+    terminal: TerminalValuation | None = None,
 ) -> MagicMock:
     coord = MagicMock()
     coord.automation_enabled = automation_enabled
@@ -94,6 +97,10 @@ def make_coordinator(
     coord.mode_change_penalty_eur_per_kwh = mode_change_penalty_eur_per_kwh
     coord.profitability_tilt_alpha = profitability_tilt_alpha
     coord.terminal_value_discount = terminal_value_discount
+    coord.load_reserve_enabled = load_reserve_enabled
+    coord.load_reserve_days = 5
+    coord.load_reserve_extra_kwh = 12.5
+    coord.battery_config.round_trip_efficiency = 0.9
 
     tariff_cfg: TariffConfig = default_tariff_config()
     coord.tariff_config = tariff_cfg
@@ -103,6 +110,7 @@ def make_coordinator(
         total_expected_profit_eur=0.42,
         degradation_cost_per_kwh=0.02,
         computed_at=BASE,
+        terminal=terminal,
     ) if include_schedule else None
 
     ps = _make_price_series()
@@ -283,3 +291,41 @@ def test_view_url_and_auth():
     assert view.url == "/api/sun_sale/debug"
     assert view.requires_auth is True
     assert view.name == "api:sun_sale:debug"
+
+
+# ---------------------------------------------------------------------------
+# Load reserve — terminal valuation and the check's inputs.
+# ---------------------------------------------------------------------------
+
+
+def test_schedule_terminal_serialised():
+    """The two-tier terminal valuation reaches outputs.schedule.terminal."""
+    coord = make_coordinator(
+        load_reserve_enabled=True,
+        terminal=TerminalValuation(
+            reserve_kwh=12.5, reserve_eur_kwh=0.21, flat_eur_kwh=0.065,
+        ),
+    )
+    result = _coordinator_to_dict("e", coord)
+    schedule = result["outputs"]["schedule"]
+    assert schedule["terminal"] == {
+        "reserve_kwh": 12.5, "reserve_eur_kwh": 0.21, "flat_eur_kwh": 0.065,
+    }
+    assert schedule["computed_at"] == BASE.isoformat()
+    assert result["pipeline"]["schedule_policy"]["load_reserve_enabled"] is True
+    assert result["pipeline"]["schedule_policy"]["load_reserve_days"] == 5
+    assert result["pipeline"]["schedule_policy"]["load_reserve_extra_kwh"] == 12.5
+    assert result["config"]["round_trip_efficiency"] == 0.9
+
+
+def test_schedule_terminal_none_when_not_applied():
+    """A degenerate schedule carries no terminal block."""
+    result = _coordinator_to_dict("e", make_coordinator())
+    assert result["outputs"]["schedule"]["terminal"] is None
+    assert result["pipeline"]["schedule_policy"]["load_reserve_enabled"] is False
+
+
+def test_pricing_slots_carry_forecast_flag():
+    """The check rebuilds plannable_slots from priced ∪ forecast rows."""
+    result = _coordinator_to_dict("e", make_coordinator())
+    assert all("forecast" in s for s in result["pipeline"]["pricing"]["slots"])
