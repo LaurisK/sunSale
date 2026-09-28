@@ -10,6 +10,8 @@ Any behavior-affecting change bumps the `version` in
 
 ## [Unreleased]
 
+## [0.7.0] — 2026-09-29
+
 ### Added
 - **Load reserve — stop selling at the evening peak what the house buys back
   overnight.** Charge left at the end of the plan used to be worth one flat
@@ -969,7 +971,8 @@ against real hardware — see the status note in [`README.md`](README.md).
   in the chart, and left out of the series-level statistics and every EMA quality
   bucket.
 
-[Unreleased]: https://github.com/LaurisK/sunSale/compare/v0.6.3...HEAD
+[Unreleased]: https://github.com/LaurisK/sunSale/compare/v0.7.0...HEAD
+[0.7.0]: https://github.com/LaurisK/sunSale/compare/v0.6.3...v0.7.0
 [0.6.3]: https://github.com/LaurisK/sunSale/compare/v0.6.2...v0.6.3
 [0.6.2]: https://github.com/LaurisK/sunSale/compare/v0.6.1...v0.6.2
 [0.6.1]: https://github.com/LaurisK/sunSale/compare/v0.6.0...v0.6.1
