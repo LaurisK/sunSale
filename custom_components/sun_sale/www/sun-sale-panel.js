@@ -1112,9 +1112,9 @@
 
     _findEntityId(domain, matchAll) {
       if (!this._hass?.states) return null;
-      const prefix = `${domain}.sunsale_`;
+      // The slug may carry a device-name prefix (`switch.garadge_sunsale_load_reserve`).
       for (const eid of Object.keys(this._hass.states)) {
-        if (!eid.startsWith(prefix)) continue;
+        if (!eid.startsWith(`${domain}.`) || !eid.includes('sunsale_')) continue;
         // When scoped to a config entry, ignore entities of sibling entries.
         if (this._entryEntityIds && !this._entryEntityIds.has(eid)) continue;
         if (matchAll.every(m => eid.includes(m))) return eid;
@@ -1151,7 +1151,7 @@
       const ids = new Set();
       const byKey = {};
       for (const eid of Object.keys(states)) {
-        if (!eid.includes('.sunsale_')) continue;
+        if (!eid.includes('sunsale_')) continue;
         if (deviceIds) {
           const reg = entities[eid];
           if (!reg || !reg.device_id || !deviceIds.has(reg.device_id)) continue;
@@ -1159,7 +1159,7 @@
         ids.add(eid);
         const slug = eid.slice(eid.indexOf('.') + 1);     // sunsale_dashboard[_2]
         // Strip the `sunsale_` prefix and any trailing `_<n>` collision suffix.
-        const key = slug.replace(/^sunsale_/, '').replace(/_\d+$/, '');
+        const key = slug.replace(/^.*?sunsale_/, '').replace(/_\d+$/, '');
         if (!(key in byKey)) byKey[key] = eid;            // first wins; unique per entry
       }
 
