@@ -10,6 +10,15 @@ Any behavior-affecting change bumps the `version` in
 
 ## [Unreleased]
 
+## [0.7.1] — 2026-09-29
+
+### Fixed
+- **Panel: Load reserve controls showed "entity not found".** The 0.7.0 load
+  reserve entities are registered with the device name in front of the slug
+  (`switch.<device>_sunsale_load_reserve`), and the panel only matched ids that
+  start with `sunsale_`. Entity lookup and per-entry scoping now accept
+  `sunsale_` anywhere in the id.
+
 ## [0.7.0] — 2026-09-29
 
 ### Added
@@ -971,7 +980,8 @@ against real hardware — see the status note in [`README.md`](README.md).
   in the chart, and left out of the series-level statistics and every EMA quality
   bucket.
 
-[Unreleased]: https://github.com/LaurisK/sunSale/compare/v0.7.0...HEAD
+[Unreleased]: https://github.com/LaurisK/sunSale/compare/v0.7.1...HEAD
+[0.7.1]: https://github.com/LaurisK/sunSale/compare/v0.7.0...v0.7.1
 [0.7.0]: https://github.com/LaurisK/sunSale/compare/v0.6.3...v0.7.0
 [0.6.3]: https://github.com/LaurisK/sunSale/compare/v0.6.2...v0.6.3
 [0.6.2]: https://github.com/LaurisK/sunSale/compare/v0.6.1...v0.6.2
