@@ -10,6 +10,8 @@ Any behavior-affecting change bumps the `version` in
 
 ## [Unreleased]
 
+## [0.7.2] — 2026-10-06
+
 ### Fixed
 - **Grid charging put the grid ahead of solar and shed the panels.** GridCharge
   was a fixed *meter* import (Remote Dispatch `grid_import`): the inverter commits
@@ -1006,7 +1008,8 @@ against real hardware — see the status note in [`README.md`](README.md).
   in the chart, and left out of the series-level statistics and every EMA quality
   bucket.
 
-[Unreleased]: https://github.com/LaurisK/sunSale/compare/v0.7.1...HEAD
+[Unreleased]: https://github.com/LaurisK/sunSale/compare/v0.7.2...HEAD
+[0.7.2]: https://github.com/LaurisK/sunSale/compare/v0.7.1...v0.7.2
 [0.7.1]: https://github.com/LaurisK/sunSale/compare/v0.7.0...v0.7.1
 [0.7.0]: https://github.com/LaurisK/sunSale/compare/v0.6.3...v0.7.0
 [0.6.3]: https://github.com/LaurisK/sunSale/compare/v0.6.2...v0.6.3
