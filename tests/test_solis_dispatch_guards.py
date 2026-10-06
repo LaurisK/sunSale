@@ -110,20 +110,34 @@ def _dispatch_states(active: str, mode: str, target: str) -> dict[str, _State]:
 
 
 @pytest.mark.parametrize(
-    ("target", "expected"),
-    [("10000", StorageMode.Discharge), ("-5000", StorageMode.GridCharge)],
+    ("control_mode", "target", "expected"),
+    [
+        # PCC (meter) target: + export, − import.
+        ("3", "10000", StorageMode.Discharge),
+        # GridCharge before it moved to the battery-power target — an upgrade
+        # landing mid-slot must still recognise its own previous command.
+        ("3", "-5000", StorageMode.GridCharge),
+        # Battery-power target: + charge.
+        ("2", "10000", StorageMode.GridCharge),
+    ],
 )
-def test_running_dispatch_decodes_as_its_forced_mode(target, expected):
+def test_running_dispatch_decodes_as_its_forced_mode(control_mode, target, expected):
     inv = _inverter()
     inv.get_storage_control_word = MagicMock(return_value=64)
-    drv, _, _ = _driver(_dispatch_states("1", "3", target), inv=inv)
+    drv, _, _ = _driver(_dispatch_states("1", control_mode, target), inv=inv)
     assert drv.decode_observed() is expected
     assert drv.observe(NOW).mode is expected
 
 
 @pytest.mark.parametrize(
     ("active", "mode", "target"),
-    [("0", "1", "0"), ("1", "3", "0"), ("1", "5", "10000")],
+    [
+        ("0", "1", "0"), ("1", "3", "0"), ("1", "5", "10000"),
+        # A battery *discharge* is not something sunSale commands: foreign.
+        ("1", "2", "-10000"),
+        # Released dispatch keeps its last target in the cache: still not ours.
+        ("0", "2", "10000"),
+    ],
 )
 def test_released_or_foreign_dispatch_defers_to_the_register_decoder(active, mode, target):
     inv = _inverter()

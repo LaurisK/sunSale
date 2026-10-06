@@ -88,8 +88,9 @@ def simulate_slot(
         deg_cost_eur_kwh: Per-kWh cycle wear cost from DegradationNode.
         export_limit_kw: Optional export cap applied to SelfUse/FeedIn/Discharge
             exports (the deployment backflow limit the mode specs write);
-            ``None`` means uncapped. NoExport never exports; GridCharge curtails
-            any solar surplus because grid-charge takes the charge bus.
+            ``None`` means uncapped. NoExport never exports; GridCharge's export
+            is zero by spec, so solar beyond baseload plus the charge target
+            curtails (below that, solar charges the battery ahead of the grid).
         max_discharge_to_grid_kw: Optional AC-power cap (kW) applied only to the
             Discharge-to-grid mode; ``None`` means uncapped (hardware limit
             from ``battery_cfg.max_discharge_power_kw`` applies). Does not
@@ -295,14 +296,23 @@ def _simulate_grid_charge(
     max_charge_kwh: float,
     export_cap_kwh: float,
 ) -> _Flows:
-    """GridCharge: force grid charge; solar covers baseload, surplus curtails (export=0).
+    """GridCharge: charge at the maximum rate, solar first, the grid tops up.
 
-    Battery is force-charged from the grid at the maximum charge rate
-    (clamped by available headroom). Solar still covers any baseload it
-    can; the deficit is imported on top of the GridCharge charge. Surplus
-    solar cannot export — GridCharge's export limit is zero by spec — so
-    it curtails unless the caller passes a non-zero ``export_cap_kwh``
-    (kept as a parameter for symmetry with the other modes).
+    The inverter holds a *battery* power target (Remote Dispatch
+    ``battery_charge``), not a meter import, so the grid supplies only what
+    solar does not: solar covers baseload, the rest of it goes into the battery,
+    and the grid imports the difference between the charge target and that
+    solar. Modelling a fixed import instead (solar curtailed, grid paying for
+    the whole charge) is what the hardware did under the old meter-side target
+    and what shed PV on sodas on 2026-10-06 — the planner must not price a
+    behaviour the control layer no longer commands.
+
+    Solar beyond baseload plus the charge target has nowhere to go: GridCharge's
+    export limit is zero by spec, so it curtails unless the caller passes a
+    non-zero ``export_cap_kwh`` (kept as a parameter for symmetry with the other
+    modes). The scheduler would never pick GridCharge for such a slot — with
+    that much sun, SelfUse charges the battery for free — but the flows are
+    still correct if it is asked to.
 
     Args:
         solar_kwh: Expected solar generation for the slot.
@@ -319,8 +329,12 @@ def _simulate_grid_charge(
     baseload_from_grid = baseload_kwh - baseload_from_solar
     surplus = solar_kwh - baseload_from_solar
 
-    grid_out, curtailed = _export_or_curtail(surplus, export_cap_kwh)
-    grid_in = batt_charge + baseload_from_grid
+    solar_to_batt = min(surplus, batt_charge)
+    grid_to_batt = batt_charge - solar_to_batt
+    leftover = surplus - solar_to_batt
+
+    grid_out, curtailed = _export_or_curtail(leftover, export_cap_kwh)
+    grid_in = baseload_from_grid + grid_to_batt
 
     return _Flows(
         grid_in=grid_in,

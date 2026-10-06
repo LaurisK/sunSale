@@ -79,18 +79,37 @@ _FAILSAFE_MINUTES = 20
 # loses seconds rather than a whole cycle. See :meth:`SolisDispatchDriver._schedule_reconfirm`.
 _RECONFIRM_DELAY_S = 10
 
-# Control-mode codes read back from 44105. 3 = PCC (meter) power target, the
-# grid-side goal both forced modes use: the planner prices energy at the meter,
-# so holding a meter-side target is what its arithmetic assumes. Battery-side
-# targets (code 2) are deliberately unused — no sunSale mode wants to fix
-# battery power while letting grid flow float.
+# Control-mode codes read back from 44105.
+#
+# 3 = PCC (meter) power target: the inverter holds the *meter* at the target and
+# lets everything else float. Discharge uses it — the planner prices the export
+# at the meter, and a fixed export is exactly what a forced sale wants.
 _MODE_PCC_TARGET = 3
+# 2 = battery power target: the inverter holds the *battery* at the target and
+# lets the grid balance. GridCharge uses it, because it is the only one of the
+# two that puts solar first. A fixed meter import is committed whatever the sun
+# does, so PV can only ride on top of it and the inverter sheds PV (sodas,
+# 2026-10-06: PV 690 W → 59 W in one 20 s step with the string at open-circuit
+# voltage as the import took hold, back at 1.5 kW 8 s after the release). With
+# a battery target, PV fills the battery first and the grid imports only the
+# difference.
+_MODE_BATTERY_POWER = 2
 
 # StorageMode → the ``solis_dispatch`` mode name driving it. Only the two modes
 # that were RC-backed appear; everything else stays on the register path.
 _DISPATCH_MODES: dict[StorageMode, str] = {
     StorageMode.Discharge: "grid_export",
-    StorageMode.GridCharge: "grid_import",
+    StorageMode.GridCharge: "battery_charge",
+}
+
+# StorageMode → (44105 control-mode code, sign of the 44106 power target as read
+# back). Both signs are +1 because each name carries its own direction: upstream
+# maps ``grid_export`` to (3, +1) and ``battery_charge`` to (2, +1) — modes 3/4
+# are "+ export, − import", but the battery-power mode is "+ charge". Pinned
+# against upstream's own table in ``test_solis_modbus_contract.py``.
+_READBACK: dict[StorageMode, tuple[int, int]] = {
+    StorageMode.Discharge: (_MODE_PCC_TARGET, +1),
+    StorageMode.GridCharge: (_MODE_BATTERY_POWER, +1),
 }
 
 
@@ -314,9 +333,11 @@ class SolisDispatchDriver:
         await self._call(SERVICE_DISPATCH, payload)
         if force:
             self._schedule_reconfirm(payload)
-        # 44106 is signed per the block's own convention: + export, − import.
-        signed = watts if mode is StorageMode.Discharge else -watts
-        self._commanded = (_MODE_PCC_TARGET, signed)
+        # What the block will read back: the control-mode code and the signed
+        # 44106 target. The sign convention differs by control mode — see
+        # ``_READBACK``.
+        code, sign = _READBACK[mode]
+        self._commanded = (code, sign * watts)
         # The base driver still owns the mode's register composition (43110
         # bitmask, currents, export cap). Dispatch steers power within it; it
         # does not replace the operating mode the inverter is in.
@@ -388,11 +409,8 @@ class SolisDispatchDriver:
                 "dispatch_active", "Dispatch active (44100)", 0, "dispatch_active",
             ))
             return rows
-        target = self._commanded or (
-            _MODE_PCC_TARGET,
-            self._dispatch_watts(commanded)
-            * (1 if commanded is StorageMode.Discharge else -1),
-        )
+        code, sign = _READBACK[commanded]
+        target = self._commanded or (code, sign * self._dispatch_watts(commanded))
         rows.extend([
             self._row("dispatch_active", "Dispatch active (44100)", 1,
                       "dispatch_active"),
@@ -456,17 +474,30 @@ class SolisDispatchDriver:
     def _dispatch_mode(self) -> StorageMode | None:
         """Return the forced mode Remote Dispatch is holding, or ``None``.
 
-        Read from the dispatch readbacks: running, in PCC-target mode, with a
-        non-zero power target — positive exports (Discharge), negative imports
-        (GridCharge). Anything else — released, unreadable, or a foreign
-        controller in another dispatch mode — defers to the register decoder.
+        Read from the dispatch readbacks: running, with a non-zero power target.
+
+          * **PCC target (3):** positive exports (Discharge), negative imports.
+            A negative PCC target is what GridCharge commanded before it moved
+            to the battery-power target, so it is still read as GridCharge — an
+            upgrade that lands mid-slot must not see its own previous command
+            as foreign.
+          * **Battery power (2):** positive charges (GridCharge). A negative
+            target is a battery *discharge*, which sunSale never commands, so it
+            is left to the register decoder like any other foreign dispatch.
+
+        Anything else — released, unreadable, or a foreign controller in another
+        dispatch mode — defers to the register decoder.
         """
         active = self._read("dispatch_active")
         control_mode = self._read("dispatch_control_mode")
         target = self._read("dispatch_power_target")
-        if active != 1 or control_mode != _MODE_PCC_TARGET or not target:
+        if active != 1 or not target:
             return None
-        return StorageMode.Discharge if target > 0 else StorageMode.GridCharge
+        if control_mode == _MODE_PCC_TARGET:
+            return StorageMode.Discharge if target > 0 else StorageMode.GridCharge
+        if control_mode == _MODE_BATTERY_POWER and target > 0:
+            return StorageMode.GridCharge
+        return None
 
     def _dispatch_watts(self, mode: StorageMode) -> int:
         """Return the magnitude in watts to command for ``mode``.
@@ -487,8 +518,9 @@ class SolisDispatchDriver:
         every register row still reporting ``match``.
 
         Only the export leg is applied, and only when discharging: it is a cap
-        on grid *export*, so it says nothing about GridCharge's import, whose
-        magnitude is already bounded by ``build_specs`` at the lower of the
+        on grid *export*, so it says nothing about GridCharge. GridCharge's
+        magnitude is a *battery* power target (the grid imports only what solar
+        does not cover) already bounded by ``build_specs`` at the lower of the
         battery's charge limit and the inverter rating. The battery
         discharge leg is deliberately not applied — commanding above what the
         battery can deliver is harmless (the inverter simply delivers less, and

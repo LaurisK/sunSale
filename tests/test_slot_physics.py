@@ -261,8 +261,13 @@ def test_gulp_full_battery_no_charge_grid_still_serves_load():
     assert out.grid_in_kwh == pytest.approx(0.3)
 
 
-def test_gulp_curtails_solar_surplus():
-    """GridCharge locks export to 0 by spec; solar above baseload curtails."""
+def test_gulp_solar_charges_the_battery_before_the_grid_does():
+    """GridCharge is a battery target: solar fills it first, the grid tops up.
+
+    sodas, 2026-10-06: a fixed grid import shed the panels. The inverter now
+    holds battery power, so solar beyond baseload is stored, not curtailed, and
+    the grid imports only the remainder of the charge.
+    """
     out = _sim(
         mode=StorageMode.GridCharge,
         solar_kwh=2.0,
@@ -270,8 +275,38 @@ def test_gulp_curtails_solar_surplus():
         soc_in=0.50,
         sell_eur_kwh=0.20,
     )
-    # solar surplus over baseload = 1.5 kWh → curtailed
-    assert out.curtailed_kwh == pytest.approx(1.5)
+    # charge target 4.5; solar surplus over baseload 1.5 goes into the battery,
+    # so the grid supplies 4.5 − 1.5 = 3.0.
+    assert out.batt_charge_kwh == pytest.approx(4.5)
+    assert out.grid_in_kwh == pytest.approx(3.0)
+    assert out.curtailed_kwh == 0.0
+    assert out.grid_out_kwh == 0.0
+
+
+def test_gulp_every_solar_kwh_displaces_a_grid_kwh():
+    """Solar is used before the grid whether it lands in the load or the battery."""
+    dark = _sim(mode=StorageMode.GridCharge, solar_kwh=0.0, baseload_kwh=0.5, soc_in=0.50)
+    sunny = _sim(mode=StorageMode.GridCharge, solar_kwh=1.5, baseload_kwh=0.5, soc_in=0.50)
+    # 0.5 kWh of the sun covers baseload, the other 1.0 kWh is stored — all 1.5
+    # kWh is grid energy not bought, and the battery ends up equally full.
+    assert sunny.grid_in_kwh == pytest.approx(dark.grid_in_kwh - 1.5)
+    assert sunny.batt_charge_kwh == pytest.approx(dark.batt_charge_kwh)
+    assert sunny.reward_eur > dark.reward_eur
+
+
+def test_gulp_curtails_only_solar_beyond_baseload_plus_the_charge_target():
+    """GridCharge locks export to 0 by spec: only the true excess curtails."""
+    out = _sim(
+        mode=StorageMode.GridCharge,
+        solar_kwh=8.0,
+        baseload_kwh=0.5,
+        soc_in=0.50,
+        sell_eur_kwh=0.20,
+    )
+    # surplus 7.5 − charge target 4.5 = 3.0 has nowhere to go
+    assert out.batt_charge_kwh == pytest.approx(4.5)
+    assert out.grid_in_kwh == 0.0
+    assert out.curtailed_kwh == pytest.approx(3.0)
     assert out.grid_out_kwh == 0.0
 
 

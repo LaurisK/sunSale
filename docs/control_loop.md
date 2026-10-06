@@ -270,9 +270,12 @@ Passive modes run with dispatch released, so neither field reaches them — the
 its Force Charge SOC ignores it; see `battery_export_guard.md`).
 
 `SolisDispatchDriver.decode_observed` / `observe` report Discharge / GridCharge while
-the dispatch readbacks show it running in PCC-target mode with a non-zero target;
-otherwise they defer to the register decoder (which alone would call a dispatch
-Discharge `feed_in`).
+the dispatch readbacks show it running with a non-zero target — PCC mode (3):
++ export = Discharge, − import = GridCharge (the previous GridCharge command, still
+recognised across an upgrade); battery-power mode (2): + charge = GridCharge. A
+negative battery-power target is a battery discharge sunSale never commands, so it
+reads as foreign. Otherwise they defer to the register decoder (which alone would
+call a dispatch Discharge `feed_in`).
 
 ## Battery-export guard (monitor only, v0.5.1)
 

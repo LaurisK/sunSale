@@ -11,6 +11,20 @@ Any behavior-affecting change bumps the `version` in
 ## [Unreleased]
 
 ### Fixed
+- **Grid charging put the grid ahead of solar and shed the panels.** GridCharge
+  was a fixed *meter* import (Remote Dispatch `grid_import`): the inverter commits
+  the grid to that import whatever the sun does, so PV could only ride on top of it
+  and was shed. On sodas (2026-10-06) PV fell from 690 W to 59 W in one 20 s step
+  — string at open-circuit voltage — as the import took hold, and was back at
+  1.5 kW 8 s after the release. GridCharge is now a *battery* power target
+  (`battery_charge`): solar fills the battery first and the grid imports only the
+  difference. The planner's slot physics matches — solar covers baseload and then
+  the battery, the grid tops up, and only solar beyond baseload plus the charge
+  target is curtailed (it used to curtail all of it). Only affects installs
+  driving the forced modes through Remote Dispatch; the RC register fallback is
+  unchanged. **Verify on first engagement:** the battery must charge and PV must
+  keep producing — the mode-2 sign is taken from `solis_modbus`'s mapping and
+  pinned by its contract test, but has not been measured on hardware.
 - **Grid charge commanded more than the inverter can carry, so nothing charged.**
   The GridCharge setpoint (RC / Remote Dispatch power target) was the battery's
   configured charge power, regardless of the inverter rating. On an 18 kW battery

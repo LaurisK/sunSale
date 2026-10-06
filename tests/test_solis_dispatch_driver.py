@@ -159,15 +159,26 @@ async def test_discharge_dispatches_grid_export_with_failsafe() -> None:
 
 
 @pytest.mark.asyncio
-async def test_grid_charge_dispatches_grid_import() -> None:
+async def test_grid_charge_dispatches_a_battery_power_target() -> None:
+    """GridCharge steers the battery, not the meter, so solar is used first.
+
+    A meter-side ``grid_import`` is a fixed import the inverter holds whatever
+    the sun does — on sodas (2026-10-06) it shed PV every time it started. A
+    ``battery_charge`` target lets the grid balance, which is what puts solar
+    ahead of the grid.
+    """
     drv, _, hass = _driver()
     await drv.apply_mode(
         StorageMode.GridCharge, drv.spec_for(StorageMode.GridCharge),
     )
     _, payload = _dispatch_calls(hass)[0]
-    assert payload["mode"] == "grid_import"
-    # Magnitude is positive; the block's own sign convention carries direction.
+    assert payload["mode"] == "battery_charge"
+    assert payload["mode"] != "grid_import"
+    # Magnitude is positive; the mode name carries direction.
     assert payload["power_watts"] > 0
+    # Charging from the grid is the point of the mode — never leave it to the
+    # firmware default or the operator's switch.
+    assert payload["allow_grid_charge"] is True
 
 
 @pytest.mark.asyncio
@@ -241,8 +252,8 @@ async def test_dispatch_magnitude_respects_the_configured_export_cap() -> None:
 
 
 @pytest.mark.asyncio
-async def test_export_cap_does_not_bound_grid_charge_import() -> None:
-    """GridCharge's spec caps export at 0 — that must not zero its import."""
+async def test_export_cap_does_not_bound_grid_charge_power() -> None:
+    """GridCharge's spec caps export at 0 — that must not zero its charge power."""
     from custom_components.sun_sale.contract.models import Limit
 
     limits = {
@@ -256,7 +267,7 @@ async def test_export_cap_does_not_bound_grid_charge_import() -> None:
         StorageMode.GridCharge, drv.spec_for(StorageMode.GridCharge),
     )
     _, payload = _dispatch_calls(hass)[0]
-    assert payload["mode"] == "grid_import"
+    assert payload["mode"] == "battery_charge"
     assert payload["power_watts"] > 0
 
 
@@ -346,7 +357,7 @@ async def test_a_newer_command_supersedes_the_pending_reconfirm(reconfirm) -> No
     assert reconfirm.cancels == 1
     await reconfirm.fire()
     # The re-confirm carries the mode commanded last, never the superseded one.
-    assert _dispatch_calls(hass)[-1][1]["mode"] == "grid_import"
+    assert _dispatch_calls(hass)[-1][1]["mode"] == "battery_charge"
 
 
 @pytest.mark.asyncio
@@ -407,6 +418,47 @@ async def test_control_surface_matches_when_the_inverter_agrees() -> None:
         "dispatch_power_target", "dispatch_failsafe",
     ):
         assert rows[name].status == "match", name
+
+
+@pytest.mark.asyncio
+async def test_grid_charge_surface_expects_battery_power_mode_and_a_positive_target() -> None:
+    """GridCharge reads back as control mode 2 with a *positive* target.
+
+    The sign differs from the meter-side modes (3/4: + export, − import):
+    upstream maps ``battery_charge`` to (2, +1). Getting it wrong would make the
+    verify loop call a healthy charge a permanent mismatch and re-command it
+    every cycle.
+    """
+    states = {
+        _ROLES["dispatch_active"]: _State("1"),
+        _ROLES["dispatch_control_mode"]: _State("2"),
+        _ROLES["dispatch_failsafe_interval"]: _State("20"),
+    }
+    drv, _, hass = _driver(states)
+    await drv.apply_mode(
+        StorageMode.GridCharge, drv.spec_for(StorageMode.GridCharge),
+    )
+    # The inverter reads back exactly what the service was asked for, positive.
+    sent_w = _dispatch_calls(hass)[0][1]["power_watts"]
+    hass.states.get = _capable({
+        **states, _ROLES["dispatch_power_target"]: _State(str(sent_w)),
+    }).get
+    rows = {r.name: r for r in drv.control_surface(StorageMode.GridCharge)}
+    assert rows["dispatch_control_mode"].desired == 2
+    assert rows["dispatch_power_target"].desired == sent_w > 0
+    for name in (
+        "dispatch_active", "dispatch_control_mode",
+        "dispatch_power_target", "dispatch_failsafe",
+    ):
+        assert rows[name].status == "match", name
+
+
+def test_grid_charge_surface_before_any_command_uses_the_same_convention() -> None:
+    """The fallback target (no command yet) must agree with the commanded one."""
+    drv, _, _ = _driver()
+    rows = {r.name: r for r in drv.control_surface(StorageMode.GridCharge)}
+    assert rows["dispatch_control_mode"].desired == 2
+    assert rows["dispatch_power_target"].desired > 0
 
 
 @pytest.mark.asyncio

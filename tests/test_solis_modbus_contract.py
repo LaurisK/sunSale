@@ -39,7 +39,7 @@ from custom_components.sun_sale.outbound.solis_dispatch_driver import (  # noqa:
 _DISPATCH_FIELDS = frozenset({"mode", "power_watts", "failsafe_minutes"})
 
 # The dispatch mode names sunSale asks for, from ``_DISPATCH_MODES``.
-_DISPATCH_MODE_NAMES = frozenset({"grid_export", "grid_import"})
+_DISPATCH_MODE_NAMES = frozenset({"grid_export", "battery_charge"})
 
 # Unique-id slugs of the readback sensors the verify loop compares against;
 # these are matched by ``inbound/solis_entity_resolver.py``.
@@ -139,6 +139,32 @@ def test_dispatch_mode_names_still_exist(const_source: str) -> None:
         "sunSale passes these by name; an unknown mode raises inside the "
         "service and is swallowed by the write path."
     )
+
+
+def test_dispatch_mode_codes_and_signs_match_what_the_driver_expects(
+    const_source: str,
+) -> None:
+    """Pin the (44105 code, power sign) pairs the driver's readback logic assumes.
+
+    The verify loop compares the readback against ``_READBACK``; if upstream
+    flipped the battery-power sign, a healthy GridCharge would read as a
+    permanent mismatch — or, worse, the inverter would discharge where sunSale
+    meant to charge. Upstream's table is the only authority for the sign.
+    """
+    from custom_components.sun_sale.outbound.solis_dispatch_driver import (
+        _DISPATCH_MODES,
+        _READBACK,
+    )
+
+    for mode, name in _DISPATCH_MODES.items():
+        found = re.search(
+            rf'"{name}"\s*:\s*\(\s*(\d+)\s*,\s*(-?\d+)\s*\)', const_source,
+        )
+        assert found, f"DISPATCH_MODES no longer defines a (code, sign) for {name!r}"
+        assert (int(found.group(1)), int(found.group(2))) == _READBACK[mode], (
+            f"solis_modbus maps {name!r} to {found.groups()} but the driver "
+            f"reads {mode.value} back as {_READBACK[mode]}"
+        )
 
 
 def test_dispatch_capability_gate_is_unchanged(const_source: str) -> None:

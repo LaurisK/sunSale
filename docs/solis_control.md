@@ -75,6 +75,32 @@ fine while the inverter is idle.
 | 44108 | Function bits (PV shutdown / allow grid charge / disable discharge) |
 | 44109/44110 | SOC window |
 
+**Which control mode each forced mode uses — and why they differ.** Discharge is a
+**PCC (meter) target** (44105 = 3, `grid_export`, + = export): the planner prices the
+sale at the meter, and a fixed export is what a forced sale wants. GridCharge is a
+**battery-power target** (44105 = 2, `battery_charge`, **+ = charge**): the inverter
+holds the battery at the target and lets the grid balance, so solar fills the battery
+first and the grid imports only the difference. The sign convention is not uniform —
+modes 3/4 are "+ export, − import", mode 2 is "+ charge, − discharge" — and is pinned
+against upstream's own table in `tests/test_solis_modbus_contract.py`.
+
+GridCharge used to be a PCC import target (`grid_import`, −P). That commits the grid
+to a fixed import whatever the sun does, so PV can only ride on top of it, and the
+inverter sheds PV. Measured on sodas 2026-10-06 (UTC): with grid charging allowed
+but dispatch not yet engaged (13:25–13:29) PV kept producing 700–900 W; at 13:29:49,
+as the PCC import took hold, PV fell from 690 W to 59 W in one 20 s step (string
+voltage 531 V → 593 V — the MPPT idling at open circuit) and stayed ≈ 0 until the
+release at 13:40:03, after which PV was back at 1.46 kW 8 s later and 2 kW a minute
+after. The same collapse happened at 12:55. Function bits read back `0x55` (PV
+shutdown *off*) throughout, so it was control-mode behaviour, not a flag.
+
+> **Unverified on hardware at the time of the change.** The mode-2 sign and the
+> "grid floats, PV first" behaviour come from upstream's mapping and the Ver3.4
+> block layout, not from a measured run on this inverter. Watch the first
+> engagement: the battery must be *charging* (on sodas `battery_power_net` goes
+> negative) within a minute of the command, and PV must keep producing.
+> `solis_dispatch_stop` releases it immediately.
+
 Three properties matter for control:
 
 1. **The deadman is the caller's to size.** 44101 is written as part of the same
