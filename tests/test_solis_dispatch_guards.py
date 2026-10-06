@@ -57,6 +57,24 @@ async def test_grid_charge_always_permits_grid_charging():
     assert payload["soc_min"] == 6
 
 
+async def test_grid_charge_target_never_exceeds_the_inverter_rating():
+    # sodas, 2026-10-05: an 18 kW battery on a 15 kW unit was sent -18000 W and
+    # the inverter read back 0 W on every poll — mode held, nothing charged.
+    from dataclasses import replace
+
+    base = SolisDriver(
+        _inverter(),
+        replace(default_battery_config(), max_charge_power_kw=18.0),
+        10_000,
+        15_000,
+    )
+    hass = _hass(_capable())
+    drv = SolisDispatchDriver(base, hass, dict(_ROLES))
+    await _command(drv, StorageMode.GridCharge)
+    _, payload = _dispatch_calls(hass)[0]
+    assert payload["power_watts"] == 15_000
+
+
 async def test_unwired_options_leave_the_payload_as_before():
     drv, _, hass = _driver(soc_min_pct=None, permitted=None)
     await _command(drv, StorageMode.Discharge)

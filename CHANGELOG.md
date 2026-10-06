@@ -10,6 +10,18 @@ Any behavior-affecting change bumps the `version` in
 
 ## [Unreleased]
 
+### Fixed
+- **Grid charge commanded more than the inverter can carry, so nothing charged.**
+  The GridCharge setpoint (RC / Remote Dispatch power target) was the battery's
+  configured charge power, regardless of the inverter rating. On an 18 kW battery
+  bank behind a 15 kW inverter the −18 kW target read back as 0 W on every
+  poll — the mode and SoC window stuck, the write-through readbacks echoed the
+  command, and the inverter sat in `grid_charge` for 8 h with the SoC flat. The
+  setpoint is now the lower of the battery's charge power and the configured
+  inverter rating (as Discharge already was). **Installs that left the inverter
+  rating at its 10 kW default now grid-charge at ≤ 10 kW — set the real rating
+  under Inverter → Platform.**
+
 ## [0.7.1] — 2026-09-29
 
 ### Fixed

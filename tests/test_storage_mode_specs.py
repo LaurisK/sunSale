@@ -57,6 +57,39 @@ def test_grid_charge_pushes_grid_charge_setpoint_negative():
     assert spec.charge_a is not None and spec.charge_a > 0
 
 
+def _battery_with_charge_kw(charge_kw: float):
+    """Return the default battery with its charge power overridden."""
+    from dataclasses import replace
+
+    return replace(default_battery_config(), max_charge_power_kw=charge_kw)
+
+
+def test_grid_charge_setpoint_capped_at_inverter_rating():
+    # An 18 kW battery on a 15 kW inverter: the setpoint is AC power through the
+    # inverter, and an over-rating target reads back 0 W (sodas, 2026-10-05).
+    spec = build_specs(
+        _battery_with_charge_kw(18.0), export_max_w=10_000, inverter_max_power_w=15_000,
+    )[StorageMode.GridCharge]
+    assert spec.rc_setpoint_w == -15_000
+
+
+def test_grid_charge_setpoint_keeps_battery_limit_below_rating():
+    # The rating is a ceiling, not a target: a smaller battery limit still wins.
+    spec = build_specs(
+        _battery_with_charge_kw(8.0), export_max_w=10_000, inverter_max_power_w=15_000,
+    )[StorageMode.GridCharge]
+    assert spec.rc_setpoint_w == -8_000
+
+
+def test_grid_charge_cap_leaves_charge_current_on_battery_limit():
+    # Only the AC setpoint is clamped; the DC current limit still derives from
+    # the battery's own charge power.
+    spec = build_specs(
+        _battery_with_charge_kw(18.0), export_max_w=10_000, inverter_max_power_w=15_000,
+    )[StorageMode.GridCharge]
+    assert spec.charge_a == pytest.approx(18_000 / 48.0)
+
+
 def test_discharge_pushes_export_setpoint_positive_and_raises_export_cap():
     # The cap is written explicitly (not inherited) so a preceding
     # NoExport/GridCharge/StandBy slot's 0 W cap cannot clamp the dump.

@@ -488,7 +488,8 @@ class SolisDispatchDriver:
 
         Only the export leg is applied, and only when discharging: it is a cap
         on grid *export*, so it says nothing about GridCharge's import, whose
-        magnitude is already the battery's own charge limit. The battery
+        magnitude is already bounded by ``build_specs`` at the lower of the
+        battery's charge limit and the inverter rating. The battery
         discharge leg is deliberately not applied — commanding above what the
         battery can deliver is harmless (the inverter simply delivers less, and
         the planner already plans against ``capability()``), whereas exceeding

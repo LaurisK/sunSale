@@ -78,7 +78,8 @@ def build_specs(
         battery_config: Battery limits (used to derive max charge/discharge amps).
         export_max_w: Backflow / export power cap for FeedIn and SelfUse modes.
         inverter_max_power_w: Rated AC output, used as the RC setpoint magnitude
-            for Discharge (force discharge to grid).
+            for Discharge (force discharge to grid) and as the ceiling on the
+            GridCharge setpoint, which is otherwise the battery's charge power.
 
     Returns:
         Dict mapping each StorageMode to its concrete spec.
@@ -89,7 +90,14 @@ def build_specs(
     i_discharge_max_a = _amps_from_kw(
         battery_config.max_discharge_power_kw, battery_config.nominal_voltage_v
     )
-    p_charge_max_w = int(battery_config.max_charge_power_kw * 1000)
+    # Grid charging is AC power pulled through the inverter, so the rating binds
+    # even when the battery could take more. An over-rating target is not
+    # clipped: on sodas (2026-10-05) a −18 kW target against a 15 kW unit read
+    # back 0 W on every poll while the mode and SoC window stuck, so the
+    # inverter sat in grid_charge for 8 h with the SoC flat.
+    p_charge_max_w = min(
+        int(battery_config.max_charge_power_kw * 1000), inverter_max_power_w,
+    )
 
     return {
         StorageMode.FeedIn: StorageModeSpec(
