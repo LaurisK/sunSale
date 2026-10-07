@@ -94,9 +94,12 @@ _YESTERDAY = "yesterday"
 # hints exactly, which is how one became the pre-selected grid-import meter and
 # fed a 6553.5 kW register sentinel into the observed series and the bill.
 # Such a candidate is ranked last and never pre-selected; it is still offered,
-# because this module ranks and never filters.
+# because this module ranks and never filters. "calibration" and "backflow" are
+# solis_modbus's export offset and export limit: both read 0 W, both carry
+# "export" in the name, and one of them was saved as a site's grid-export meter.
 _SETPOINT_HINTS: tuple[str, ...] = (
     "limit", "setpoint", "set_point", "target", "dispatch", "threshold",
+    "calibration", "backflow",
 )
 
 
@@ -117,6 +120,11 @@ class SourceSpec:
             *counter* from an instantaneous energy reading.
         yesterday: Whether this source wants yesterday's total rather than
             today's. Candidates are split on :data:`_YESTERDAY` accordingly.
+        guess: Whether a name hint may pre-select a candidate when nothing is
+            stored and the platform resolved nothing. Off where the empty value
+            is itself correct — Confirm saves the pre-selection, so a wrong
+            guess replaces a working default (or a reading nobody can check)
+            with a sensor that merely has a similar name.
     """
 
     conf_key: str
@@ -125,6 +133,7 @@ class SourceSpec:
     hints: tuple[str, ...]
     counter: bool = False
     yesterday: bool = False
+    guess: bool = True
 
 
 # Every optional source the inverter section can fill, in the order its pages
@@ -147,23 +156,30 @@ SOURCE_SPECS: tuple[SourceSpec, ...] = (
     ),
     # No platform resolves these: solis_modbus publishes only the signed net
     # flow, so the observers normally project onto each side themselves. An
-    # install that does publish per-direction sensors can say so here.
+    # install that does publish per-direction sensors can say so here. Never
+    # guessed: a directional sensor *replaces* the signed projection with no
+    # runtime fallback (``_DirectionalPowerObserver``), so a wrong pick silently
+    # zeroes the side — the Sodas export chart and bill sat at 0 for days on
+    # "Export Calibration" — while leaving it empty always works.
     SourceSpec(
         CONF_INVERTER_ENTITY_GRID_IMPORT_POWER, "", "power",
-        ("grid_import", "import", "from_grid", "consumed_from"),
+        ("grid_import", "import", "from_grid", "consumed_from"), guess=False,
     ),
     SourceSpec(
         CONF_INVERTER_ENTITY_GRID_EXPORT_POWER, "", "power",
-        ("grid_export", "export", "fed_into", "feed_in", "to_grid"),
+        ("grid_export", "export", "fed_into", "feed_in", "to_grid"), guess=False,
     ),
     # --- Energy counters ---
     SourceSpec(
         CONF_INVERTER_ENTITY_SOLAR_ENERGY, "solar_energy_today", "energy",
         ("pv", "solar", "generation", "yield"), counter=True,
     ),
+    # Only the debug view reads this, so a guess would just display a wrong
+    # number — and "load" / "consumption" fit a backup-port counter and a
+    # lifetime AC-port total as well as the household's own today counter.
     SourceSpec(
         CONF_INVERTER_ENTITY_HOUSEHOLD_CONSUMPTION_ENERGY, "", "energy",
-        ("house", "home", "load", "consumption"), counter=True,
+        ("house", "home", "load", "consumption"), counter=True, guess=False,
     ),
     SourceSpec(
         CONF_INVERTER_ENTITY_GRID_IMPORT_ENERGY, "grid_import_energy_today", "energy",
@@ -355,10 +371,11 @@ def default_source(candidates: list[DetectedSource], spec: SourceSpec, stored: s
     """Return the candidate to pre-select for a source.
 
     Preference order: what the user already stored (while it is still a
-    candidate), then the platform's auto-detected entity, then the best
-    name-hint match among the candidates that are not a control register's
-    read-back. With none of those the row opens unset, because guessing from
-    device class alone would be as likely wrong as right.
+    candidate), then the platform's auto-detected entity, then — only for a
+    source that allows guessing (:attr:`SourceSpec.guess`) — the best name-hint
+    match among the candidates that are not a control register's read-back.
+    With none of those the row opens unset, because guessing from device class
+    alone would be as likely wrong as right.
 
     Args:
         candidates: Output of :func:`role_candidates`.
@@ -373,6 +390,8 @@ def default_source(candidates: list[DetectedSource], spec: SourceSpec, stored: s
         return stored
     if auto := next((source.entity_id for source in candidates if source.auto), ""):
         return auto
+    if not spec.guess:
+        return ""
     hinted = [
         source.entity_id for source in candidates
         if not source.setpoint

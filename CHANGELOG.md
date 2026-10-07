@@ -10,6 +10,23 @@ Any behavior-affecting change bumps the `version` in
 
 ## [Unreleased]
 
+### Fixed
+- **The setup pages no longer pre-select a sensor that only has a similar name
+  for the grid-export / grid-import power and the household consumption rows.**
+  On a solis_modbus install the *Inverter power sensors* page opened with
+  `sensor.…_export_calibration` (the export offset register, always 0 W)
+  pre-selected as the grid-export meter, and Confirm saved it. A directional
+  grid-power sensor replaces the signed grid flow with no runtime fallback, so
+  the export side read 0 W for as long as it was stored: Sodas showed 57 kWh
+  exported on the inverter counter against 0.0 kWh in sunSale, a frozen export
+  chart and a bill with no export revenue. Those three rows are now filled in
+  only from a stored value or the platform's own resolution — an empty export /
+  import row is correct and simply uses the signed flow — and the export
+  offset and backflow limit rank last in the list like the other control
+  registers. **An install that already saved the wrong sensor keeps it** (a
+  stored pick is never changed behind the user's back): open *Inverter → Inverter
+  power sensors* and set *Grid export power* to *Not set*.
+
 ## [0.7.2] — 2026-10-06
 
 ### Fixed

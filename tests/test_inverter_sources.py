@@ -17,6 +17,7 @@ from custom_components.sun_sale.contract.const import (
     CONF_INVERTER_ENTITY_GRID_EXPORT_POWER,
     CONF_INVERTER_ENTITY_GRID_IMPORT_ENERGY,
     CONF_INVERTER_ENTITY_GRID_IMPORT_POWER,
+    CONF_INVERTER_ENTITY_HOUSEHOLD_CONSUMPTION_ENERGY,
     CONF_INVERTER_ENTITY_PV_POWER,
     CONF_INVERTER_PLATFORM,
 )
@@ -229,13 +230,11 @@ def test_a_name_hint_is_pre_selected_when_the_platform_resolved_nothing():
 
 def test_a_control_registers_read_back_is_never_pre_selected():
     """It is the only candidate whose hints match, and still nothing is filled in."""
-    candidates = [DetectedSource("sensor.dispatch_export_limit", "Dispatch Export Limit", False, True)]
-    assert default_source(candidates, _spec(CONF_INVERTER_ENTITY_GRID_EXPORT_POWER)) == ""
-    # A real meter alongside it wins even though it sorts later alphabetically.
-    real = DetectedSource("sensor.zzz_export_power", "Grid export power", False)
-    assert default_source([*candidates, real], _spec(CONF_INVERTER_ENTITY_GRID_EXPORT_POWER)) == (
-        "sensor.zzz_export_power"
-    )
+    candidates = [DetectedSource("sensor.pv_power_limit", "PV Power Limit", False, True)]
+    assert default_source(candidates, _spec(CONF_INVERTER_ENTITY_PV_POWER)) == ""
+    # A real sensor alongside it wins even though it sorts later alphabetically.
+    real = DetectedSource("sensor.zzz_pv_power", "PV power", False)
+    assert default_source([*candidates, real], _spec(CONF_INVERTER_ENTITY_PV_POWER)) == "sensor.zzz_pv_power"
 
 
 def test_a_stored_control_read_back_still_wins_so_a_visit_never_changes_a_reading():
@@ -245,6 +244,49 @@ def test_a_stored_control_read_back_still_wins_so_a_visit_never_changes_a_readin
     assert default_source(candidates, spec, stored="sensor.dispatch_export_limit") == (
         "sensor.dispatch_export_limit"
     )
+
+
+@pytest.mark.parametrize("conf_key", [
+    CONF_INVERTER_ENTITY_GRID_IMPORT_POWER,
+    CONF_INVERTER_ENTITY_GRID_EXPORT_POWER,
+    CONF_INVERTER_ENTITY_HOUSEHOLD_CONSUMPTION_ENERGY,
+])
+def test_a_source_whose_empty_value_is_correct_is_never_guessed_from_its_name(conf_key):
+    """Saving a lookalike would replace the signed-flow default, so only a stored or resolved pick counts."""
+    spec = _spec(conf_key)
+    lookalike = DetectedSource("sensor.zzz_grid_export_power", "Grid export power", False)
+    assert default_source([lookalike], spec) == ""
+    assert default_source([lookalike], spec, stored="sensor.zzz_grid_export_power") == (
+        "sensor.zzz_grid_export_power"
+    )
+    resolved = DetectedSource("sensor.the_resolved_one", "", True)
+    assert default_source([lookalike, resolved], spec) == "sensor.the_resolved_one"
+
+
+def test_sodas_export_offset_and_backflow_limit_are_neither_pre_selected_nor_ranked_first():
+    """Live regression: the sodas export chart and bill sat at 0 on "Export Calibration".
+
+    solis_modbus mirrors the export offset (no state class) and the backflow
+    limit (a ``measurement``) as ``power`` sensors; both read 0 W and both say
+    "export", so neither device class, state class nor hint could tell them
+    from a meter. The signed grid flow is what the export side must read.
+    """
+    entries = [
+        _entry("sensor.solis_s6_eh3p_export_calibration", original_name="sodas_inv Export Calibration",
+               state_class=None),
+        _entry("sensor.solis_s6_eh3p_flexible_export_backflow_power",
+               original_name="sodas_inv Flexible Export Backflow Power"),
+        _entry("sensor.solis_s6_eh3p_zzz_grid_export_power", original_name="Grid export power"),
+    ]
+    spec = _spec(CONF_INVERTER_ENTITY_GRID_EXPORT_POWER)
+    found = role_candidates(entries, _no_attributes, spec)
+    assert [source.entity_id for source in found] == [
+        "sensor.solis_s6_eh3p_zzz_grid_export_power",
+        "sensor.solis_s6_eh3p_export_calibration",
+        "sensor.solis_s6_eh3p_flexible_export_backflow_power",
+    ]
+    assert [source.setpoint for source in found] == [False, True, True]
+    assert default_source(found, spec) == ""
 
 
 def test_nothing_is_pre_selected_when_no_candidate_looks_right():
