@@ -260,6 +260,35 @@ class TerminalValuation:
     flat_eur_kwh: float      # EUR per storage kWh above the reserve
 
 
+@dataclass(frozen=True)
+class RunningSellAverage:
+    """Persisted primary: the running sell-price average, as of one local day.
+
+    Each local day it moves to ``0.9 × previous + 0.1 × that day's mean sell
+    price`` (``pipeline.discharge_gate.fold_running_average``). ``day`` is the
+    watermark that makes the update happen once per day however often the
+    cycle runs.
+    """
+    value_eur_kwh: float
+    day: date
+
+
+@dataclass(frozen=True)
+class DischargeGate:
+    """What the discharge gate did to a plan (``SchedulePolicy.discharge_gate_enabled``).
+
+    ``average`` is carried even while the gate is off, because it is the value
+    the coordinator persists. ``overfill_kwh`` is how much of tomorrow's
+    boosted solar surplus the battery has no room for after the first pass, and
+    ``overfill_slots`` the below-average slots the second pass turned into
+    Discharge slots to make that room.
+    """
+    average: RunningSellAverage | None = None
+    active: bool = False                    # gate shaped this plan
+    overfill_kwh: float = 0.0               # storage-side kWh with no room tomorrow
+    overfill_slots: tuple[datetime, ...] = ()   # starts of the slots forced to Discharge
+
+
 @dataclass
 class Schedule:
     """Complete battery optimization result."""
@@ -270,6 +299,10 @@ class Schedule:
     # None on the degenerate paths (no slots, no SoC envelope) where no
     # terminal value was applied.
     terminal: TerminalValuation | None = None
+    # Always set by ``optimize_schedule`` (even for an empty plan) so the
+    # coordinator can persist the running average; None only for hand-built
+    # schedules.
+    gate: DischargeGate | None = None
 
 
 @dataclass(frozen=True)
@@ -317,6 +350,11 @@ class SchedulePolicy:
             the horizon end the reserve covers, and extra AC kWh reserved on
             top of the house load (an EV charge the baseload profile does not
             see). Read only while ``load_reserve_enabled``.
+        ``discharge_gate_enabled`` — when True, Discharge-to-grid is offered only
+            in slots selling at or above the running sell-price average, and a
+            second pass adds the best remaining slots needed to shed tomorrow's
+            overfill. ``overfill_boost`` is the fraction added to tomorrow's
+            generation forecast when sizing that overfill (0.2 = +20 %).
         ``max_battery_charge_kw`` / ``max_battery_discharge_kw`` — the battery
             legs' live ceilings from ``InverterCapability``, already reduced
             against ``BatteryConfig``. ``ScheduleNode`` substitutes them into the
@@ -341,6 +379,8 @@ class SchedulePolicy:
     load_reserve_enabled: bool = False
     load_reserve_days: int = 3              # days after the horizon end covered
     load_reserve_extra_kwh: float = 0.0     # AC kWh held on top (e.g. EV charge)
+    discharge_gate_enabled: bool = False
+    overfill_boost: float = 0.2             # fraction added to tomorrow's forecast
 
 
 @dataclass(frozen=True)
@@ -828,18 +868,6 @@ class GenerationHistory:
 class EstimatedCapacity:
     """Primary data: current CapacityEstimator result, set by coordinator pre-DAG."""
     value_kwh: float
-
-
-@dataclass(frozen=True)
-class HouseholdConsumptionReading:
-    """Primary data: one snapshot of the inverter's household-consumption today-total kWh counter.
-
-    The counter is cumulative and resets at local midnight; this is just the
-    most recent observed value, so consumers can show "consumption so far
-    today" without re-deriving it from instantaneous load samples.
-    """
-    today_total_kwh: float
-    timestamp: datetime
 
 
 @dataclass(frozen=True)

@@ -196,9 +196,6 @@ CONF_PRICE_LEVEL_EXPENSIVE_SHARE = "price_level_expensive_share"
 CONF_PRICE_LEVEL_CHEAP_BELOW = "price_level_cheap_below"
 CONF_PRICE_LEVEL_EXPENSIVE_ABOVE = "price_level_expensive_above"
 DEFAULT_PRICE_LEVEL_SHARE_PCT = 25.0
-CONF_INVERTER_ENTITY_HOUSEHOLD_CONSUMPTION_ENERGY = (
-    "inverter_entity_household_consumption_energy"
-)
 CONF_INVERTER_ENTITY_SOLAR_ENERGY = "inverter_entity_solar_energy"
 CONF_INVERTER_ENTITY_PV_POWER = "inverter_entity_pv_power"
 # Optional dedicated battery-BMS (JK-BMS or similar) telemetry. When the SoC
@@ -307,6 +304,7 @@ COUNTER_SNAPSHOT_HISTORY_RETENTION_DAYS = 2
 # Persistent storage keys for the new observed-series stores.
 STORAGE_KEY_BAKED_OBSERVED = f"{DOMAIN}_baked_observed"
 STORAGE_KEY_COUNTER_SNAPSHOT = f"{DOMAIN}_counter_snapshot"
+STORAGE_KEY_SELL_AVERAGE = f"{DOMAIN}_sell_average"
 
 # Bake-in source-kind discriminator values stored in BakedDayRecord.source_kind.
 SOURCE_KIND_DEDICATED_SENSOR = "dedicated_sensor"
@@ -482,6 +480,12 @@ DEFAULT_SCHEDULE_LOAD_RESERVE = False
 # top of the house load (e.g. an EV charge the baseload profile does not see).
 DEFAULT_SCHEDULE_LOAD_RESERVE_DAYS = 3
 DEFAULT_SCHEDULE_LOAD_RESERVE_EXTRA_KWH = 0.0
+# Discharge gate: sell stored energy only above the running sell-price average,
+# plus the slots that make room for tomorrow's overfill. Dispatch-affecting,
+# hence off by default. The boost is the percentage added to tomorrow's
+# generation forecast before it is compared with the room left in the battery.
+DEFAULT_SCHEDULE_DISCHARGE_GATE = False
+DEFAULT_SCHEDULE_OVERFILL_BOOST_PCT = 20.0
 
 # Numeric schedule-policy knobs. Values mirror the in-module DEFAULT_* used by
 # pipeline/schedule.py so that the user-facing entities start at the same
@@ -521,3 +525,5 @@ SCHEDULE_LOAD_RESERVE_DAYS_MIN = 3
 SCHEDULE_LOAD_RESERVE_DAYS_MAX = 6
 SCHEDULE_LOAD_RESERVE_EXTRA_KWH_MIN = 0.0
 SCHEDULE_LOAD_RESERVE_EXTRA_KWH_MAX = 100.0
+SCHEDULE_OVERFILL_BOOST_PCT_MIN = 0.0
+SCHEDULE_OVERFILL_BOOST_PCT_MAX = 100.0

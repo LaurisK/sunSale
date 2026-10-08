@@ -13,6 +13,7 @@ from .contract.const import (
     DEFAULT_SCHEDULE_ALLOW_DISCHARGE_TO_GRID,
     DEFAULT_SCHEDULE_ALLOW_FEED_IN,
     DEFAULT_SCHEDULE_ALLOW_GRID_CHARGING,
+    DEFAULT_SCHEDULE_DISCHARGE_GATE,
     DEFAULT_SCHEDULE_LOAD_RESERVE,
     DEFAULT_SCHEDULE_USE_STANDBY,
     DOMAIN,
@@ -40,6 +41,7 @@ async def async_setup_entry(
         AllowFeedInSwitch(coordinator, entry),
         AllowDischargeToGridSwitch(coordinator, entry),
         LoadReserveSwitch(coordinator, entry),
+        DischargeGateSwitch(coordinator, entry),
     ])
 
 
@@ -194,3 +196,21 @@ class LoadReserveSwitch(_SunSaleSwitchBase):
     _unique_suffix = "load_reserve"
     _coord_attr = "load_reserve_enabled"
     _default_on = DEFAULT_SCHEDULE_LOAD_RESERVE
+
+
+class DischargeGateSwitch(_SunSaleSwitchBase):
+    """When on the scheduler sells stored energy only above the running sell average.
+
+    Discharge-to-grid is then offered only in slots selling at or above the
+    running sell-price average (0.9 × previous + 0.1 × today's mean, updated
+    daily). A second pass adds the best remaining slots before tomorrow's sun
+    until the surplus tomorrow's forecast (raised by the overfill boost) would
+    leave without room in the battery is shed. Dispatch-affecting, hence OFF by
+    default.
+    """
+
+    _attr_name = "sunSale Discharge Above Average"
+    _attr_icon = "mdi:battery-arrow-up-outline"
+    _unique_suffix = "discharge_gate"
+    _coord_attr = "discharge_gate_enabled"
+    _default_on = DEFAULT_SCHEDULE_DISCHARGE_GATE

@@ -58,7 +58,6 @@ from ..contract.const import (
     CONF_INVERTER_ENTITY_GRID_IMPORT_ENERGY,
     CONF_INVERTER_ENTITY_GRID_IMPORT_POWER,
     CONF_INVERTER_ENTITY_GRID_IMPORT_YESTERDAY,
-    CONF_INVERTER_ENTITY_HOUSEHOLD_CONSUMPTION_ENERGY,
     CONF_INVERTER_ENTITY_PV_POWER,
     CONF_INVERTER_ENTITY_SOLAR_ENERGY,
     CONF_INVERTER_PLATFORM,
@@ -173,13 +172,6 @@ SOURCE_SPECS: tuple[SourceSpec, ...] = (
     SourceSpec(
         CONF_INVERTER_ENTITY_SOLAR_ENERGY, "solar_energy_today", "energy",
         ("pv", "solar", "generation", "yield"), counter=True,
-    ),
-    # Only the debug view reads this, so a guess would just display a wrong
-    # number — and "load" / "consumption" fit a backup-port counter and a
-    # lifetime AC-port total as well as the household's own today counter.
-    SourceSpec(
-        CONF_INVERTER_ENTITY_HOUSEHOLD_CONSUMPTION_ENERGY, "", "energy",
-        ("house", "home", "load", "consumption"), counter=True, guess=False,
     ),
     SourceSpec(
         CONF_INVERTER_ENTITY_GRID_IMPORT_ENERGY, "grid_import_energy_today", "energy",

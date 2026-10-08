@@ -10,6 +10,7 @@ from custom_components.sun_sale.number import (
     LoadReserveDaysNumber,
     LoadReserveExtraKwhNumber,
     ModeChangePenaltyNumber,
+    OverfillBoostNumber,
     ProfitabilityTiltAlphaNumber,
     TerminalValueDiscountNumber,
 )
@@ -32,6 +33,7 @@ def _make_number(cls, attr: str, initial: float):
         (TerminalValueDiscountNumber, "terminal_value_discount", "terminal_value_discount", 0.5),
         (LoadReserveDaysNumber, "load_reserve_days", "load_reserve_days", 3),
         (LoadReserveExtraKwhNumber, "load_reserve_extra_kwh", "load_reserve_extra_kwh", 12.5),
+        (OverfillBoostNumber, "overfill_boost_pct", "overfill_boost_pct", 20.0),
     ],
 )
 def test_native_value_mirrors_coordinator(cls, attr, suffix, initial):
@@ -48,6 +50,7 @@ def test_native_value_mirrors_coordinator(cls, attr, suffix, initial):
         (TerminalValueDiscountNumber, "terminal_value_discount"),
         (LoadReserveDaysNumber, "load_reserve_days"),
         (LoadReserveExtraKwhNumber, "load_reserve_extra_kwh"),
+        (OverfillBoostNumber, "overfill_boost_pct"),
     ],
 )
 async def test_set_native_value_writes_to_coordinator(cls, attr):
@@ -122,3 +125,13 @@ def test_load_reserve_knob_bounds():
     ) == (3, 6, 1)
     assert extra._attr_native_min_value == 0.0
     assert extra._attr_native_unit_of_measurement == "kWh"
+
+
+def test_overfill_boost_knob_is_a_percentage_defaulting_to_twenty():
+    """The boost is a whole-percent knob from 0 to 100."""
+    boost, _ = _make_number(OverfillBoostNumber, "overfill_boost_pct", 20.0)
+    assert (
+        boost._attr_native_min_value, boost._attr_native_max_value, boost._attr_native_step,
+    ) == (0.0, 100.0, 5)
+    assert boost._attr_native_unit_of_measurement == "%"
+    assert boost._default_value == 20.0

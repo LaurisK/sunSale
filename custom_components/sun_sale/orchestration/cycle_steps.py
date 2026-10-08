@@ -42,6 +42,8 @@ from ..contract.const import (
     SCHEDULE_MAX_DISCHARGE_TO_GRID_KW_MIN,
     SCHEDULE_MODE_CHANGE_PENALTY_MAX,
     SCHEDULE_MODE_CHANGE_PENALTY_MIN,
+    SCHEDULE_OVERFILL_BOOST_PCT_MAX,
+    SCHEDULE_OVERFILL_BOOST_PCT_MIN,
     SCHEDULE_PROFITABILITY_TILT_ALPHA_MAX,
     SCHEDULE_PROFITABILITY_TILT_ALPHA_MIN,
     SCHEDULE_TERMINAL_VALUE_DISCOUNT_MAX,
@@ -73,6 +75,7 @@ from ..contract.models import (
     PriceHistory,
     PvPowerHistory,
     PvPowerReading,
+    RunningSellAverage,
     SchedulePolicy,
     SolarData,
     SunSaleConfig,
@@ -153,6 +156,8 @@ class ScheduleKnobs:
     load_reserve_enabled: bool = False
     load_reserve_days: float = 3
     load_reserve_extra_kwh: float = 0.0
+    discharge_gate_enabled: bool = False
+    overfill_boost_pct: float = 20.0
 
 
 class CycleStep:
@@ -466,6 +471,7 @@ class StoredPrimariesStep(CycleStep):
         array_calibration_store: PersistentStore,
         mode_history_store: PersistentStore,
         read_sun_times: Callable[[datetime], SunTimes],
+        sell_average_store: PersistentStore | None = None,
     ) -> None:
         """Bind the read-only stores and the sun-times reader."""
         self._baked_store = baked_store
@@ -476,6 +482,7 @@ class StoredPrimariesStep(CycleStep):
         self._array_calibration_store = array_calibration_store
         self._mode_history_store = mode_history_store
         self._read_sun_times = read_sun_times
+        self._sell_average_store = sell_average_store
 
     def seed(self, primary: dict, now: datetime) -> None:
         """Inject baked/bill/price/quality/calibration/mode histories, sun times."""
@@ -505,6 +512,11 @@ class StoredPrimariesStep(CycleStep):
         primary[InverterModeHistory] = (
             self._mode_history_store.value if self._mode_history_store else None
         ) or InverterModeHistory(samples=())
+        # Raw: ``None`` (cold start) tells the schedule to seed the average
+        # from today's prices.
+        primary[RunningSellAverage] = (
+            self._sell_average_store.value if self._sell_average_store else None
+        )
 
 
 class ConsumptionDailyStep(CycleStep):
@@ -645,6 +657,12 @@ class SchedulePolicyStep(CycleStep):
                 SCHEDULE_LOAD_RESERVE_EXTRA_KWH_MIN,
                 SCHEDULE_LOAD_RESERVE_EXTRA_KWH_MAX,
             ),
+            discharge_gate_enabled=k.discharge_gate_enabled,
+            overfill_boost=_clamp(
+                k.overfill_boost_pct,
+                SCHEDULE_OVERFILL_BOOST_PCT_MIN,
+                SCHEDULE_OVERFILL_BOOST_PCT_MAX,
+            ) / 100.0,
             mode_change_penalty_eur_per_kwh=_clamp(
                 k.mode_change_penalty_eur_per_kwh,
                 SCHEDULE_MODE_CHANGE_PENALTY_MIN,

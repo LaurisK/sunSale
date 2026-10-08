@@ -50,7 +50,6 @@ from ..contract.const import (
     CONF_BMS_BATTERY_SOC,
     CONF_CURRENCY,
     CONF_FORECAST_RESERVE_ENABLED,
-    CONF_INVERTER_ENTITY_HOUSEHOLD_CONSUMPTION_ENERGY,
     CONF_INVERTER_EXPORT_LIMIT_KW,
     CONF_INVERTER_MAX_POWER_KW,
     CONF_NORDPOOL_ENTITY,
@@ -69,11 +68,13 @@ from ..contract.const import (
     DEFAULT_SCHEDULE_ALLOW_DISCHARGE_TO_GRID,
     DEFAULT_SCHEDULE_ALLOW_FEED_IN,
     DEFAULT_SCHEDULE_ALLOW_GRID_CHARGING,
+    DEFAULT_SCHEDULE_DISCHARGE_GATE,
     DEFAULT_SCHEDULE_LOAD_RESERVE,
     DEFAULT_SCHEDULE_LOAD_RESERVE_DAYS,
     DEFAULT_SCHEDULE_LOAD_RESERVE_EXTRA_KWH,
     DEFAULT_SCHEDULE_MAX_DISCHARGE_TO_GRID_KW,
     DEFAULT_SCHEDULE_MODE_CHANGE_PENALTY_EUR_PER_KWH,
+    DEFAULT_SCHEDULE_OVERFILL_BOOST_PCT,
     DEFAULT_SCHEDULE_PROFITABILITY_TILT_ALPHA,
     DEFAULT_SCHEDULE_TERMINAL_VALUE_DISCOUNT,
     DEFAULT_SCHEDULE_USE_STANDBY,
@@ -95,6 +96,7 @@ from ..contract.const import (
     STORAGE_KEY_MONTHLY_BILL,
     STORAGE_KEY_PRICE_CURVE_HISTORY,
     STORAGE_KEY_PRICE_HISTORY,
+    STORAGE_KEY_SELL_AVERAGE,
     STORAGE_KEY_YESTERDAY,
     STORAGE_VERSION,
     UPDATE_INTERVAL_MINUTES,
@@ -126,7 +128,6 @@ from ..contract.models import (
     GridImportPowerHistory,
     GridImportPowerReading,
     GridImportTodayReading,
-    HouseholdConsumptionReading,
     InverterCapability,
     InverterModeHistory,
     InverterModeReading,
@@ -143,6 +144,7 @@ from ..contract.models import (
     PriceSeries,
     ProfitabilityScore,
     PvPowerHistory,
+    RunningSellAverage,
     Schedule,
     SolarHealth,
     StorageMode,
@@ -166,7 +168,6 @@ from ..inbound.consumption_daily import (
 from ..inbound.forecast import SolarTranslator
 from ..inbound.forecast_resolver import combine_forecast_entities, resolve_forecast_entities
 from ..inbound.holiday_calendar import holiday_predicate, preload_holidays
-from ..inbound.household_consumption import HouseholdConsumptionTranslator
 from ..inbound.inverter_entity_resolver import resolve_inverter_entities
 from ..inbound.inverter_mode import InverterModeTranslator
 from ..inbound.observer.bake_in import try_bake_yesterday
@@ -425,6 +426,7 @@ class SunSaleCoordinator(DataUpdateCoordinator):
         self._mode_history_store: PersistentStore[InverterModeHistory] | None = None
         self._counter_snapshot_store: PersistentStore[CounterSnapshotHistory] | None = None
         self._baked_observed_store: PersistentStore[BakedObservedHistory] | None = None
+        self._sell_average_store: PersistentStore[RunningSellAverage] | None = None
         # Ordered pre-DAG primary-assembly steps — built at the end of
         # async_setup once all stores exist. See orchestration/cycle_steps.py.
         self._cycle_steps: tuple[CycleStep, ...] = ()
@@ -436,6 +438,8 @@ class SunSaleCoordinator(DataUpdateCoordinator):
         self.load_reserve_enabled: bool = DEFAULT_SCHEDULE_LOAD_RESERVE
         self.load_reserve_days: float = DEFAULT_SCHEDULE_LOAD_RESERVE_DAYS
         self.load_reserve_extra_kwh: float = DEFAULT_SCHEDULE_LOAD_RESERVE_EXTRA_KWH
+        self.discharge_gate_enabled: bool = DEFAULT_SCHEDULE_DISCHARGE_GATE
+        self.overfill_boost_pct: float = DEFAULT_SCHEDULE_OVERFILL_BOOST_PCT
         self.mode_change_penalty_eur_per_kwh: float = (
             DEFAULT_SCHEDULE_MODE_CHANGE_PENALTY_EUR_PER_KWH
         )
@@ -1075,9 +1079,6 @@ class SunSaleCoordinator(DataUpdateCoordinator):
             GridExportTotalTranslator(entity_id=resolved.grid_export_total),
             GenerationTranslator(entity_id=resolved.solar_energy_today),
             PvPowerTranslator(entity_id=resolved.pv_power),
-            HouseholdConsumptionTranslator(
-                entity_id=data.get(CONF_INVERTER_ENTITY_HOUSEHOLD_CONSUMPTION_ENERGY, ""),
-            ),
             AcPortPowerTranslator(entity_id=self._ac_port_power_entity_id),
             BackupPowerTranslator(entity_id=self._backup_power_entity_id),
             InverterModeTranslator(driver=driver),
@@ -1207,6 +1208,7 @@ class SunSaleCoordinator(DataUpdateCoordinator):
         self._mode_history_store = self._stores[STORAGE_KEY_MODE_HISTORY]
         self._counter_snapshot_store = self._stores[STORAGE_KEY_COUNTER_SNAPSHOT]
         self._baked_observed_store = self._stores[STORAGE_KEY_BAKED_OBSERVED]
+        self._sell_average_store = self._stores[STORAGE_KEY_SELL_AVERAGE]
 
         await self._async_backfill_price_history()
 
@@ -1262,6 +1264,7 @@ class SunSaleCoordinator(DataUpdateCoordinator):
                 array_calibration_store=self._array_calibration_store,
                 mode_history_store=self._mode_history_store,
                 read_sun_times=self._read_sun_times,
+                sell_average_store=self._sell_average_store,
             ),
             ConsumptionDailyStep(
                 self._consumption_daily_store, self._history_stores, self._sun_sale_config,
@@ -1297,6 +1300,8 @@ class SunSaleCoordinator(DataUpdateCoordinator):
             load_reserve_enabled=self.load_reserve_enabled,
             load_reserve_days=self.load_reserve_days,
             load_reserve_extra_kwh=self.load_reserve_extra_kwh,
+            discharge_gate_enabled=self.discharge_gate_enabled,
+            overfill_boost_pct=self.overfill_boost_pct,
             mode_change_penalty_eur_per_kwh=self.mode_change_penalty_eur_per_kwh,
             profitability_tilt_alpha=self.profitability_tilt_alpha,
             terminal_value_discount=self.terminal_value_discount,
@@ -1548,6 +1553,18 @@ class SunSaleCoordinator(DataUpdateCoordinator):
             acc_result: ForecastAccuracyResult | None = secondary.get(ForecastAccuracyResult)
             if acc_result is not None and self._forecast_quality_store is not None:
                 await self._forecast_quality_store.save(acc_result.quality)
+
+        with self._guarded("sell-average save"):
+            schedule: Schedule | None = secondary.get(Schedule)
+            average = schedule.gate.average if schedule and schedule.gate else None
+            # Only rewrite when the local day moved on; same-day cycles get the
+            # stored object back unchanged from the schedule node.
+            if (
+                average is not None
+                and self._sell_average_store is not None
+                and average is not self._sell_average_store.value
+            ):
+                await self._sell_average_store.save(average)
 
         with self._guarded("monthly-bill save"):
             bill_result: MonthlyBillResult | None = secondary.get(MonthlyBillResult)
@@ -1952,9 +1969,6 @@ class SunSaleCoordinator(DataUpdateCoordinator):
         ) if (imp_power is not None or exp_power is not None) else 0.0
         nordpool: NordpoolData | None = primary.get(NordpoolData)
         deg: DegradationCost | None = secondary.get(DegradationCost)
-        consumption: HouseholdConsumptionReading | None = primary.get(
-            HouseholdConsumptionReading,
-        )
 
         _acc: ForecastAccuracyResult | None = secondary.get(ForecastAccuracyResult)
         return {
@@ -1986,9 +2000,6 @@ class SunSaleCoordinator(DataUpdateCoordinator):
             "profitability_score": secondary.get(ProfitabilityScore),
             "price_level": secondary.get(PriceLevelSeries),
             "price_forecast": secondary.get(PriceForecast),
-            "consumption_today_kwh": (
-                consumption.today_total_kwh if consumption else None
-            ),
             "forecast_quality": _acc.quality if _acc else None,
             "array_calibration": secondary.get(ArrayCalibration),
             "solar_health": secondary.get(SolarHealth),

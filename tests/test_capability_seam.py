@@ -388,6 +388,8 @@ class _KnobCoordinator:
     load_reserve_enabled = False
     load_reserve_days = 3
     load_reserve_extra_kwh = 0.0
+    discharge_gate_enabled = False
+    overfill_boost_pct = 20.0
     mode_change_penalty_eur_per_kwh = 0.005
     profitability_tilt_alpha = 0.5
     terminal_value_discount = 0.5

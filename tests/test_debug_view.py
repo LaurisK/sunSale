@@ -1,7 +1,7 @@
 """Tests for the /api/sun_sale/debug view."""
 from __future__ import annotations
 
-from datetime import UTC, datetime, timedelta
+from datetime import UTC, date, datetime, timedelta
 from unittest.mock import MagicMock
 
 import pytest
@@ -9,8 +9,10 @@ import pytest
 from custom_components.sun_sale.contract.models import (
     BatteryState,
     CalculationResult,
+    DischargeGate,
     GenerationSeries,
     PriceSeries,
+    RunningSellAverage,
     Schedule,
     ScheduleSlot,
     SlotDecision,
@@ -85,6 +87,8 @@ def make_coordinator(
     terminal_value_discount: float = 0.5,
     load_reserve_enabled: bool = False,
     terminal: TerminalValuation | None = None,
+    discharge_gate_enabled: bool = False,
+    gate: DischargeGate | None = None,
 ) -> MagicMock:
     coord = MagicMock()
     coord.automation_enabled = automation_enabled
@@ -100,6 +104,8 @@ def make_coordinator(
     coord.load_reserve_enabled = load_reserve_enabled
     coord.load_reserve_days = 5
     coord.load_reserve_extra_kwh = 12.5
+    coord.discharge_gate_enabled = discharge_gate_enabled
+    coord.overfill_boost_pct = 20.0
     coord.battery_config.round_trip_efficiency = 0.9
 
     tariff_cfg: TariffConfig = default_tariff_config()
@@ -111,6 +117,7 @@ def make_coordinator(
         degradation_cost_per_kwh=0.02,
         computed_at=BASE,
         terminal=terminal,
+        gate=gate,
     ) if include_schedule else None
 
     ps = _make_price_series()
@@ -329,3 +336,33 @@ def test_pricing_slots_carry_forecast_flag():
     """The check rebuilds plannable_slots from priced ∪ forecast rows."""
     result = _coordinator_to_dict("e", make_coordinator())
     assert all("forecast" in s for s in result["pipeline"]["pricing"]["slots"])
+
+
+def test_schedule_gate_serialised():
+    """The discharge gate's average, overfill and forced slots reach outputs.schedule.gate."""
+    forced = BASE + timedelta(hours=20)
+    coord = make_coordinator(
+        discharge_gate_enabled=True,
+        gate=DischargeGate(
+            average=RunningSellAverage(value_eur_kwh=0.1234567, day=date(2024, 1, 15)),
+            active=True, overfill_kwh=12.34567, overfill_slots=(forced,),
+        ),
+    )
+    result = _coordinator_to_dict("e", coord)
+    assert result["outputs"]["schedule"]["gate"] == {
+        "active": True,
+        "average_eur_kwh": 0.123457,
+        "average_day": "2024-01-15",
+        "overfill_kwh": 12.3457,
+        "overfill_slots": [forced.isoformat()],
+    }
+    policy = result["pipeline"]["schedule_policy"]
+    assert policy["discharge_gate_enabled"] is True
+    assert policy["overfill_boost_pct"] == 20.0
+
+
+def test_schedule_gate_none_for_a_hand_built_schedule():
+    """A schedule built without the gate (degenerate paths of old callers) reports None."""
+    result = _coordinator_to_dict("e", make_coordinator())
+    assert result["outputs"]["schedule"]["gate"] is None
+    assert result["pipeline"]["schedule_policy"]["discharge_gate_enabled"] is False

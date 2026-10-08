@@ -450,7 +450,6 @@
         "description": "{detected}\n\nRunning totals, all optional. Today's counters correct each day's series as it is measured; yesterday's are the best source for finalising the day just gone.",
         "data": {
           "inverter_entity_solar_energy": "Solar energy counter today (kWh)",
-          "inverter_entity_household_consumption_energy": "Household consumption counter today (kWh)",
           "inverter_entity_grid_import_energy": "Grid import energy counter today (kWh)",
           "inverter_entity_grid_export_energy": "Grid export energy counter today (kWh)",
           "inverter_entity_battery_charge_energy": "Battery charge energy counter today (kWh)",
@@ -462,7 +461,6 @@
         },
         "data_description": {
           "inverter_entity_solar_energy": "Daily-resetting counter used to correct the generation series at the end of each day.",
-          "inverter_entity_household_consumption_energy": "Daily-resetting counter. Blank is fine — baseload is worked out from the other readings.",
           "inverter_entity_grid_import_energy": "Daily-resetting counter; the authoritative total the grid series is corrected against.",
           "inverter_entity_grid_export_energy": "Daily-resetting counter; the export half of the pair above.",
           "inverter_entity_battery_charge_energy": "Daily-resetting counter feeding the battery-capacity estimate. Without it the estimate stays at the nominal capacity you entered instead of learning the real one.",
@@ -486,7 +484,6 @@
           "bms_battery_soc": "Dedicated BMS battery SoC (e.g. JK-BMS)",
           "bms_battery_power": "Dedicated BMS battery power (signed kW)",
           "inverter_entity_solar_energy": "Solar energy counter today (kWh)",
-          "inverter_entity_household_consumption_energy": "Household consumption counter today (kWh)",
           "inverter_entity_grid_import_energy": "Grid import energy counter today (kWh)",
           "inverter_entity_grid_export_energy": "Grid export energy counter today (kWh)",
           "inverter_entity_battery_charge_energy": "Battery charge energy counter today (kWh)",
@@ -505,7 +502,6 @@
           "bms_battery_soc": "A dedicated BMS usually reports SoC more accurately and more often than the inverter. When set it is preferred, falling back to the inverter per reading.",
           "bms_battery_power": "Positive while charging. Falls back to the inverter when blank.",
           "inverter_entity_solar_energy": "Daily-resetting counter used to correct the generation series at the end of each day.",
-          "inverter_entity_household_consumption_energy": "Daily-resetting counter. Blank is fine — baseload is worked out from the other readings.",
           "inverter_entity_grid_import_energy": "Daily-resetting counter; the authoritative total the grid series is corrected against.",
           "inverter_entity_grid_export_energy": "Daily-resetting counter; the export half of the pair above.",
           "inverter_entity_battery_charge_energy": "Daily-resetting counter feeding the battery-capacity estimate. Without it the estimate stays at the nominal capacity you entered instead of learning the real one.",
@@ -1016,7 +1012,6 @@
         "description": "{detected}\n\nRunning totals, all optional. Today's counters correct each day's series as it is measured; yesterday's are the best source for finalising the day just gone.",
         "data": {
           "inverter_entity_solar_energy": "Solar energy counter today (kWh)",
-          "inverter_entity_household_consumption_energy": "Household consumption counter today (kWh)",
           "inverter_entity_grid_import_energy": "Grid import energy counter today (kWh)",
           "inverter_entity_grid_export_energy": "Grid export energy counter today (kWh)",
           "inverter_entity_battery_charge_energy": "Battery charge energy counter today (kWh)",
@@ -1028,7 +1023,6 @@
         },
         "data_description": {
           "inverter_entity_solar_energy": "Daily-resetting counter used to correct the generation series at the end of each day.",
-          "inverter_entity_household_consumption_energy": "Daily-resetting counter. Blank is fine — baseload is worked out from the other readings.",
           "inverter_entity_grid_import_energy": "Daily-resetting counter; the authoritative total the grid series is corrected against.",
           "inverter_entity_grid_export_energy": "Daily-resetting counter; the export half of the pair above.",
           "inverter_entity_battery_charge_energy": "Daily-resetting counter feeding the battery-capacity estimate. Without it the estimate stays at the nominal capacity you entered instead of learning the real one.",
@@ -1052,7 +1046,6 @@
           "bms_battery_soc": "Dedicated BMS battery SoC (e.g. JK-BMS)",
           "bms_battery_power": "Dedicated BMS battery power (signed kW)",
           "inverter_entity_solar_energy": "Solar energy counter today (kWh)",
-          "inverter_entity_household_consumption_energy": "Household consumption counter today (kWh)",
           "inverter_entity_grid_import_energy": "Grid import energy counter today (kWh)",
           "inverter_entity_grid_export_energy": "Grid export energy counter today (kWh)",
           "inverter_entity_battery_charge_energy": "Battery charge energy counter today (kWh)",
@@ -1071,7 +1064,6 @@
           "bms_battery_soc": "A dedicated BMS usually reports SoC more accurately and more often than the inverter. When set it is preferred, falling back to the inverter per reading.",
           "bms_battery_power": "Positive while charging. Falls back to the inverter when blank.",
           "inverter_entity_solar_energy": "Daily-resetting counter used to correct the generation series at the end of each day.",
-          "inverter_entity_household_consumption_energy": "Daily-resetting counter. Blank is fine — baseload is worked out from the other readings.",
           "inverter_entity_grid_import_energy": "Daily-resetting counter; the authoritative total the grid series is corrected against.",
           "inverter_entity_grid_export_energy": "Daily-resetting counter; the export half of the pair above.",
           "inverter_entity_battery_charge_energy": "Daily-resetting counter feeding the battery-capacity estimate. Without it the estimate stays at the nominal capacity you entered instead of learning the real one.",
@@ -1150,6 +1142,9 @@
       },
       "load_reserve": {
         "name": "Load Reserve"
+      },
+      "discharge_gate": {
+        "name": "Discharge Above Average"
       }
     },
     "number": {
@@ -1167,6 +1162,9 @@
       },
       "load_reserve_extra_kwh": {
         "name": "Load Reserve Extra"
+      },
+      "overfill_boost_pct": {
+        "name": "Overfill Generation Boost"
       }
     },
     "select": {

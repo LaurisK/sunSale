@@ -12,7 +12,7 @@ from .billing import check_monthly_bill
 from .calculation import check_calculation
 from .capability import check_capability
 from .client import HAClient
-from .consumption import check_base_load, check_household_consumption
+from .consumption import check_base_load
 from .credentials import CredentialsError, resolve_credentials
 from .derived import check_observed_consumption, check_observed_losses
 from .export_guard import check_export_guard
@@ -106,7 +106,6 @@ def main(argv: list[str] | None = None) -> int:
     forecast_acc_results           = {s.entry_id: check_forecast_accuracy(s)         for s in snapshots}
     base_load_results              = {s.entry_id: check_base_load(s)                 for s in snapshots}
     battery_runtime_results        = {s.entry_id: check_battery_runtime(s)           for s in snapshots}
-    household_consumption_results  = {s.entry_id: check_household_consumption(s)     for s in snapshots}
     profitability_results          = {s.entry_id: check_profitability(s)             for s in snapshots}
     forecast_quality_results       = {s.entry_id: check_forecast_quality(s)          for s in snapshots}
     array_calibration_results      = {s.entry_id: check_array_calibration(s)         for s in snapshots}
@@ -126,7 +125,7 @@ def main(argv: list[str] | None = None) -> int:
         baked_observed_results,
         forecast_acc_results,
         base_load_results, battery_runtime_results,
-        household_consumption_results, profitability_results,
+        profitability_results,
         price_forecast_results,
         forecast_quality_results,
         array_calibration_results,

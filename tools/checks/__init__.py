@@ -40,9 +40,7 @@ from .client import (
 )
 from .consumption import (
     BaseLoadCheckResult,
-    HouseholdConsumptionCheckResult,
     check_base_load,
-    check_household_consumption,
 )
 from .credentials import CredentialsError, resolve_credentials
 from .derived import (
@@ -110,7 +108,6 @@ __all__ = [
     "BakedObservedCheckResult",
     "BakedObservedCheckRow",
     "BaseLoadCheckResult",
-    "HouseholdConsumptionCheckResult",
     "PriceForecastCheckResult",
     "PriceLevelCheckResult",
     "ProfitabilityCheckResult",
@@ -135,7 +132,6 @@ __all__ = [
     "check_observed_grid",
     "check_baked_observed",
     "check_base_load",
-    "check_household_consumption",
     "check_price_forecast",
     "check_price_level",
     "check_profitability",

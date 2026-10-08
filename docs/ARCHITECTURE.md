@@ -37,7 +37,6 @@ HA state machine
 │   GridImport/ExportPowerObserver          → GridPowerReading
 │   GridImport/ExportTotalTranslator        → Grid*TodayReading
 │   AcPort / Backup         (observer/)     → DerivedPowerSample parts
-│   HouseholdConsumption                    → HouseholdConsumptionReading
 │   InverterModeTranslator (via driver)     → InverterModeReading
 │     reads flow through the telemetry seam: inbound/telemetry/** —
 │     HaTelemetryReader + per-vendor TelemetryCodec (canonical unit/sign)
@@ -110,7 +109,6 @@ custom_components/sun_sale/
 │   ├── weather.py               WeatherTranslator (daily forecast) + weather-entity detection
 │   ├── battery.py               BatteryTranslator (reads via BatterySource) + BatteryStatus
 │   ├── battery_source.py        BatterySource seam (Inverter/JkBms/Chained) — SoC/power/energy
-│   ├── household_consumption.py HouseholdConsumptionTranslator (today-total kWh)
 │   ├── consumption_daily.py     Finalise per-day consumption buckets from derived history
 │   ├── inverter_mode.py         InverterModeTranslator (decoded StorageMode, via driver.observe)
 │   ├── pre_rollover_snapshot.py Capture daily counters just before local midnight
@@ -193,7 +191,6 @@ Each translator lives in its own module — there is no monolithic `translators.
 | `GridImport/ExportPowerObserver` | `GridPowerReading` | `observer/grid.py` | Per-direction grid power (directional sensor, or signed net projected onto a side). |
 | `GridImport/ExportTotalTranslator` | `Grid*TodayReading` | `observer/grid.py` | Daily-resetting cumulative import/export kWh counters. |
 | `AcPortPowerTranslator` / `BackupPowerTranslator` | `DerivedPowerSample` parts | `observer/derived.py` | AC-port and backup-load power for the synthetic consumption/losses series. |
-| `HouseholdConsumptionTranslator` | `HouseholdConsumptionReading` | `household_consumption.py` | Today-total household-load kWh counter. |
 | `InverterModeTranslator` | `InverterModeReading` | `inverter_mode.py` | Reads + decodes the live mode via `InverterControlDriver.observe` (Solis: register 43110 + currents + RC setpoint → `StorageMode`); carries no register knowledge itself. |
 | `WeatherTranslator` | `WeatherForecastData` | `weather.py` | One `weather` entity's **daily** forecast (wind / temperature / cloud cover) for the week-ahead price model. Optional: every failure path yields empty data, and the entity is auto-detected when unset. |
 
@@ -303,7 +300,7 @@ A **mode override** (`select.sunsale_mode_override`) is the single source of ope
 4. **Capacity estimation** — update the `CapacityEstimator` from the inverter's energy counters and persist; inject `EstimatedCapacity`.
 5. **DAG run** — `DagEngine.run(primary, config, now)` executes tiers T1→T4; returns the `secondary` dict.
 6. **Inverter control tick** — call `InverterControlModule.tick(...)` (observe → plan → act → verify → reconcile).
-7. **Build sensor dict** — map type-keyed `secondary` entries to the string-keyed dict sensors read (`"pricing"`, `"forecast"`, `"calculation"`, `"schedule"`, `"battery_state"`, `"battery_status"`, `"battery_runtime"`, `"degradation_cost"`, `"estimated_capacity"`, `"profitability_score"`, `"observed_generation"`, `"observed_grid"`, `"observed_consumption"`, `"observed_losses"`, `"forecast_accuracy"`/`"forecast_quality"`, `"monthly_bill"`, `"consumption_today_kwh"`, `"today_*_live_kwh"`, …).
+7. **Build sensor dict** — map type-keyed `secondary` entries to the string-keyed dict sensors read (`"pricing"`, `"forecast"`, `"calculation"`, `"schedule"`, `"battery_state"`, `"battery_status"`, `"battery_runtime"`, `"degradation_cost"`, `"estimated_capacity"`, `"profitability_score"`, `"observed_generation"`, `"observed_grid"`, `"observed_consumption"`, `"observed_losses"`, `"forecast_accuracy"`/`"forecast_quality"`, `"monthly_bill"`, `"today_*_live_kwh"`, …).
 
 The coordinator contains no domain computation — it owns the schedule, the persistent stores, and the string↔type bridge to sensors. The verify loop runs on `async_call_later` *between* ticks and pushes an `on_state_change` callback so the panel tracks it in real time.
 

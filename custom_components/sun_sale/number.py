@@ -22,6 +22,7 @@ from .contract.const import (
     DEFAULT_SCHEDULE_LOAD_RESERVE_DAYS,
     DEFAULT_SCHEDULE_LOAD_RESERVE_EXTRA_KWH,
     DEFAULT_SCHEDULE_MODE_CHANGE_PENALTY_EUR_PER_KWH,
+    DEFAULT_SCHEDULE_OVERFILL_BOOST_PCT,
     DEFAULT_SCHEDULE_PROFITABILITY_TILT_ALPHA,
     DEFAULT_SCHEDULE_TERMINAL_VALUE_DISCOUNT,
     DOMAIN,
@@ -33,6 +34,8 @@ from .contract.const import (
     SCHEDULE_MAX_DISCHARGE_TO_GRID_KW_MIN,
     SCHEDULE_MODE_CHANGE_PENALTY_MAX,
     SCHEDULE_MODE_CHANGE_PENALTY_MIN,
+    SCHEDULE_OVERFILL_BOOST_PCT_MAX,
+    SCHEDULE_OVERFILL_BOOST_PCT_MIN,
     SCHEDULE_PROFITABILITY_TILT_ALPHA_MAX,
     SCHEDULE_PROFITABILITY_TILT_ALPHA_MIN,
     SCHEDULE_TERMINAL_VALUE_DISCOUNT_MAX,
@@ -62,6 +65,7 @@ async def async_setup_entry(
         MaxDischargeToGridKwNumber(coordinator, entry),
         LoadReserveDaysNumber(coordinator, entry),
         LoadReserveExtraKwhNumber(coordinator, entry),
+        OverfillBoostNumber(coordinator, entry),
     ])
 
 
@@ -200,6 +204,20 @@ class LoadReserveExtraKwhNumber(_SunSalePolicyNumber):
     _unique_suffix = "load_reserve_extra_kwh"
     _coord_attr = "load_reserve_extra_kwh"
     _default_value = DEFAULT_SCHEDULE_LOAD_RESERVE_EXTRA_KWH
+
+
+class OverfillBoostNumber(_SunSalePolicyNumber):
+    """Percent added to tomorrow's generation forecast when sizing the overfill."""
+
+    _attr_name = "sunSale Overfill Generation Boost"
+    _attr_icon = "mdi:solar-power-variant"
+    _attr_native_unit_of_measurement = "%"
+    _attr_native_min_value = SCHEDULE_OVERFILL_BOOST_PCT_MIN
+    _attr_native_max_value = SCHEDULE_OVERFILL_BOOST_PCT_MAX
+    _attr_native_step = 5
+    _unique_suffix = "overfill_boost_pct"
+    _coord_attr = "overfill_boost_pct"
+    _default_value = DEFAULT_SCHEDULE_OVERFILL_BOOST_PCT
 
 
 class MaxDischargeToGridKwNumber(CoordinatorEntity, RestoreEntity, NumberEntity):

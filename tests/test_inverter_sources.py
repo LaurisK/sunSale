@@ -17,7 +17,6 @@ from custom_components.sun_sale.contract.const import (
     CONF_INVERTER_ENTITY_GRID_EXPORT_POWER,
     CONF_INVERTER_ENTITY_GRID_IMPORT_ENERGY,
     CONF_INVERTER_ENTITY_GRID_IMPORT_POWER,
-    CONF_INVERTER_ENTITY_HOUSEHOLD_CONSUMPTION_ENERGY,
     CONF_INVERTER_ENTITY_PV_POWER,
     CONF_INVERTER_PLATFORM,
 )
@@ -249,7 +248,6 @@ def test_a_stored_control_read_back_still_wins_so_a_visit_never_changes_a_readin
 @pytest.mark.parametrize("conf_key", [
     CONF_INVERTER_ENTITY_GRID_IMPORT_POWER,
     CONF_INVERTER_ENTITY_GRID_EXPORT_POWER,
-    CONF_INVERTER_ENTITY_HOUSEHOLD_CONSUMPTION_ENERGY,
 ])
 def test_a_source_whose_empty_value_is_correct_is_never_guessed_from_its_name(conf_key):
     """Saving a lookalike would replace the signed-flow default, so only a stored or resolved pick counts."""

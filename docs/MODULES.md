@@ -75,7 +75,6 @@ flowchart TB
         I_weather["weather.py<br/>WeatherTranslator + detection"]:::inbound
         I_bat["battery.py<br/>BatteryTranslator"]:::inbound
         I_btsrc["battery_source.py<br/>BatterySource (BMS/inverter)"]:::inbound
-        I_hc["household_consumption.py"]:::inbound
         I_mode["inverter_mode.py"]:::inbound
         I_cons["consumption_daily.py"]:::inbound
         I_snap["pre_rollover_snapshot.py<br/>yesterday_total_resolver.py"]:::inbound
@@ -135,7 +134,7 @@ flowchart TB
     end
 
     %% --- HA boundary ---
-    HA -->|states| I_price & I_fc & I_hc & I_trdr & I_weather
+    HA -->|states| I_price & I_fc & I_trdr & I_weather
     SOLIS -.->|registry scan| I_solis
     O_inv & O_entity -->|service calls| HA
     R_init --> HA
@@ -254,16 +253,10 @@ Two ways to name a solar array without hunting for entities. `discover_forecast_
 - **Tests:** `tests/test_weather_inbound.py`.
 
 ### `inbound/inverter_sources.py`
-Finds the candidates for the inverter's **optional** sources (PV / AC-port / backup / per-direction grid power, the daily and yesterday energy counters) so the setup pages offer the sensors on the user's inverter instead of every sensor in HA. Locates the inverter's device(s) from whatever its platform's discovery already resolved then classifies the rest against one `SourceSpec` per source: device class, a counter state class for today's counters, and a today/yesterday split on the name (the only signal separating two otherwise identical counters). Candidates are **ranked, never filtered**, so an oddly named sensor stays reachable; the pre-selection is stored value → platform-resolved → best hint, except for sources marked `guess=False` (per-direction grid power, household counter), where an empty row is correct and a wrong pick would be saved by Confirm. `BMS_SPECS` + `detect_bms_sources` serve the dedicated battery BMS, which is picked as its own device rather than found on the inverter. Advisory only: `inverter_entity_resolver.py` still decides what the runtime reads.
+Finds the candidates for the inverter's **optional** sources (PV / AC-port / backup / per-direction grid power, the daily and yesterday energy counters) so the setup pages offer the sensors on the user's inverter instead of every sensor in HA. Locates the inverter's device(s) from whatever its platform's discovery already resolved then classifies the rest against one `SourceSpec` per source: device class, a counter state class for today's counters, and a today/yesterday split on the name (the only signal separating two otherwise identical counters). Candidates are **ranked, never filtered**, so an oddly named sensor stays reachable; the pre-selection is stored value → platform-resolved → best hint, except for sources marked `guess=False` (per-direction grid power), where an empty row is correct and a wrong pick would be saved by Confirm. `BMS_SPECS` + `detect_bms_sources` serve the dedicated battery BMS, which is picked as its own device rather than found on the inverter. Advisory only: `inverter_entity_resolver.py` still decides what the runtime reads.
 - **Exposes:** `detect_inverter_sources`, `detect_bms_sources`, `device_of`, `role_candidates`, `default_source`, `SourceSpec`, `SourceOptions`, `DetectedSource`, `SOURCE_SPECS`, `SPEC_BY_KEY`, `BMS_SPECS`.
 - **Depends on:** `contract.const`, `inbound.inverter_discovery`, `outbound.inverter`, HA entity registry directly.
 - **Tests:** `tests/test_inverter_sources.py`, `tests/test_config_flow.py`.
-
-### `inbound/household_consumption.py`
-`HouseholdConsumptionTranslator` snapshots the today-total household-load kWh counter (resets at local midnight) — used to display "consumption so far today".
-- **Exposes:** `HouseholdConsumptionTranslator` → `HouseholdConsumptionReading`.
-- **Depends on:** `contract.models`.
-- **Tests:** `tests/test_consumption_daily.py`, `tests/test_coordinator.py`.
 
 ### `inbound/consumption_daily.py`
 Finalises per-day household-consumption buckets from the derived-power history (and backfills from it), feeding `BaseLoadProfileNode`.
@@ -378,9 +371,17 @@ Single source of truth for "what does StorageMode X do over one slot, given star
 SoC-bucketed **backward dynamic programming** over the price horizon → per-slot `StorageMode`. Action set `{SelfUse, NoExport, StandBy, GridCharge, Discharge, FeedIn}`; per-slot physics delegated to `slot_physics.simulate_slot`; terminal battery value tilted by `ProfitabilityScore`, with a mode-change penalty scaled by battery throughput.
 
   **Load reserve** (opt-in, `LoadReserveSwitch` → `SchedulePolicy.load_reserve_enabled`, default off). The terminal value has two tiers: the first `R` storage kWh above the planning floor are worth `max(eff × median plannable buy [capped at cheapest buy + wear when grid charging is allowed], flat value)`, everything above `R` the flat value. `R` = (the next `load_reserve_days` days' baseload not covered by same-hour forecast solar + `load_reserve_extra_kwh`) ÷ eff, with day totals beyond tomorrow shaped by tomorrow's slots. A day with no forecast total (a 0 from a short-horizon provider, or past d6) is skipped, never guessed. Days (3–6, default 3) and extra kWh (e.g. an EV charge) are the `LoadReserveDays` / `LoadReserveExtraKwh` numbers. It can only make the planner hold more, never less. The figures ride on `Schedule.terminal` (`TerminalValuation`) to `outputs.schedule.terminal`, and `check_schedule` recomputes them. Rationale and backtest: [load_reserve_plan.md](load_reserve_plan.md).
+
+  **Discharge gate** (opt-in, `DischargeGateSwitch` → `SchedulePolicy.discharge_gate_enabled`, default off). Two DP passes. Pass 1 blocks Discharge in every slot selling below the **running sell average** (`RunningSellAverage`, persisted under `STORAGE_KEY_SELL_AVERAGE`, folded once per local day by `ScheduleNode` as `0.9 × previous + 0.1 × today's mean` and saved by the coordinator when the object changed). Pass 2 (`discharge_gate.plan_overfill`) sizes tomorrow's overfill — forecast × (1 + `OverfillBoostNumber` %) minus load, per slot, charge-rate limited, against the room in pass 1's SoC at the first slot with net solar — and forces Discharge in the highest-priced unused slots before it until they can shed it. The result rides on `Schedule.gate` (`DischargeGate`) to `outputs.schedule.gate`; `check_schedule` verifies it.
 - **Exposes:** `optimize_schedule(...) → Schedule`, `estimate_load_reserve_kwh(...)`.
-- **Depends on:** `contract.models`, `pipeline.slot_physics`.
-- **Tests:** `tests/test_schedule.py`.
+- **Depends on:** `contract.models`, `pipeline.slot_physics`, `pipeline.discharge_gate`.
+- **Tests:** `tests/test_schedule.py`, `tests/test_discharge_gate.py`.
+
+### `pipeline/discharge_gate.py`
+Pure helpers for the discharge gate: `fold_running_average` (the once-a-day `0.9 / 0.1` update; returns the stored object unchanged while the day is current so the caller can skip the save) and `plan_overfill` (the second-pass slot choice). Not a DAG node — `ScheduleNode` calls it, and the deep check lives in `tools/checks/schedule.py` with the rest of the schedule output.
+- **Exposes:** `fold_running_average`, `plan_overfill`, `OverfillPlan`.
+- **Depends on:** `contract.models`.
+- **Tests:** `tests/test_discharge_gate.py`.
 
 > `storage_mode_specs.py` is **not** a pipeline module — it is Solis register detail in the outbound driver layer (`outbound/storage_mode_specs.py`, §6).
 

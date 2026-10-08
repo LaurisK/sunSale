@@ -178,3 +178,91 @@ def test_terminal_recompute_skips_days_without_forecast() -> None:
     result = check_schedule(snap)
     assert result.terminal.computed_reserve_kwh == pytest.approx(expected)
     assert result.overall_ok is True
+
+
+# ---------------------------------------------------------------------------
+# Discharge gate invariants
+# ---------------------------------------------------------------------------
+
+
+def _gate_snap(gate: dict, *, enabled: bool = True, discharge_hours=(18,), sells=None) -> Snapshot:
+    """Snapshot with one Discharge slot per hour in ``discharge_hours``.
+
+    ``sells`` maps hour -> sell price in the pricing block (default 0.50).
+    """
+    snap = _snap({"discharge_gate_enabled": enabled, "allow_discharge_to_grid": True})
+    snap.debug["config"] = {"time_zone": "UTC"}
+    schedule = snap.debug["outputs"]["schedule"]
+    schedule["computed_at"] = "2024-01-15T00:00:00+00:00"
+    schedule["slots"] = [
+        {
+            "start": f"2024-01-15T{h:02d}:00:00+00:00",
+            "end": f"2024-01-15T{h + 1:02d}:00:00+00:00",
+            "mode": "discharge", "power_kw": 5.0, "expected_soc_after": 0.5,
+            "expected_profit_eur": 0.0, "reason": "",
+        }
+        for h in discharge_hours
+    ]
+    schedule["gate"] = gate
+    snap.debug["pipeline"]["pricing"] = {"slots": [
+        {"start": f"2024-01-15T{h:02d}:00:00+00:00", "sell": (sells or {}).get(h, 0.50)}
+        for h in range(24)
+    ]}
+    return snap
+
+
+_GOOD_GATE = {
+    "active": True, "average_eur_kwh": 0.30, "average_day": "2024-01-15",
+    "overfill_kwh": 0.0, "overfill_slots": [],
+}
+
+
+def test_gate_check_passes_when_every_discharge_is_above_the_average() -> None:
+    result = check_schedule(_gate_snap(dict(_GOOD_GATE)))
+    assert result.gate is not None and result.gate.ok
+    assert result.overall_ok is True
+
+
+def test_gate_check_flags_a_discharge_below_the_average() -> None:
+    result = check_schedule(_gate_snap(dict(_GOOD_GATE), sells={18: 0.10}))
+    assert result.gate.below_average_discharges == 1
+    assert "gate" in result.mismatches and result.overall_ok is False
+
+
+def test_gate_check_accepts_a_forced_overfill_slot_below_the_average() -> None:
+    gate = {**_GOOD_GATE, "overfill_kwh": 5.0,
+            "overfill_slots": ["2024-01-15T18:00:00+00:00"]}
+    result = check_schedule(_gate_snap(gate, sells={18: 0.10}))
+    assert result.gate.ok
+
+
+def test_gate_check_flags_an_overfill_slot_that_is_not_a_discharge_slot() -> None:
+    gate = {**_GOOD_GATE, "overfill_kwh": 5.0,
+            "overfill_slots": ["2024-01-15T20:00:00+00:00"]}
+    result = check_schedule(_gate_snap(gate))
+    assert not result.gate.ok
+    assert any("not a Discharge" in p for p in result.gate.problems)
+
+
+def test_gate_check_flags_a_stale_average() -> None:
+    gate = {**_GOOD_GATE, "average_day": "2024-01-13"}
+    result = check_schedule(_gate_snap(gate))
+    assert not result.gate.ok
+
+
+def test_gate_check_flags_a_gate_that_shaped_the_plan_while_off() -> None:
+    result = check_schedule(_gate_snap(dict(_GOOD_GATE), enabled=False))
+    assert not result.gate.ok
+
+
+def test_gate_check_off_and_inactive_is_fine() -> None:
+    gate = {**_GOOD_GATE, "active": False}
+    result = check_schedule(_gate_snap(gate, enabled=False, sells={18: 0.01}))
+    assert result.gate.ok
+
+
+def test_gate_check_without_an_average_is_skipped_not_failed() -> None:
+    gate = {**_GOOD_GATE, "active": False, "average_eur_kwh": None, "average_day": None}
+    result = check_schedule(_gate_snap(gate))
+    assert result.gate.ok and result.gate.skip_reason
+

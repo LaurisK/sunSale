@@ -1,4 +1,4 @@
-"""Base-load and household-consumption deep checks and their TUI widgets."""
+"""Base-load deep check and its TUI widget."""
 from __future__ import annotations
 
 from dataclasses import dataclass, field
@@ -235,80 +235,3 @@ class BaseLoadCheckWidget(Static):
         with Collapsible(title=title, collapsed=True):
             with Collapsible(title="Slots (24h profile)", collapsed=False):
                 yield BaseLoadSlotsTable(bl)
-
-
-@dataclass
-class HouseholdConsumptionCheckResult:
-    """Result of the household-consumption deep-check: today-total kWh sanity."""
-
-    skipped: bool = False
-    skip_reason: str = ""
-    consumption_today_kwh: float | None = None
-    mismatches: list[str] = field(default_factory=list)
-    overall_ok: bool = True
-
-
-def check_household_consumption(snap: Snapshot) -> HouseholdConsumptionCheckResult:
-    """Validate household consumption today-total is non-negative when present.
-
-    Args:
-        snap: Coordinator snapshot containing inputs.consumption_today_kwh.
-
-    Returns:
-        HouseholdConsumptionCheckResult with observed value and overall pass/fail.
-    """
-    result = HouseholdConsumptionCheckResult()
-
-    raw = snap.inputs.get("consumption_today_kwh")
-    if raw is None:
-        result.skipped = True
-        result.skip_reason = "inputs.consumption_today_kwh is null (sensor not configured)"
-        return result
-
-    try:
-        result.consumption_today_kwh = float(raw)
-    except (TypeError, ValueError):
-        result.mismatches.append("non_numeric_value")
-        result.overall_ok = False
-        return result
-
-    if result.consumption_today_kwh < 0.0:
-        result.mismatches.append("negative_consumption")
-        result.overall_ok = False
-
-    return result
-
-
-class HouseholdConsumptionCheckWidget(Static):
-    """Collapsible household-consumption deep-check: today-total kWh sanity."""
-
-    DEFAULT_CSS = "HouseholdConsumptionCheckWidget { height: auto; }"
-
-    def __init__(self, hc: HouseholdConsumptionCheckResult) -> None:
-        """Initialise with the pre-computed household consumption check result.
-
-        Args:
-            hc: Result of check_household_consumption() for one coordinator.
-        """
-        super().__init__()
-        self._hc = hc
-
-    def compose(self) -> ComposeResult:
-        """Render consumption value and sanity status."""
-        hc = self._hc
-
-        if hc.skipped:
-            yield Static(f"  ⚠  household_consumption_check   SKIP   {hc.skip_reason}")
-            return
-
-        color = "green" if hc.overall_ok else "red"
-        mark = "✓" if hc.overall_ok else "✗"
-        status = "PASS" if hc.overall_ok else "FAIL"
-        kwh_str = f"{hc.consumption_today_kwh:.3f}kWh" if hc.consumption_today_kwh is not None else "—"
-        title = (
-            f"[{color}]{mark}[/{color}]  household_consumption_check   [{color}]{status}[/{color}]"
-            f"   today={kwh_str}"
-        )
-
-        with Collapsible(title=title, collapsed=True):
-            yield Static(f"  Consumption today: {kwh_str}")

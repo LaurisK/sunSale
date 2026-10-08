@@ -16,8 +16,6 @@ from .capability import CapabilityCheckResult, CapabilityCheckWidget
 from .consumption import (
     BaseLoadCheckResult,
     BaseLoadCheckWidget,
-    HouseholdConsumptionCheckResult,
-    HouseholdConsumptionCheckWidget,
 )
 from .derived import (
     ObservedConsumptionCheckResult,
@@ -57,7 +55,7 @@ _DEEP_CATS: frozenset[str] = frozenset({
     "forecast", "pricing", "calculation", "schedule", "battery",
     "observed_generation", "observed_grid", "forecast_accuracy",
     "base_load", "battery_runtime",
-    "household_consumption", "profitability", "price_forecast", "forecast_quality",
+    "profitability", "price_forecast", "forecast_quality",
     "array_calibration",
     "monthly_bill", "baked_observed",
     "observed_consumption", "observed_losses",
@@ -98,7 +96,6 @@ class IntegrationCheckApp(App):
     BaseLoadCheckWidget { height: auto; }
     BaseLoadSlotsTable DataTable { height: 15; }
     BatteryRuntimeCheckWidget { height: auto; }
-    HouseholdConsumptionCheckWidget { height: auto; }
     ProfitabilityCheckWidget { height: auto; }
     PriceForecastCheckWidget { height: auto; }
     ForecastQualityCheckWidget { height: auto; }
@@ -123,7 +120,6 @@ class IntegrationCheckApp(App):
         forecast_acc_results: dict[str, ForecastAccuracyCheckResult],
         base_load_results: dict[str, BaseLoadCheckResult],
         battery_runtime_results: dict[str, BatteryRuntimeCheckResult],
-        household_consumption_results: dict[str, HouseholdConsumptionCheckResult],
         profitability_results: dict[str, ProfitabilityCheckResult],
         price_forecast_results: dict[str, PriceForecastCheckResult],
         forecast_quality_results: dict[str, ForecastQualityCheckResult],
@@ -152,7 +148,6 @@ class IntegrationCheckApp(App):
             forecast_acc_results: Per-entry forecast accuracy deep-check results.
             base_load_results: Per-entry base load profile deep-check results.
             battery_runtime_results: Per-entry battery runtime deep-check results.
-            household_consumption_results: Per-entry household consumption deep-check results.
             profitability_results: Per-entry profitability score deep-check results.
             price_forecast_results: Per-entry week-ahead price-forecast results.
             forecast_quality_results: Per-entry forecast quality EMA bucket deep-check results.
@@ -178,7 +173,6 @@ class IntegrationCheckApp(App):
         self._forecast_acc_results = forecast_acc_results
         self._base_load_results = base_load_results
         self._battery_runtime_results = battery_runtime_results
-        self._household_consumption_results = household_consumption_results
         self._profitability_results = profitability_results
         self._price_forecast_results = price_forecast_results
         self._forecast_quality_results = forecast_quality_results
@@ -210,7 +204,6 @@ class IntegrationCheckApp(App):
             + list(self._forecast_acc_results.values())
             + list(self._base_load_results.values())
             + list(self._battery_runtime_results.values())
-            + list(self._household_consumption_results.values())
             + list(self._profitability_results.values())
             + list(self._price_forecast_results.values())
             + list(self._forecast_quality_results.values())
@@ -257,7 +250,6 @@ class IntegrationCheckApp(App):
                 ("forecast_accuracy",       ForecastAccuracyCheckWidget,        self._forecast_acc_results),
                 ("base_load",               BaseLoadCheckWidget,                self._base_load_results),
                 ("battery_runtime",         BatteryRuntimeCheckWidget,          self._battery_runtime_results),
-                ("household_consumption",   HouseholdConsumptionCheckWidget,    self._household_consumption_results),
                 ("observed_consumption",    ObservedConsumptionCheckWidget,     self._observed_consumption_results),
                 ("observed_losses",         ObservedLossesCheckWidget,          self._observed_losses_results),
                 ("profitability",           ProfitabilityCheckWidget,           self._profitability_results),

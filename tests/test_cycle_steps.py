@@ -13,6 +13,8 @@ from datetime import UTC, datetime, timedelta
 from types import SimpleNamespace
 from zoneinfo import ZoneInfo
 
+import pytest
+
 from custom_components.sun_sale.contract.const import (
     STORAGE_KEY_DERIVED_POWER,
 )
@@ -41,6 +43,7 @@ from custom_components.sun_sale.contract.models import (
     PriceHistory,
     PvPowerHistory,
     PvPowerReading,
+    RunningSellAverage,
     SchedulePolicy,
     SolarData,
     SolarEntry,
@@ -292,6 +295,7 @@ def test_stored_primaries_seeds_all_keys_with_defaults():
         array_calibration_store=FakeStore(value=None),
         mode_history_store=FakeStore(value=None),
         read_sun_times=lambda now: SunTimes(today_sunrise=None, today_sunset=None),
+        sell_average_store=FakeStore(value=None),
     ).seed(primary, _NOW)
     assert primary[BakedObservedHistory] == BakedObservedHistory(records=())
     assert primary[MonthlyBillState] is None      # None is meaningful, not defaulted
@@ -303,6 +307,26 @@ def test_stored_primaries_seeds_all_keys_with_defaults():
     assert primary[ArrayCalibration] is None
     assert primary[InverterModeHistory] == InverterModeHistory(samples=())
     assert isinstance(primary[SunTimes], SunTimes)
+    # None = cold start; the schedule seeds the average from today's prices.
+    assert primary[RunningSellAverage] is None
+
+
+def test_stored_primaries_injects_the_persisted_sell_average():
+    """seed hands the schedule the stored running average unchanged."""
+    avg = RunningSellAverage(value_eur_kwh=0.12, day=_NOW.date())
+    primary = {}
+    StoredPrimariesStep(
+        baked_store=FakeStore(value=None),
+        monthly_bill_store=FakeStore(value=None),
+        price_history_store=FakeStore(value=None),
+        price_curve_store=FakeStore(value=None),
+        forecast_quality_store=FakeStore(value=None),
+        array_calibration_store=FakeStore(value=None),
+        mode_history_store=FakeStore(value=None),
+        read_sun_times=lambda now: SunTimes(today_sunrise=None, today_sunset=None),
+        sell_average_store=FakeStore(value=avg),
+    ).seed(primary, _NOW)
+    assert primary[RunningSellAverage] is avg
 
 
 # ---------------------------------------------------------------------------
@@ -440,3 +464,25 @@ def test_schedule_policy_clamps_load_reserve_knobs():
         assert pol.load_reserve_days == want_days
         assert isinstance(pol.load_reserve_days, int)
         assert pol.load_reserve_extra_kwh == want_extra
+
+
+def test_schedule_policy_passes_discharge_gate_and_converts_boost_to_a_fraction():
+    """The gate switch is forwarded (default off); the boost goes from percent to fraction."""
+    base = dict(
+        use_standby=True, allow_grid_charging=True, allow_feed_in=True,
+        allow_discharge_to_grid=True,
+        mode_change_penalty_eur_per_kwh=0.005,
+        profitability_tilt_alpha=0.5,
+        terminal_value_discount=0.5,
+        max_discharge_to_grid_kw=None,
+    )
+    primary = {}
+    SchedulePolicyStep(lambda: ScheduleKnobs(**base)).seed(primary, _NOW)
+    assert primary[SchedulePolicy].discharge_gate_enabled is False
+    assert primary[SchedulePolicy].overfill_boost == pytest.approx(0.2)
+    for pct, want in ((35.0, 0.35), (-10.0, 0.0), (250.0, 1.0)):
+        SchedulePolicyStep(lambda p=pct: ScheduleKnobs(
+            **base, discharge_gate_enabled=True, overfill_boost_pct=p,
+        )).seed(primary, _NOW)
+        assert primary[SchedulePolicy].discharge_gate_enabled is True
+        assert primary[SchedulePolicy].overfill_boost == pytest.approx(want)

@@ -11,6 +11,7 @@ from custom_components.sun_sale.switch import (
     AllowFeedInSwitch,
     AllowGridChargingSwitch,
     AutomationSwitch,
+    DischargeGateSwitch,
     LoadReserveSwitch,
     UseStandbySwitch,
 )
@@ -82,6 +83,7 @@ def _make_policy_switch(cls, **coord_attrs):
         (AllowFeedInSwitch, "allow_feed_in", "allow_feed_in"),
         (AllowDischargeToGridSwitch, "allow_discharge_to_grid", "allow_discharge_to_grid"),
         (LoadReserveSwitch, "load_reserve_enabled", "load_reserve"),
+        (DischargeGateSwitch, "discharge_gate_enabled", "discharge_gate"),
     ],
 )
 def test_policy_switch_mirrors_coordinator(cls, attr, suffix):
@@ -100,6 +102,7 @@ def test_policy_switch_mirrors_coordinator(cls, attr, suffix):
         (AllowFeedInSwitch, "allow_feed_in"),
         (AllowDischargeToGridSwitch, "allow_discharge_to_grid"),
         (LoadReserveSwitch, "load_reserve_enabled"),
+        (DischargeGateSwitch, "discharge_gate_enabled"),
     ],
 )
 async def test_policy_switch_turn_on_off(cls, attr):
@@ -163,3 +166,8 @@ async def test_restore_explicit_on_state_persists(monkeypatch):
     await sw.async_added_to_hass()
 
     assert coord.allow_discharge_to_grid is True
+
+
+def test_discharge_gate_switch_is_off_by_default():
+    """Dispatch-affecting, so it stays off until the user turns it on."""
+    assert DischargeGateSwitch._default_on is False

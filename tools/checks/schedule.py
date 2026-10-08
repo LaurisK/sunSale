@@ -27,6 +27,7 @@ class ScheduleCheckResult:
     mismatches: list[str] = field(default_factory=list)
     overall_ok: bool = True
     terminal: TerminalCheck | None = None
+    gate: GateCheck | None = None
 
 
 # Tolerances for the terminal recompute. Prices reach the debug view rounded to
@@ -51,6 +52,21 @@ class TerminalCheck:
     computed_reserve_eur_kwh: float | None = None
     declared_reserve_kwh: float = 0.0
     computed_reserve_kwh: float | None = None
+    skip_reason: str = ""
+    ok: bool = True
+
+
+@dataclass
+class GateCheck:
+    """Declared discharge-gate state vs what the schedule and prices imply."""
+
+    enabled: bool = False
+    active: bool = False
+    average_eur_kwh: float | None = None
+    overfill_kwh: float = 0.0
+    overfill_slots: int = 0
+    below_average_discharges: int = 0
+    problems: list[str] = field(default_factory=list)
     skip_reason: str = ""
     ok: bool = True
 
@@ -140,7 +156,96 @@ def check_schedule(snap: Snapshot) -> ScheduleCheckResult:
             result.mismatches.append("terminal")
             result.overall_ok = False
 
+    gate = schedule.get("gate")
+    if gate is not None:
+        result.gate = _check_gate(snap, gate, slots, policy)
+        if not result.gate.ok:
+            result.mismatches.append("gate")
+            result.overall_ok = False
+
     return result
+
+
+def _check_gate(
+    snap: Snapshot, gate: dict, slots: list[dict], policy: dict,
+) -> GateCheck:
+    """Cross-check the discharge gate's declared state against the plan.
+
+    The invariant is what the gate promises: with it active, every Discharge slot
+    sells at or above the running average, except the slots the overfill pass
+    forced (which must themselves be Discharge slots). The average's own daily
+    update is not recomputable from a snapshot — its history is the persisted
+    figure — so only its date is checked (it must be today's).
+
+    Args:
+        snap: Coordinator snapshot.
+        gate: ``outputs.schedule.gate`` block.
+        slots: ``outputs.schedule.slots`` rows.
+        policy: ``pipeline.schedule_policy`` block.
+
+    Returns:
+        GateCheck with the declared figures and any broken invariant.
+    """
+    gc = GateCheck(
+        enabled=bool(policy.get("discharge_gate_enabled"))
+        and bool(policy.get("allow_discharge_to_grid", True)),
+        active=bool(gate.get("active")),
+        average_eur_kwh=gate.get("average_eur_kwh"),
+        overfill_kwh=gate.get("overfill_kwh") or 0.0,
+    )
+    forced = {
+        datetime.fromisoformat(t).astimezone(UTC) for t in gate.get("overfill_slots") or []
+    }
+    gc.overfill_slots = len(forced)
+
+    if not gc.enabled:
+        if gc.active or forced:
+            gc.problems.append("gate shaped the plan while switched off")
+        gc.ok = not gc.problems
+        return gc
+    if gc.average_eur_kwh is None:
+        gc.skip_reason = "no running average yet"
+        if gc.active:
+            gc.problems.append("active without an average")
+        gc.ok = not gc.problems
+        return gc
+    if not gc.active:
+        gc.problems.append("enabled with an average but not active")
+
+    tz = ZoneInfo(snap.config.get("time_zone") or "UTC")
+    computed_at = (snap.outputs.get("schedule") or {}).get("computed_at")
+    if computed_at and gate.get("average_day"):
+        today = datetime.fromisoformat(computed_at).astimezone(tz).date().isoformat()
+        if gate["average_day"] != today:
+            gc.problems.append(f"average is from {gate['average_day']}, not {today}")
+
+    pricing = snap.pipeline.get("pricing") or {}
+    sell_at = {
+        datetime.fromisoformat(r["start"]).astimezone(UTC): r["sell"]
+        for r in pricing.get("slots") or []
+        if r.get("start") is not None and r.get("sell") is not None
+    }
+    discharge_starts = set()
+    for row in slots:
+        if row.get("mode") != "discharge":
+            continue
+        start = datetime.fromisoformat(row["start"]).astimezone(UTC)
+        discharge_starts.add(start)
+        sell = sell_at.get(start)
+        if start in forced or sell is None:
+            continue
+        if sell < gc.average_eur_kwh - _EUR_TOL:
+            gc.below_average_discharges += 1
+    if gc.below_average_discharges:
+        gc.problems.append(
+            f"{gc.below_average_discharges} Discharge slot(s) below the average",
+        )
+    if forced - discharge_starts:
+        gc.problems.append("overfill slot is not a Discharge slot")
+    if forced and gc.overfill_kwh <= 0:
+        gc.problems.append("overfill slots without overfill")
+    gc.ok = not gc.problems
+    return gc
 
 
 def _check_terminal(
@@ -425,6 +530,20 @@ class ScheduleCheckWidget(Static):
                     f"  terminal: [{t_style}]flat {tc.declared_flat_eur_kwh:.4f}€"
                     f"{reserve}[/{t_style}]"
                     + (f"  ({tc.skip_reason})" if tc.skip_reason else ""),
+                    markup=True,
+                )
+            gate = sc.gate
+            if gate is not None:
+                g_style = "green" if gate.ok else "red"
+                state = (
+                    f"avg {gate.average_eur_kwh:.4f}€  overfill {gate.overfill_kwh:.2f} kWh"
+                    f" in {gate.overfill_slots} slot(s)"
+                    if gate.active else "off"
+                )
+                yield Static(
+                    f"  discharge gate: [{g_style}]{state}[/{g_style}]"
+                    + (f"  ({'; '.join(gate.problems)})" if gate.problems else "")
+                    + (f"  ({gate.skip_reason})" if gate.skip_reason else ""),
                     markup=True,
                 )
             yield _SocSparkline(soc_values)

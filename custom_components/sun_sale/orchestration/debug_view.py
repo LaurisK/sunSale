@@ -218,7 +218,6 @@ def _coordinator_to_dict(entry_id: str, coordinator: Any) -> dict:
                 dataclasses.asdict(coordinator.tariff_config)
                 if coordinator.tariff_config is not None else None
             ),
-            "consumption_today_kwh": data.get("consumption_today_kwh"),
             "yesterday_solar": {
                 "date": getattr(coordinator, "_yesterday_stored_date", None),
                 "entries": [
@@ -559,6 +558,8 @@ def _coordinator_to_dict(entry_id: str, coordinator: Any) -> dict:
                 "load_reserve_enabled":    bool(coordinator.load_reserve_enabled),
                 "load_reserve_days":       int(coordinator.load_reserve_days),
                 "load_reserve_extra_kwh":  round(float(coordinator.load_reserve_extra_kwh), 4),
+                "discharge_gate_enabled":  bool(coordinator.discharge_gate_enabled),
+                "overfill_boost_pct":      round(float(coordinator.overfill_boost_pct), 2),
                 "mode_change_penalty_eur_per_kwh": round(
                     float(coordinator.mode_change_penalty_eur_per_kwh), 6,
                 ),
@@ -601,6 +602,19 @@ def _coordinator_to_dict(entry_id: str, coordinator: Any) -> dict:
                     "reserve_eur_kwh": round(schedule.terminal.reserve_eur_kwh, 6),
                     "flat_eur_kwh": round(schedule.terminal.flat_eur_kwh, 6),
                 } if schedule.terminal is not None else None,
+                "gate": {
+                    "active": schedule.gate.active,
+                    "average_eur_kwh": (
+                        round(schedule.gate.average.value_eur_kwh, 6)
+                        if schedule.gate.average is not None else None
+                    ),
+                    "average_day": (
+                        schedule.gate.average.day.isoformat()
+                        if schedule.gate.average is not None else None
+                    ),
+                    "overfill_kwh": round(schedule.gate.overfill_kwh, 4),
+                    "overfill_slots": [t.isoformat() for t in schedule.gate.overfill_slots],
+                } if schedule.gate is not None else None,
             } if schedule is not None else None,
             "inverter_mode": _inverter_mode_block(data, coordinator),
         },

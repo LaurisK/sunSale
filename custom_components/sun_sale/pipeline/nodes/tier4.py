@@ -15,10 +15,11 @@ from ...contract.models import (
     InverterModeReading,
     PriceSeries,
     ProfitabilityScore,
+    RunningSellAverage,
     Schedule,
     SchedulePolicy,
 )
-from .. import forecast_accuracy
+from .. import discharge_gate, forecast_accuracy
 from .. import schedule as schedule_module
 from ..dag_engine import DagNode, NodeContext
 
@@ -86,6 +87,7 @@ class ScheduleNode(DagNode):
     # readiness. InverterModeReading is not listed — it is a primary
     # (translator) input with no producer node, so it carries no ordering
     # concern (same pattern as ForecastAccuracyNode / MonthlyBillNode).
+    # RunningSellAverage is likewise a stored primary read via ctx.get.
     consumes_optional = [ProfitabilityScore]
 
     async def _compute(self, ctx: NodeContext) -> Schedule:
@@ -103,6 +105,16 @@ class ScheduleNode(DagNode):
         mode_reading = ctx.get(InverterModeReading)
         current_mode = mode_reading.mode if mode_reading is not None else None
         policy = ctx.get(SchedulePolicy) or SchedulePolicy()
+
+        # Folded every cycle, gate on or off, so the figure keeps learning and
+        # the coordinator persists it when the local day moves on (the same
+        # object comes back while the stored value is current).
+        running_average = discharge_gate.fold_running_average(
+            ctx.get(RunningSellAverage),
+            price_series,
+            ctx.now.astimezone(ctx.config.local_tz).date(),
+            ctx.config.local_tz,
+        )
 
         # Resolved here rather than in the policy seed step: sizing the reserve
         # needs the learned battery capacity, which only exists once the
@@ -151,6 +163,9 @@ class ScheduleNode(DagNode):
             export_limit_kw=policy.export_limit_kw,
             forecast_reserve_soc=reserve_soc,
             load_reserve_kwh=load_reserve,
+            running_average=running_average,
+            discharge_gate_enabled=policy.discharge_gate_enabled,
+            overfill_boost=policy.overfill_boost,
         )
 
         return schedule

@@ -10,22 +10,51 @@ Any behavior-affecting change bumps the `version` in
 
 ## [Unreleased]
 
+### Added
+- **A "Discharge Above Average" switch: sell stored energy only at the better
+  prices, and make room for tomorrow's sun.** Off by default. When on, the
+  planner runs twice. *Pass 1* offers Discharge-to-grid only in slots whose sell
+  price is at or above a **running sell-price average** — one persisted figure
+  that moves once per local day to `0.9 × previous + 0.1 × today's mean sell
+  price` (seeded from today's mean on a cold start). *Pass 2* takes tomorrow's
+  generation forecast **plus the "Overfill Generation Boost" (default 20 %)**,
+  subtracts the house load, and compares that surplus with the room the battery
+  will have when the sun starts filling it (read from pass 1's SoC). What does
+  not fit is the *overfill*; it is shed by turning the highest-priced slots pass
+  1 left unused (before the sun arrives, above the battery cycle cost) into
+  Discharge slots until their combined output covers it, limited to what the
+  battery holds above its floor. A Discharge slot runs at the dispatcher's fixed
+  discharge power, so the overfill is spread over *as many slots as it takes*,
+  not given a smaller power per slot. The figure and the forced slots are in
+  `outputs.schedule.gate` (and `check_schedule` verifies that no other Discharge
+  slot sells below the average).
+
 ### Fixed
 - **The setup pages no longer pre-select a sensor that only has a similar name
-  for the grid-export / grid-import power and the household consumption rows.**
+  for the grid-export / grid-import power rows.**
   On a solis_modbus install the *Inverter power sensors* page opened with
   `sensor.…_export_calibration` (the export offset register, always 0 W)
   pre-selected as the grid-export meter, and Confirm saved it. A directional
   grid-power sensor replaces the signed grid flow with no runtime fallback, so
   the export side read 0 W for as long as it was stored: Sodas showed 57 kWh
   exported on the inverter counter against 0.0 kWh in sunSale, a frozen export
-  chart and a bill with no export revenue. Those three rows are now filled in
+  chart and a bill with no export revenue. Those two rows are now filled in
   only from a stored value or the platform's own resolution — an empty export /
   import row is correct and simply uses the signed flow — and the export
   offset and backflow limit rank last in the list like the other control
   registers. **An install that already saved the wrong sensor keeps it** (a
   stored pick is never changed behind the user's back): open *Inverter → Inverter
   power sensors* and set *Grid export power* to *Not set*.
+
+### Removed
+- **The "Household consumption counter today" source.** Nothing acted on it: the
+  setup page stored it, a translator read it, and the value went no further than
+  the debug view and the integration-check tool (baseload and the observed
+  consumption series are derived from the power readings instead). The row is
+  gone from *Inverter → Energy counters*, along with the translator, its
+  `HouseholdConsumptionReading`, the `inputs.consumption_today_kwh` debug field
+  and the `household_consumption` deep check. An install that had picked one
+  keeps the stored key, which is simply never read.
 
 ## [0.7.2] — 2026-10-06
 

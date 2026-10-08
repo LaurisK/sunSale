@@ -34,6 +34,7 @@ from ..contract.const import (
     STORAGE_KEY_MONTHLY_BILL,
     STORAGE_KEY_PRICE_CURVE_HISTORY,
     STORAGE_KEY_PRICE_HISTORY,
+    STORAGE_KEY_SELL_AVERAGE,
     STORAGE_KEY_YESTERDAY,
 )
 from ..contract.models import (
@@ -57,6 +58,7 @@ from ..contract.models import (
     PriceDayRecord,
     PriceEntry,
     PriceErrorPoint,
+    RunningSellAverage,
     SlotKwh,
     SolarEntry,
     StorageMode,
@@ -677,6 +679,30 @@ def _deserialize_array_calibration(d: dict) -> ArrayCalibration | None:
     )
 
 
+def _serialize_sell_average(avg: RunningSellAverage) -> dict:
+    """Serialise the running sell-price average with its local-day watermark."""
+    return {"value": avg.value_eur_kwh, "day": avg.day.isoformat()}
+
+
+def _deserialize_sell_average(d: dict) -> RunningSellAverage | None:
+    """Rebuild the running sell-price average from its stored dict.
+
+    Args:
+        d: Dict from HA's Store.async_load().
+
+    Returns:
+        The restored average, or ``None`` when the payload is unusable — the
+        schedule then reseeds it from today's prices, which is a better start
+        than a fabricated zero that would gate nothing.
+    """
+    try:
+        return RunningSellAverage(
+            value_eur_kwh=float(d["value"]), day=date.fromisoformat(d["day"]),
+        )
+    except (KeyError, TypeError, ValueError):
+        return None
+
+
 def _serialize_monthly_bill(state: MonthlyBillState) -> dict:
     """Serialise the monthly bill ledger as a ``date_str → cost`` map."""
     return {"finalized_days": dict(state.finalized_days)}
@@ -763,5 +789,10 @@ SINGLETON_STORE_SPECS: tuple[SingletonStoreSpec, ...] = (
         serialize=_serialize_baked_observed,
         deserialize=_deserialize_baked_observed,
         default=lambda: BakedObservedHistory(records=()),
+    ),
+    SingletonStoreSpec(
+        storage_key=STORAGE_KEY_SELL_AVERAGE,
+        serialize=_serialize_sell_average,
+        deserialize=_deserialize_sell_average,
     ),
 )

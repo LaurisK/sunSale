@@ -883,7 +883,7 @@ async def test_both_sources_pages_are_optional_and_return_to_the_inverter_menu()
     assert result["step_id"] == "inverter"
     assert "✓ **Inverter power sensors** — 1 of 5 set" in _status(result)
     result = await flow.async_step_sources_energy({"inverter_entity_generation_yesterday": "sensor.pv_yesterday"})
-    assert "✓ **Energy counters** — 1 of 9 set" in _status(result)
+    assert "✓ **Energy counters** — 1 of 8 set" in _status(result)
     assert flow._data["inverter_entity_generation_yesterday"] == "sensor.pv_yesterday"
 
 

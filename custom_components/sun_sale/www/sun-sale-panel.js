@@ -1062,6 +1062,8 @@
         info: 'When on, the scheduler may pick the explicit Discharge-to-grid mode at high sell prices.' },
       { key: 'load_reserve',           label: 'Load reserve',           match: ['load_reserve'],
         info: 'When on, charge the house will need over the next three days (load forecast solar will not cover) is valued at buy price at the end of the plan, so the planner stops selling it at an evening peak only to buy it back overnight.' },
+      { key: 'discharge_gate',         label: 'Discharge above average', match: ['discharge_above_average'],
+        info: 'When on, stored energy is sold to the grid only in slots priced at or above the running sell-price average (0.9 × previous + 0.1 × today\'s mean, updated daily). Extra slots before tomorrow\'s sun are added when its forecast, raised by the overfill boost, would not fit in the battery.' },
     ];
 
     _SCHEDULE_NUMBERS = [
@@ -1077,6 +1079,8 @@
         info: 'How many days after the end of the plan the load reserve covers (3–6). Days the solar forecast does not reach are skipped. Only used while the Load reserve switch is on.' },
       { key: 'load_reserve_extra',     label: 'Load reserve extra',     match: ['load_reserve_extra'], unit: 'kWh',
         info: 'Extra energy the load reserve keeps on top of the house load, e.g. an EV charge the house-load profile does not see. Only used while the Load reserve switch is on.' },
+      { key: 'overfill_boost',         label: 'Overfill generation boost', match: ['overfill_generation_boost'], unit: '%',
+        info: 'Percent added to tomorrow\'s generation forecast when sizing how much will not fit in the battery. Higher → more energy sold tonight to make room. Only used while the Discharge above average switch is on.' },
     ];
 
     _SCHEDULE_SELECTS = [
