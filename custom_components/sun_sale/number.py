@@ -207,7 +207,7 @@ class LoadReserveExtraKwhNumber(_SunSalePolicyNumber):
 
 
 class OverfillBoostNumber(_SunSalePolicyNumber):
-    """Percent added to tomorrow's generation forecast when sizing the overfill."""
+    """Percent added to the generation forecast when the discharge gate plans."""
 
     _attr_name = "sunSale Overfill Generation Boost"
     _attr_icon = "mdi:solar-power-variant"

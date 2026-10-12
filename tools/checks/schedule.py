@@ -63,8 +63,6 @@ class GateCheck:
     enabled: bool = False
     active: bool = False
     average_eur_kwh: float | None = None
-    overfill_kwh: float = 0.0
-    overfill_slots: int = 0
     below_average_discharges: int = 0
     problems: list[str] = field(default_factory=list)
     skip_reason: str = ""
@@ -172,10 +170,9 @@ def _check_gate(
     """Cross-check the discharge gate's declared state against the plan.
 
     The invariant is what the gate promises: with it active, every Discharge slot
-    sells at or above the running average, except the slots the overfill pass
-    forced (which must themselves be Discharge slots). The average's own daily
-    update is not recomputable from a snapshot — its history is the persisted
-    figure — so only its date is checked (it must be today's).
+    sells at or above the running average. The average's own daily update is not
+    recomputable from a snapshot — its history is the persisted figure — so only
+    its date is checked (it must be today's).
 
     Args:
         snap: Coordinator snapshot.
@@ -191,15 +188,10 @@ def _check_gate(
         and bool(policy.get("allow_discharge_to_grid", True)),
         active=bool(gate.get("active")),
         average_eur_kwh=gate.get("average_eur_kwh"),
-        overfill_kwh=gate.get("overfill_kwh") or 0.0,
     )
-    forced = {
-        datetime.fromisoformat(t).astimezone(UTC) for t in gate.get("overfill_slots") or []
-    }
-    gc.overfill_slots = len(forced)
 
     if not gc.enabled:
-        if gc.active or forced:
+        if gc.active:
             gc.problems.append("gate shaped the plan while switched off")
         gc.ok = not gc.problems
         return gc
@@ -225,14 +217,12 @@ def _check_gate(
         for r in pricing.get("slots") or []
         if r.get("start") is not None and r.get("sell") is not None
     }
-    discharge_starts = set()
     for row in slots:
         if row.get("mode") != "discharge":
             continue
         start = datetime.fromisoformat(row["start"]).astimezone(UTC)
-        discharge_starts.add(start)
         sell = sell_at.get(start)
-        if start in forced or sell is None:
+        if sell is None:
             continue
         if sell < gc.average_eur_kwh - _EUR_TOL:
             gc.below_average_discharges += 1
@@ -240,10 +230,6 @@ def _check_gate(
         gc.problems.append(
             f"{gc.below_average_discharges} Discharge slot(s) below the average",
         )
-    if forced - discharge_starts:
-        gc.problems.append("overfill slot is not a Discharge slot")
-    if forced and gc.overfill_kwh <= 0:
-        gc.problems.append("overfill slots without overfill")
     gc.ok = not gc.problems
     return gc
 
@@ -536,8 +522,7 @@ class ScheduleCheckWidget(Static):
             if gate is not None:
                 g_style = "green" if gate.ok else "red"
                 state = (
-                    f"avg {gate.average_eur_kwh:.4f}€  overfill {gate.overfill_kwh:.2f} kWh"
-                    f" in {gate.overfill_slots} slot(s)"
+                    f"avg {gate.average_eur_kwh:.4f}€"
                     if gate.active else "off"
                 )
                 yield Static(

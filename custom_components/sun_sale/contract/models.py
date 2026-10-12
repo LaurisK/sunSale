@@ -278,15 +278,10 @@ class DischargeGate:
     """What the discharge gate did to a plan (``SchedulePolicy.discharge_gate_enabled``).
 
     ``average`` is carried even while the gate is off, because it is the value
-    the coordinator persists. ``overfill_kwh`` is how much of tomorrow's
-    boosted solar surplus the battery has no room for after the first pass, and
-    ``overfill_slots`` the below-average slots the second pass turned into
-    Discharge slots to make that room.
+    the coordinator persists. ``active`` says the gate shaped this plan.
     """
     average: RunningSellAverage | None = None
-    active: bool = False                    # gate shaped this plan
-    overfill_kwh: float = 0.0               # storage-side kWh with no room tomorrow
-    overfill_slots: tuple[datetime, ...] = ()   # starts of the slots forced to Discharge
+    active: bool = False
 
 
 @dataclass
@@ -351,10 +346,10 @@ class SchedulePolicy:
             top of the house load (an EV charge the baseload profile does not
             see). Read only while ``load_reserve_enabled``.
         ``discharge_gate_enabled`` — when True, Discharge-to-grid is offered only
-            in slots selling at or above the running sell-price average, and a
-            second pass adds the best remaining slots needed to shed tomorrow's
-            overfill. ``overfill_boost`` is the fraction added to tomorrow's
-            generation forecast when sizing that overfill (0.2 = +20 %).
+            in slots selling at or above the running sell-price average, and the
+            planner assumes a stronger sun than forecast so it leaves room for
+            the surplus. ``overfill_boost`` is the fraction added to every
+            future slot's solar for that (0.2 = +20 %).
         ``max_battery_charge_kw`` / ``max_battery_discharge_kw`` — the battery
             legs' live ceilings from ``InverterCapability``, already reduced
             against ``BatteryConfig``. ``ScheduleNode`` substitutes them into the
@@ -380,7 +375,7 @@ class SchedulePolicy:
     load_reserve_days: int = 3              # days after the horizon end covered
     load_reserve_extra_kwh: float = 0.0     # AC kWh held on top (e.g. EV charge)
     discharge_gate_enabled: bool = False
-    overfill_boost: float = 0.2             # fraction added to tomorrow's forecast
+    overfill_boost: float = 0.2             # fraction added to the forecast when planning
 
 
 @dataclass(frozen=True)

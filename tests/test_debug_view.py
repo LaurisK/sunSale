@@ -339,13 +339,12 @@ def test_pricing_slots_carry_forecast_flag():
 
 
 def test_schedule_gate_serialised():
-    """The discharge gate's average, overfill and forced slots reach outputs.schedule.gate."""
-    forced = BASE + timedelta(hours=20)
+    """The discharge gate's average and active flag reach outputs.schedule.gate."""
     coord = make_coordinator(
         discharge_gate_enabled=True,
         gate=DischargeGate(
             average=RunningSellAverage(value_eur_kwh=0.1234567, day=date(2024, 1, 15)),
-            active=True, overfill_kwh=12.34567, overfill_slots=(forced,),
+            active=True,
         ),
     )
     result = _coordinator_to_dict("e", coord)
@@ -353,8 +352,6 @@ def test_schedule_gate_serialised():
         "active": True,
         "average_eur_kwh": 0.123457,
         "average_day": "2024-01-15",
-        "overfill_kwh": 12.3457,
-        "overfill_slots": [forced.isoformat()],
     }
     policy = result["pipeline"]["schedule_policy"]
     assert policy["discharge_gate_enabled"] is True

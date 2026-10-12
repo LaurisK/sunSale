@@ -14,9 +14,10 @@ Scope:
     penalty scaled by battery throughput; state augmented to (t, soc, prev_mode).
   - phase 4 (deferred): ε-improvement gate against the persisted last schedule —
     requires coordinator-side wiring beyond this module.
-  - discharge gate (opt-in): the DP runs twice — first with Discharge offered only
-    at or above the running sell average, then with the best unused slots forced
-    to Discharge to shed tomorrow's overfill (see ``pipeline.discharge_gate``).
+  - discharge gate (opt-in): the same DP, with Discharge offered only at or above
+    the running sell average and every future slot's solar raised by the overfill
+    boost, so the plan leaves room for a stronger sun than forecast (see
+    ``pipeline.discharge_gate``).
 
 The DP recurrence:
 
@@ -52,7 +53,7 @@ from ..contract.models import (
     StorageMode,
     TerminalValuation,
 )
-from .discharge_gate import PRICE_EPS, plan_overfill
+from .discharge_gate import PRICE_EPS
 from .slot_physics import SlotOutcome, simulate_slot
 
 # Action set the DP may pick — the canonical dispatchable-mode tuple shared
@@ -90,8 +91,9 @@ DEFAULT_TERMINAL_VALUE_DISCOUNT = 0.5
 # winter spell, short enough that the forecast's daily totals still mean something.
 LOAD_RESERVE_DAYS = 3
 
-# Fraction added to tomorrow's generation forecast when the discharge gate sizes
-# the overfill it must make room for (user-tunable via SchedulePolicy).
+# Fraction added to every future slot's solar when the discharge gate plans, so
+# the plan leaves room for a stronger sun than forecast (user-tunable via
+# SchedulePolicy).
 DEFAULT_OVERFILL_BOOST = DEFAULT_SCHEDULE_OVERFILL_BOOST_PCT / 100.0
 
 # Modes that deliberately send energy to the grid. Neither is offered while the
@@ -223,12 +225,13 @@ def optimize_schedule(
             :mod:`pipeline.discharge_gate`). Carried into ``Schedule.gate``
             whether or not the gate is on, so the caller can persist it.
         discharge_gate_enabled: When True (and an average and the Discharge mode
-            are available) the first pass offers Discharge only in slots selling
-            at or above the average, and a second pass turns the best unused
-            slots before tomorrow's sun into Discharge slots until tomorrow's
-            overfill is shed. When False the plan is the plain DP.
-        overfill_boost: Fraction added to tomorrow's generation forecast when
-            sizing the overfill (0.2 = +20 %). Read only with the gate on.
+            are available) Discharge is offered only in slots selling at or above
+            the average, and the DP plans against solar raised by
+            ``overfill_boost`` so it leaves room for the surplus. When False the
+            plan is the plain DP.
+        overfill_boost: Fraction added to every future slot's solar for the
+            DP's policy (0.2 = +20 %). The reported SoC trajectory and rewards
+            still use the real forecast. Read only with the gate on.
 
     Two export guards apply regardless of policy: Discharge is never scheduled
     in a slot selling below the battery cycle cost (``2 × deg / eff``), and
@@ -321,9 +324,9 @@ def optimize_schedule(
     )
     cost_blocked = [p.sell_eur_kwh < cycle_cost for p in future_slots]
 
-    # First pass of the discharge gate: stored energy is offered to the grid
-    # only in slots selling at or above the running average. Without Discharge
-    # in the action set there is nothing to gate.
+    # Discharge gate: stored energy is offered to the grid only in slots selling
+    # at or above the running average. Without Discharge in the action set there
+    # is nothing to gate.
     gate_average = (
         running_average
         if discharge_gate_enabled and StorageMode.Discharge in actions else None
@@ -337,94 +340,34 @@ def optimize_schedule(
             for blocked, p in zip(cost_blocked, future_slots, strict=True)
         ]
 
-    def plan(forced: list[bool] | None) -> Schedule:
-        """Run the DP and the forward roll, optionally forcing Discharge slots."""
-        choice = _run_dp(
-            future_slots, baseload_kwh, solar_kwh, slot_hours,
-            planning_config, cap_kwh, degradation_cost, export_limit_kw,
-            bucketer, terminal, mode_change_penalty, actions,
-            max_discharge_to_grid_kw, floor_soc, discharge_blocked, forced,
-        )
-        return _forward_roll(
-            future_slots, baseload_kwh, solar_kwh, slot_hours,
-            planning_config, battery_state, cap_kwh, degradation_cost,
-            export_limit_kw, bucketer, choice, now,
-            current_mode, mode_change_penalty, actions,
-            max_discharge_to_grid_kw,
-        )
+    # With the gate on, the policy is built for a stronger sun than forecast, so
+    # the DP itself makes the room: it charges less from the grid and sells the
+    # stored energy in the best-priced slots, weighing both against what the
+    # surplus would fetch if exported at midday. Forcing Discharge into chosen
+    # slots instead ignored the grid recharge that followed and could sell below
+    # the price paid to buy the energy back. Only the policy sees the raised
+    # figures; the forward roll below reports the real forecast.
+    plan_solar_kwh = (
+        [kwh * (1.0 + max(0.0, overfill_boost)) for kwh in solar_kwh]
+        if gate_active else solar_kwh
+    )
 
-    schedule = plan(None)
-    gate = replace(idle_gate, active=gate_active)
-
-    if gate_active:
-        # Second pass: what tomorrow's boosted sun cannot fit into the battery
-        # is shed in the best slots the first pass left unused.
-        overfill = plan_overfill(
-            slots=future_slots,
-            solar_kwh=solar_kwh,
-            baseload_kwh=baseload_kwh,
-            soc_before=[max(0.0, min(battery_config.max_soc, battery_state.soc))]
-            + [s.expected_soc_after for s in schedule.slots[:-1]],
-            taken=[s.mode is StorageMode.Discharge for s in schedule.slots],
-            eligible=[not blocked for blocked in cost_blocked],
-            drain_ac_kwh=lambda i: simulate_slot(
-                soc_in=planning_config.max_soc,
-                mode=StorageMode.Discharge,
-                solar_kwh=solar_kwh[i],
-                baseload_kwh=baseload_kwh[i],
-                buy_eur_kwh=future_slots[i].buy_eur_kwh,
-                sell_eur_kwh=future_slots[i].sell_eur_kwh,
-                slot_hours=slot_hours,
-                battery_cfg=planning_config,
-                est_capacity_kwh=cap_kwh,
-                deg_cost_eur_kwh=degradation_cost,
-                export_limit_kw=export_limit_kw,
-                max_discharge_to_grid_kw=max_discharge_to_grid_kw,
-            ).batt_discharge_kwh,
-            now=now,
-            local_tz=local_tz,
-            boost=max(0.0, overfill_boost),
-            max_charge_kwh=max(0.0, planning_config.max_charge_power_kw * slot_hours),
-            cap_kwh=cap_kwh,
-            max_soc=battery_config.max_soc,
-            floor_soc=floor_soc,
-            eff=battery_config.round_trip_efficiency,
-        )
-        shed_slots: tuple[datetime, ...] = ()
-        if overfill.slot_indexes:
-            forced = [False] * len(future_slots)
-            for i in overfill.slot_indexes:
-                forced[i] = True
-            schedule = _mark_overfill_slots(plan(forced), overfill.slot_indexes)
-            shed_slots = tuple(
-                future_slots[i].start for i in overfill.slot_indexes
-                if schedule.slots[i].mode is StorageMode.Discharge
-            )
-        gate = replace(
-            gate, overfill_kwh=overfill.overfill_kwh, overfill_slots=shed_slots,
-        )
-    return replace(schedule, terminal=terminal, gate=gate)
-
-
-def _mark_overfill_slots(schedule: Schedule, indexes: tuple[int, ...]) -> Schedule:
-    """Say in the reason of each forced slot that it makes room for tomorrow's sun.
-
-    Args:
-        schedule: The second-pass schedule.
-        indexes: Slot indexes the overfill plan forced to Discharge.
-
-    Returns:
-        ``schedule`` with the reason rewritten on the forced slots that did end
-        up as Discharge (the forward roll may have swapped one for a refill).
-    """
-    slots = list(schedule.slots)
-    for i in indexes:
-        if slots[i].mode is StorageMode.Discharge:
-            slots[i] = replace(
-                slots[i],
-                reason=f"{slots[i].reason} — makes room for tomorrow's solar",
-            )
-    return replace(schedule, slots=slots)
+    choice = _run_dp(
+        future_slots, baseload_kwh, plan_solar_kwh, slot_hours,
+        planning_config, cap_kwh, degradation_cost, export_limit_kw,
+        bucketer, terminal, mode_change_penalty, actions,
+        max_discharge_to_grid_kw, floor_soc, discharge_blocked,
+    )
+    schedule = _forward_roll(
+        future_slots, baseload_kwh, solar_kwh, slot_hours,
+        planning_config, battery_state, cap_kwh, degradation_cost,
+        export_limit_kw, bucketer, choice, now,
+        current_mode, mode_change_penalty, actions,
+        max_discharge_to_grid_kw,
+    )
+    return replace(
+        schedule, terminal=terminal, gate=replace(idle_gate, active=gate_active),
+    )
 
 
 def _filter_actions(
@@ -831,7 +774,6 @@ def _run_dp(
     max_discharge_to_grid_kw: float | None = None,
     floor_soc: float | None = None,
     discharge_blocked: list[bool] | None = None,
-    discharge_forced: list[bool] | None = None,
 ) -> list[list[list[StorageMode]]]:
     """Backward DP — compute the optimal mode for every (slot, soc_bucket, prev_mode) cell.
 
@@ -862,11 +804,8 @@ def _run_dp(
             as being "above minimum". ``None`` falls back to the battery's own
             minimum.
         discharge_blocked: Per-slot flags; ``True`` removes Discharge from that
-            slot's choices (its sell price is below the battery cycle cost).
-            ``None`` blocks nothing.
-        discharge_forced: Per-slot flags; ``True`` leaves Discharge as the only
-            choice for that slot (the discharge gate's overfill pass). Forcing
-            wins over ``discharge_blocked``. ``None`` forces nothing.
+            slot's choices (its sell price is below the battery cycle cost, or
+            below the discharge gate's running average). ``None`` blocks nothing.
 
     Returns:
         ``choice[t][b][m]`` — the optimal StorageMode for slot ``t`` when the
@@ -937,17 +876,12 @@ def _run_dp(
                 throughput = _storage_throughput(outcome, battery_config.round_trip_efficiency)
                 per_action.append((outcome, lo, hi, frac, throughput))
 
-            forced = discharge_forced is not None and discharge_forced[t]
-            blocked = (
-                discharge_blocked is not None and discharge_blocked[t] and not forced
-            )
+            blocked = discharge_blocked is not None and discharge_blocked[t]
             for prev_m in range(n_prev):
                 best_total = float("-inf")
                 best_mode = fallback_mode
                 for action_idx, action in enumerate(actions):
                     if blocked and action is StorageMode.Discharge:
-                        continue
-                    if forced and action is not StorageMode.Discharge:
                         continue
                     outcome, lo, hi, frac, throughput = per_action[action_idx]
                     # Penalty applies only when the chosen action differs from

@@ -203,10 +203,10 @@ class DischargeGateSwitch(_SunSaleSwitchBase):
 
     Discharge-to-grid is then offered only in slots selling at or above the
     running sell-price average (0.9 × previous + 0.1 × today's mean, updated
-    daily). A second pass adds the best remaining slots before tomorrow's sun
-    until the surplus tomorrow's forecast (raised by the overfill boost) would
-    leave without room in the battery is shed. Dispatch-affecting, hence OFF by
-    default.
+    daily). The plan is also built for a stronger sun than forecast (the
+    overfill boost), so the battery is left room for the surplus: less grid
+    charging overnight, and stored energy sold in the best-priced slots.
+    Dispatch-affecting, hence OFF by default.
     """
 
     _attr_name = "sunSale Discharge Above Average"

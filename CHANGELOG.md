@@ -10,6 +10,22 @@ Any behavior-affecting change bumps the `version` in
 
 ## [Unreleased]
 
+### Fixed
+- **"Discharge Above Average" no longer sells energy it then buys back, and
+  makes room for the sun in the best-priced slots.** The second pass of v0.8.0
+  forced Discharge into the highest-priced slots left over *before the first
+  sunny slot*, with the planner free to refill the battery afterwards. On the
+  night of 2026-10-11/12 that sold at 0.080 €/kWh at 23:05 and grid-charged at
+  0.129 from 23:50, then shed the morning in the 06:45–07:30 slots
+  (0.075–0.165) while 08:15–09:00 (0.157–0.193) stayed feed-in only; and the
+  plan flipped at midnight, when "tomorrow" moved to the next day. The gate is
+  now one DP: Discharge is still offered only at or above the running sell
+  average, and the planner's policy is built on **every future slot's solar ×
+  (1 + the Overfill Generation Boost)**, so it leaves room for a stronger sun by
+  charging less from the grid and selling in the best-priced slots, on its own
+  arithmetic. The reported SoC and profit still use the real forecast.
+  `outputs.schedule.gate` loses `overfill_kwh` / `overfill_slots`.
+
 ## [0.8.0] — 2026-10-09
 
 ### Added

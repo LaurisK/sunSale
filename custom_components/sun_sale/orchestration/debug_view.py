@@ -612,8 +612,6 @@ def _coordinator_to_dict(entry_id: str, coordinator: Any) -> dict:
                         schedule.gate.average.day.isoformat()
                         if schedule.gate.average is not None else None
                     ),
-                    "overfill_kwh": round(schedule.gate.overfill_kwh, 4),
-                    "overfill_slots": [t.isoformat() for t in schedule.gate.overfill_slots],
                 } if schedule.gate is not None else None,
             } if schedule is not None else None,
             "inverter_mode": _inverter_mode_block(data, coordinator),

@@ -1,12 +1,11 @@
-"""Tests for the discharge gate: running sell average, overfill plan, two-pass schedule.
+"""Tests for the discharge gate: running sell average and the single boosted-sun DP.
 
-Pure Python, no HA required. The unit tests pin ``fold_running_average`` and
-``plan_overfill`` on hand-built inputs; the scenario tests drive
-``optimize_schedule`` over a two-day hourly horizon (today 2024-01-15, tomorrow
-2024-01-16, UTC) where the default battery is 10 kWh, 5 kW, 10-95 % SoC and a
-slot sells for ``spot - 0.025`` (the default flat tariff). The battery cycle
-cost is therefore ~0.0926 EUR/kWh, i.e. a spot of about 0.118 is the least that
-may discharge.
+Pure Python, no HA required. The unit tests pin ``fold_running_average``; the
+scenario tests drive ``optimize_schedule`` over a two-day hourly horizon (today
+2024-01-15, tomorrow 2024-01-16, UTC) where the default battery is 10 kWh, 5 kW,
+10-95 % SoC and a slot sells for ``spot - 0.025`` (the default flat tariff). The
+battery cycle cost is therefore ~0.0926 EUR/kWh, i.e. a spot of about 0.118 is
+the least that may discharge.
 """
 from __future__ import annotations
 
@@ -91,15 +90,16 @@ def _gen(day2_kwh: dict[int, float]) -> GenerationSeries:
 
 
 def plan(prices, *, avg: float | None, soc: float = 0.90, solar: dict[int, float] | None = None,
-         enabled: bool = True, boost: float = 0.2, **kwargs) -> Schedule:
+         enabled: bool = True, boost: float = 0.2, now: datetime = NOW,
+         **kwargs) -> Schedule:
     """Run ``optimize_schedule`` over the two-day horizon with the gate settings."""
     bc = default_battery_config()
     state = default_battery_state(soc)
     deg = degradation_cost_per_kwh(bc, state)
     series = build_price_series(prices, default_tariff_config(), now=NOW)
-    calc = calculate(series, _gen(solar or {}), state, NOW)
+    calc = calculate(series, _gen(solar or {}), state, now)
     return optimize_schedule(
-        series, calc, bc, state, deg, NOW, local_tz=UTC,
+        series, calc, bc, state, deg, now, local_tz=UTC,
         running_average=None if avg is None else RunningSellAverage(avg, TODAY),
         discharge_gate_enabled=enabled, overfill_boost=boost, **kwargs,
     )
@@ -162,105 +162,7 @@ def test_only_todays_local_day_counts():
 
 
 # ---------------------------------------------------------------------------
-# plan_overfill (hand-built inputs)
-# ---------------------------------------------------------------------------
-
-
-def _plan_inputs(*, tomorrow_solar: float = 6.0, soc: float = 0.95):
-    """48 hourly slots; tomorrow's 08:00-15:59 carry ``tomorrow_solar`` kWh each."""
-    slots = [_slot(DAY1 + timedelta(hours=i), 0.10) for i in range(48)]
-    solar = [tomorrow_solar if 32 <= i < 40 else 0.0 for i in range(48)]
-    return dict(
-        slots=slots, solar_kwh=solar, baseload_kwh=[0.0] * 48,
-        soc_before=[soc] * 48, taken=[False] * 48, eligible=[True] * 48,
-        drain_ac_kwh=lambda i: 5.0, now=NOW, local_tz=UTC, boost=0.2,
-        max_charge_kwh=5.0, cap_kwh=10.0, max_soc=0.95, floor_soc=0.10, eff=0.9,
-    )
-
-
-def test_overfill_is_surplus_beyond_the_room_and_sheds_in_the_priciest_slots():
-    inputs = _plan_inputs()
-    inputs["slots"][20] = _slot(inputs["slots"][20].start, 0.40)    # best
-    inputs["slots"][19] = _slot(inputs["slots"][19].start, 0.30)    # second
-    got = discharge_gate.plan_overfill(**inputs)
-    # 8 slots x min(7.2, 5 charge cap) = 40 kWh with zero room.
-    assert got.overfill_kwh == pytest.approx(40.0)
-    # (0.95-0.10) x 10 kWh x 0.9 = 7.65 AC kWh to shed -> two 5 kWh slots.
-    assert got.slot_indexes == (19, 20)
-
-
-def test_no_overfill_when_the_battery_has_room_for_boosted_solar():
-    inputs = _plan_inputs(tomorrow_solar=1.0, soc=0.10)             # 8 x 1.2 = 9.6 vs 8.5 room
-    got = discharge_gate.plan_overfill(**inputs)
-    assert got.overfill_kwh == pytest.approx(1.1)
-    inputs = _plan_inputs(tomorrow_solar=0.5, soc=0.10)             # 4.8 fits in 8.5
-    assert discharge_gate.plan_overfill(**inputs) == discharge_gate.OverfillPlan()
-
-
-def test_boost_decides_whether_a_surplus_overflows():
-    inputs = _plan_inputs(tomorrow_solar=1.0, soc=0.50)             # room 4.5 kWh, solar 8 kWh
-    inputs["solar_kwh"] = [0.5625 if 32 <= i < 40 else 0.0 for i in range(48)]   # 4.5 raw
-    assert discharge_gate.plan_overfill(**{**inputs, "boost": 0.0}).overfill_kwh == 0.0
-    assert discharge_gate.plan_overfill(**{**inputs, "boost": 0.2}).overfill_kwh == pytest.approx(0.9)
-
-
-def test_taken_and_ineligible_slots_are_left_alone():
-    inputs = _plan_inputs()
-    inputs["slots"][20] = _slot(inputs["slots"][20].start, 0.40)
-    inputs["slots"][19] = _slot(inputs["slots"][19].start, 0.30)
-    inputs["taken"][20] = True                  # the first pass already sells here
-    inputs["eligible"][19] = False              # below the battery cycle cost
-    got = discharge_gate.plan_overfill(**inputs)
-    assert 19 not in got.slot_indexes and 20 not in got.slot_indexes
-    assert len(got.slot_indexes) == 2
-
-
-def test_only_slots_before_the_sun_arrives_are_candidates():
-    inputs = _plan_inputs()
-    inputs["slots"][36] = _slot(inputs["slots"][36].start, 9.0)     # midday tomorrow
-    got = discharge_gate.plan_overfill(**inputs)
-    assert all(i < 32 for i in got.slot_indexes)
-
-
-def test_shed_is_limited_to_what_the_battery_holds_above_the_floor():
-    inputs = _plan_inputs(soc=0.20)
-    inputs["max_soc"] = 0.95
-    got = discharge_gate.plan_overfill(**inputs)
-    # (0.20-0.10) x 10 x 0.9 = 0.9 AC kWh -> one slot is enough; overfill itself is large.
-    assert got.overfill_kwh > 30.0
-    assert len(got.slot_indexes) == 1
-
-
-def test_a_sliver_above_the_floor_is_not_worth_a_forced_discharge():
-    got = discharge_gate.plan_overfill(**_plan_inputs(soc=0.12))   # 0.18 AC kWh to shed
-    assert got.overfill_kwh > 30.0 and got.slot_indexes == ()
-
-
-def test_battery_at_the_floor_has_nothing_to_shed():
-    got = discharge_gate.plan_overfill(**_plan_inputs(soc=0.10))
-    assert got.overfill_kwh > 0 and got.slot_indexes == ()
-
-
-def test_load_eats_into_the_surplus():
-    inputs = _plan_inputs(tomorrow_solar=2.0, soc=0.10)             # 2.4 per slot boosted
-    inputs["baseload_kwh"] = [2.4 if 32 <= i < 40 else 0.0 for i in range(48)]
-    assert discharge_gate.plan_overfill(**inputs) == discharge_gate.OverfillPlan()
-
-
-def test_no_local_timezone_or_capacity_disables_the_plan():
-    assert discharge_gate.plan_overfill(**{**_plan_inputs(), "local_tz": None}) \
-        == discharge_gate.OverfillPlan()
-    assert discharge_gate.plan_overfill(**{**_plan_inputs(), "cap_kwh": 0.0}) \
-        == discharge_gate.OverfillPlan()
-
-
-def test_no_solar_tomorrow_means_no_overfill():
-    assert discharge_gate.plan_overfill(**_plan_inputs(tomorrow_solar=0.0)) \
-        == discharge_gate.OverfillPlan()
-
-
-# ---------------------------------------------------------------------------
-# optimize_schedule: first pass (price gate)
+# optimize_schedule: the price bar
 # ---------------------------------------------------------------------------
 
 # A moderate morning peak (sell 0.275) that the plain DP trades and then refills
@@ -281,7 +183,6 @@ def test_gate_off_is_the_plain_dp_and_still_carries_the_average():
     assert [s.mode for s in with_avg.slots] == [s.mode for s in plain.slots]
     assert with_avg.gate.active is False
     assert with_avg.gate.average == RunningSellAverage(_BAR, TODAY)
-    assert with_avg.gate.overfill_slots == ()
 
 
 def test_plain_dp_sells_below_the_average_so_the_gate_has_something_to_do():
@@ -331,72 +232,90 @@ def test_gate_is_moot_when_discharge_to_grid_is_not_allowed():
 
 
 # ---------------------------------------------------------------------------
-# optimize_schedule: second pass (overfill)
+# optimize_schedule: planning for a stronger sun
 # ---------------------------------------------------------------------------
 
-# Tomorrow's sun: 8 hours of 6 kWh against a battery that is already full.
-_BIG_SUN = {h: 6.0 for h in range(8, 16)}
-# Flat, discharge-eligible prices with 19:00 and 20:00 the best of the night.
-_EVENING = {19: 0.22, 20: 0.25}
+# 23:00 on day 1, a battery that still holds most of its charge. Tonight sells
+# 0.095 (spot 0.12) - barely above the cycle cost - while the grid charge at
+# 00:00-05:00 costs 0.097 to buy, so any sale tonight is a loss once the energy
+# is bought back. Tomorrow has a morning price that peaks at 09:00 and a dear
+# evening. (The live incident of 2026-10-11/12: the second pass sold at 0.080
+# at 23:05, grid-charged at 0.129 from 23:50, then shed in the cheaper 06:45-07:30
+# slots while 08:15-09:00 sold higher.)
+_LATE = DAY1.replace(hour=23)
+_NIGHT_AND_PEAKS = (
+    {23: 0.12},
+    {**{h: 0.04 for h in range(0, 6)}, 7: 0.16, 8: 0.19, 9: 0.22, 10: 0.17, 11: 0.15,
+     19: 0.45, 20: 0.45},
+)
 
 
-def test_overfill_turns_the_best_unused_slots_into_discharge_slots():
-    prices = _prices(_EVENING, base1=0.15, base2=0.15)
-    got = plan(prices, avg=0.30, soc=0.95, solar=_BIG_SUN)
-    modes = {s.start.hour + 24 * (s.start.day - 15): s for s in got.slots}
-    forced = {DAY1.replace(hour=19), DAY1.replace(hour=20)}
-    assert got.gate.overfill_kwh > 30.0
-    assert set(got.gate.overfill_slots) == forced
-    assert modes[19].mode is D and modes[20].mode is D
-    assert "makes room for tomorrow's solar" in modes[20].reason
-    # Every other slot is still gated: nothing else sells below the 0.30 bar.
-    assert [s for s in got.slots if s.mode is D and s.start not in forced] == []
-    # The room was actually made: the battery is at its floor when the sun comes up.
-    sunrise = next(s for s in got.slots if s.start == DAY2.replace(hour=7))
-    assert sunrise.expected_soc_after == pytest.approx(0.10, abs=0.02)
+def _sun(kwh_per_hour: float) -> dict[int, float]:
+    """Tomorrow's sun: ``kwh_per_hour`` from 08:00 to 15:59."""
+    return {h: kwh_per_hour for h in range(8, 16)}
 
 
-def test_no_overfill_pass_when_tomorrow_fits_the_battery():
-    prices = _prices(_EVENING, base1=0.15, base2=0.15)
-    got = plan(prices, avg=0.30, soc=0.30, solar={8: 1.0})
-    assert got.gate.overfill_kwh == 0.0
-    assert got.gate.overfill_slots == ()
+def test_gate_does_not_sell_tonight_only_to_buy_the_energy_back():
+    prices = _prices(*_NIGHT_AND_PEAKS, base1=0.10, base2=0.10)
+    plain = plan(prices, avg=0.02, soc=0.90, solar=_sun(1.2), enabled=False, now=_LATE)
+    gated = plan(prices, avg=0.02, soc=0.90, solar=_sun(1.2), now=_LATE)
+    # Nothing is sold before the morning's best price: not tonight's 0.095, not
+    # the cheaper early-morning slots a "before the sun" rule would pick.
+    assert not any(s.mode is D and s.start < DAY2.replace(hour=9) for s in gated.slots)
+    # Leaving room for a stronger sun costs a hedge, not the €0.8 the forced
+    # sales cost.
+    assert gated.total_expected_profit_eur > plain.total_expected_profit_eur - 0.1
+
+
+def test_gate_sheds_stored_energy_in_the_best_priced_morning_slot():
+    # The room for the sun is made at 09:00, the day's best morning price - a slot
+    # after the first sunny one (08:00), which a "before the sun arrives" rule
+    # never considered.
+    prices = _prices(*_NIGHT_AND_PEAKS, base1=0.10, base2=0.10)
+    gated = plan(prices, avg=0.02, soc=0.90, solar=_sun(1.2), now=_LATE)
+    morning = [s for s in gated.slots
+               if s.mode is D and DAY2.replace(hour=6) <= s.start < DAY2.replace(hour=12)]
+    assert [s.start.hour for s in morning] == [9]
+
+
+def test_gate_never_forces_a_sale_below_the_average():
+    # Tomorrow's sun overflows a full battery, but every slot sells under the 0.30
+    # bar: nothing may be sold to make room, and nothing is.
+    prices = _prices({19: 0.22, 20: 0.25}, base1=0.15, base2=0.15)
+    got = plan(prices, avg=0.30, soc=0.95, solar=_sun(6.0))
+    assert got.gate.active is True
     assert not any(s.mode is D for s in got.slots)
 
 
-def test_boost_sizes_the_overfill():
-    # Room at 08:00 is (0.95-0.60) x 10 = 3.5 kWh; tomorrow's 08:00 sun is 3.45 kWh,
-    # which fits as forecast but not once raised by 20 % (4.14 kWh).
-    prices = _prices(_EVENING, base1=0.15, base2=0.15)
-    plain = plan(prices, avg=0.30, soc=0.60, solar={8: 3.45}, boost=0.0)
-    boosted = plan(prices, avg=0.30, soc=0.60, solar={8: 3.45}, boost=0.2)
-    assert plain.gate.overfill_kwh == 0.0 and plain.gate.overfill_slots == ()
-    assert boosted.gate.overfill_kwh == pytest.approx(0.64)
-    assert len(boosted.gate.overfill_slots) == 1
-    assert DAY1.replace(hour=20) in boosted.gate.overfill_slots
-
-
-def test_an_overfill_too_small_to_shed_forces_nothing():
-    # 3.0 kWh raised by 20 % overflows the 3.5 kWh room by 0.1 kWh - not worth a slot.
-    prices = _prices(_EVENING, base1=0.15, base2=0.15)
-    got = plan(prices, avg=0.30, soc=0.60, solar={8: 3.0}, boost=0.2)
-    assert got.gate.overfill_kwh == pytest.approx(0.1)
-    assert got.gate.overfill_slots == ()
-
-
-def test_overfill_never_sells_below_the_battery_cycle_cost():
-    # Spot 0.05 -> sell 0.025, under the ~0.0926 cycle cost: nothing is eligible.
+def test_gate_never_sells_below_the_battery_cycle_cost():
+    # Spot 0.05 -> sell 0.025, under the ~0.0926 cycle cost: nothing may discharge.
     prices = _prices({}, base1=0.05, base2=0.05)
-    got = plan(prices, avg=0.30, soc=0.95, solar=_BIG_SUN)
-    assert got.gate.overfill_kwh > 0
-    assert got.gate.overfill_slots == ()
+    got = plan(prices, avg=0.0, soc=0.95, solar=_sun(6.0))
     assert not any(s.mode is D for s in got.slots)
 
 
-def test_gate_off_never_runs_the_overfill_pass():
-    prices = _prices(_EVENING, base1=0.15, base2=0.15)
-    got = plan(prices, avg=0.30, soc=0.95, solar=_BIG_SUN, enabled=False)
-    assert got.gate.overfill_kwh == 0.0 and got.gate.overfill_slots == ()
+def test_boost_changes_the_plan_only_where_there_is_sun():
+    prices = _prices(*_NIGHT_AND_PEAKS, base1=0.10, base2=0.10)
+    boosted = plan(prices, avg=0.02, soc=0.12, boost=0.5, now=_LATE)
+    plain = plan(prices, avg=0.02, soc=0.12, boost=0.0, now=_LATE)
+    assert [s.mode for s in boosted.slots] == [s.mode for s in plain.slots]
+
+
+def test_gate_off_ignores_the_boost():
+    prices = _prices(*_NIGHT_AND_PEAKS, base1=0.10, base2=0.10)
+    a = plan(prices, avg=0.02, soc=0.12, solar=_sun(1.2), enabled=False, boost=0.0, now=_LATE)
+    b = plan(prices, avg=0.02, soc=0.12, solar=_sun(1.2), enabled=False, boost=0.5, now=_LATE)
+    assert [s.mode for s in a.slots] == [s.mode for s in b.slots]
+
+
+def test_the_reported_trajectory_follows_the_real_forecast_not_the_boosted_one():
+    # The policy is built for 20 % more sun, but the plan the user sees charges
+    # the battery only from the sun that is actually forecast: 8 h x 0.4 kWh.
+    prices = _prices(*_NIGHT_AND_PEAKS, base1=0.10, base2=0.10)
+    got = plan(prices, avg=0.02, soc=0.12, solar=_sun(0.4), now=_LATE)
+    before = next(s for s in got.slots if s.start == DAY2.replace(hour=7)).expected_soc_after
+    after = next(s for s in got.slots if s.start == DAY2.replace(hour=15)).expected_soc_after
+    assert after - before <= 8 * 0.4 / 10.0 + 1e-6
 
 
 # ---------------------------------------------------------------------------

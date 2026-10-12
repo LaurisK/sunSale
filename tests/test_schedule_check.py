@@ -213,7 +213,6 @@ def _gate_snap(gate: dict, *, enabled: bool = True, discharge_hours=(18,), sells
 
 _GOOD_GATE = {
     "active": True, "average_eur_kwh": 0.30, "average_day": "2024-01-15",
-    "overfill_kwh": 0.0, "overfill_slots": [],
 }
 
 
@@ -227,21 +226,6 @@ def test_gate_check_flags_a_discharge_below_the_average() -> None:
     result = check_schedule(_gate_snap(dict(_GOOD_GATE), sells={18: 0.10}))
     assert result.gate.below_average_discharges == 1
     assert "gate" in result.mismatches and result.overall_ok is False
-
-
-def test_gate_check_accepts_a_forced_overfill_slot_below_the_average() -> None:
-    gate = {**_GOOD_GATE, "overfill_kwh": 5.0,
-            "overfill_slots": ["2024-01-15T18:00:00+00:00"]}
-    result = check_schedule(_gate_snap(gate, sells={18: 0.10}))
-    assert result.gate.ok
-
-
-def test_gate_check_flags_an_overfill_slot_that_is_not_a_discharge_slot() -> None:
-    gate = {**_GOOD_GATE, "overfill_kwh": 5.0,
-            "overfill_slots": ["2024-01-15T20:00:00+00:00"]}
-    result = check_schedule(_gate_snap(gate))
-    assert not result.gate.ok
-    assert any("not a Discharge" in p for p in result.gate.problems)
 
 
 def test_gate_check_flags_a_stale_average() -> None:

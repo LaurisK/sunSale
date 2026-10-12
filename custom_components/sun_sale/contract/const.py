@@ -481,9 +481,9 @@ DEFAULT_SCHEDULE_LOAD_RESERVE = False
 DEFAULT_SCHEDULE_LOAD_RESERVE_DAYS = 3
 DEFAULT_SCHEDULE_LOAD_RESERVE_EXTRA_KWH = 0.0
 # Discharge gate: sell stored energy only above the running sell-price average,
-# plus the slots that make room for tomorrow's overfill. Dispatch-affecting,
-# hence off by default. The boost is the percentage added to tomorrow's
-# generation forecast before it is compared with the room left in the battery.
+# and plan for a stronger sun than forecast so the battery keeps room for it.
+# Dispatch-affecting, hence off by default. The boost is the percentage added to
+# every future slot's solar in the planner's policy.
 DEFAULT_SCHEDULE_DISCHARGE_GATE = False
 DEFAULT_SCHEDULE_OVERFILL_BOOST_PCT = 20.0
 
