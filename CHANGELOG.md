@@ -10,6 +10,8 @@ Any behavior-affecting change bumps the `version` in
 
 ## [Unreleased]
 
+## [0.8.1] — 2026-10-12
+
 ### Fixed
 - **"Discharge Above Average" no longer sells energy it then buys back, and
   makes room for the sun in the best-priced slots.** The second pass of v0.8.0
@@ -1072,7 +1074,8 @@ against real hardware — see the status note in [`README.md`](README.md).
   in the chart, and left out of the series-level statistics and every EMA quality
   bucket.
 
-[Unreleased]: https://github.com/LaurisK/sunSale/compare/v0.8.0...HEAD
+[Unreleased]: https://github.com/LaurisK/sunSale/compare/v0.8.1...HEAD
+[0.8.1]: https://github.com/LaurisK/sunSale/compare/v0.8.0...v0.8.1
 [0.8.0]: https://github.com/LaurisK/sunSale/compare/v0.7.2...v0.8.0
 [0.7.2]: https://github.com/LaurisK/sunSale/compare/v0.7.1...v0.7.2
 [0.7.1]: https://github.com/LaurisK/sunSale/compare/v0.7.0...v0.7.1
