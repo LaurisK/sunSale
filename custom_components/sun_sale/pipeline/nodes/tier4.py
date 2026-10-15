@@ -3,6 +3,7 @@ from __future__ import annotations
 
 import logging
 from dataclasses import replace
+from datetime import timedelta
 
 from ...contract.models import (
     BaseLoadProfile,
@@ -10,6 +11,7 @@ from ...contract.models import (
     BatteryState,
     CalculationResult,
     DegradationCost,
+    DerivedPowerHistory,
     ForecastQualityStore,
     GenerationSeries,
     InverterModeReading,
@@ -21,6 +23,7 @@ from ...contract.models import (
     Schedule,
     SchedulePolicy,
 )
+from ...inbound.observer.battery_trade import RealizedPrices, realized_trade_prices
 from .. import discharge_gate, forecast_accuracy, precharge
 from .. import schedule as schedule_module
 from ..dag_engine import DagNode, NodeContext
@@ -112,21 +115,36 @@ class ScheduleNode(DagNode):
         today = ctx.now.astimezone(ctx.config.local_tz).date()
         battery = _capped_battery(ctx.config.battery, policy)
 
-        # Folded every cycle, gate on or off, so the figure keeps learning and
-        # the coordinator persists it when the local day moves on (the same
-        # object comes back while the stored value is current).
+        # Both averages learn from what the battery really traded on the day that
+        # just ended (the derived-power samples, a stored primary read via
+        # ctx.get), so that pass only runs while one of them is due its daily
+        # fold. Folded every cycle, gate / precharge on or off, so the figures
+        # keep learning; the coordinator persists each when the local day moves
+        # on (the same object comes back while the stored value is current).
+        stored_sell = ctx.get(RunningSellAverage)
+        stored_buy = ctx.get(RunningBuyAverage)
+        realized = RealizedPrices(None, None)
+        history = ctx.get(DerivedPowerHistory)
+        if history is not None and any(
+            a is None or a.day < today for a in (stored_sell, stored_buy)
+        ):
+            realized = realized_trade_prices(
+                history, price_series, today - timedelta(days=1), ctx.config.local_tz,
+            )
+        # With no history at all the averages start at the favourable end of the
+        # confirmed prices: the lowest buy, the highest sell.
+        priced = price_series.priced_slots
         running_average = discharge_gate.fold_running_average(
-            ctx.get(RunningSellAverage),
-            price_series,
-            today,
-            ctx.config.local_tz,
+            stored_sell, realized.sell, today,
+            seed=max((s.sell_eur_kwh for s in priced), default=None),
         )
 
-        # The buy twin of the average above: folded every cycle so it keeps
-        # learning, while the precharge decision itself is made only when the
-        # feature is on and the planner may grid-charge at all.
+        # The buy twin of the average above; the precharge decision itself is
+        # made only when the feature is on and the planner may grid-charge at
+        # all.
         running_buy = precharge.fold_running_buy_average(
-            ctx.get(RunningBuyAverage), price_series, today, ctx.config.local_tz,
+            stored_buy, realized.buy, today,
+            seed=min((s.buy_eur_kwh for s in priced), default=None),
         )
         precharge_plan = Precharge(average=running_buy)
         if policy.precharge_enabled and policy.allow_grid_charging:

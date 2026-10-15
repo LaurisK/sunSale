@@ -10,8 +10,12 @@ the cheapest slots the plan left unused, as long as they are under the buy
 average.
 
 * **Running buy average.** One persisted figure, folded once per local day to
-  ``0.9 × previous + 0.1 × today's mean buy price`` — the same fold as the sell
-  average (:func:`pipeline.discharge_gate.fold_daily_value`).
+  ``0.9 × previous + 0.1 × yesterday's realized buy price`` — the kWh-weighted
+  mean buy price of the slots in which the battery really charged from the grid
+  (:func:`inbound.observer.battery_trade.realized_trade_prices`); a day with none
+  leaves it unchanged, and with no history at all it starts at the lowest known
+  buy price. The same fold as the sell average
+  (:func:`pipeline.discharge_gate.fold_daily_value`).
 * **Trigger.** Two facts here, both required: the forecast sun alone (see
   :func:`pipeline.schedule.sun_only_peak_soc`) does not lift the battery to the
   target within the look-ahead days, and a *confirmed* price slot still ahead
@@ -39,9 +43,9 @@ from .schedule import sun_only_peak_soc
 
 def fold_running_buy_average(
     stored: RunningBuyAverage | None,
-    price_series: PriceSeries,
+    realized: float | None,
     today: date,
-    local_tz: tzinfo,
+    seed: float | None = None,
 ) -> RunningBuyAverage | None:
     """Return the running buy average as of local ``today``.
 
@@ -51,20 +55,20 @@ def fold_running_buy_average(
 
     Args:
         stored: The persisted average, or ``None`` on a cold start.
-        price_series: Prices for the planning window; only today's priced slots
-            are read.
+        realized: Yesterday's realized mean buy price, or ``None`` when the
+            battery bought nothing from the grid.
         today: Local date the figure is wanted for.
-        local_tz: Timezone that decides which slots belong to ``today``.
+        seed: The lowest buy price currently known, used only when nothing is
+            stored and nothing was ever bought.
 
     Returns:
-        The average for ``today``; the unchanged ``stored`` when it is current or
-        when today has no priced slot yet (``None`` if there was nothing stored).
+        The average stamped ``today``; the unchanged ``stored`` when it is
+        already current, and ``None`` while there is no history and no price.
     """
     if stored is not None and stored.day >= today:
         return stored
     value = fold_daily_value(
-        stored.value_eur_kwh if stored is not None else None,
-        price_series, today, local_tz, lambda s: s.buy_eur_kwh,
+        stored.value_eur_kwh if stored is not None else None, realized, seed,
     )
     if value is None:
         return stored

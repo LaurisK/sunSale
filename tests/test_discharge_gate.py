@@ -20,10 +20,10 @@ from custom_components.sun_sale.contract.models import (
     BatteryState,
     CalculationResult,
     DegradationCost,
+    DerivedPowerHistory,
     GenerationSeries,
     GenerationSlot,
     PriceSeries,
-    PriceSlot,
     RunningSellAverage,
     Schedule,
     SchedulePolicy,
@@ -42,6 +42,7 @@ from tests.conftest import (
     default_battery_state,
     default_tariff_config,
     make_price,
+    make_trading_history,
 )
 
 NOW = BASE_DT                       # 2024-01-15 00:00 UTC
@@ -54,19 +55,6 @@ D = StorageMode.Discharge
 # ---------------------------------------------------------------------------
 # Helpers
 # ---------------------------------------------------------------------------
-
-
-def _slot(start: datetime, sell: float, *, priced: bool = True) -> PriceSlot:
-    """Build an hourly PriceSlot with the given sell price."""
-    return PriceSlot(
-        start=start, end=start + timedelta(hours=1), spot_eur_kwh=sell,
-        buy_eur_kwh=sell + 0.1, sell_eur_kwh=sell, sources=(), priced=priced,
-    )
-
-
-def _series(slots: list[PriceSlot]) -> PriceSeries:
-    """Wrap slots into a PriceSeries."""
-    return PriceSeries(slots=tuple(slots), resolution=timedelta(hours=1), computed_at=NOW)
 
 
 def _prices(day1: dict[int, float], day2: dict[int, float] | None = None,
@@ -116,49 +104,50 @@ def _sell_by_start(schedule: Schedule, prices) -> dict[datetime, float]:
 # ---------------------------------------------------------------------------
 
 
-def _day_series(today_sells: list[float], *, priced: bool = True) -> PriceSeries:
-    """Series whose only slots are today's, one per hour from 00:00 UTC."""
-    return _series([_slot(DAY1 + timedelta(hours=i), s, priced=priced)
-                    for i, s in enumerate(today_sells)])
-
-
-def test_cold_start_seeds_with_todays_mean():
-    got = discharge_gate.fold_running_average(None, _day_series([0.10, 0.30]), TODAY, UTC)
+def test_cold_start_seeds_with_the_realized_mean():
+    got = discharge_gate.fold_running_average(None, 0.20, TODAY)
     assert got == RunningSellAverage(value_eur_kwh=pytest.approx(0.20), day=TODAY)
 
 
 def test_new_day_keeps_ninety_percent_of_previous():
     stored = RunningSellAverage(value_eur_kwh=0.50, day=date(2024, 1, 14))
-    got = discharge_gate.fold_running_average(stored, _day_series([0.10, 0.30]), TODAY, UTC)
+    got = discharge_gate.fold_running_average(stored, 0.20, TODAY)
     assert got.value_eur_kwh == pytest.approx(0.9 * 0.50 + 0.1 * 0.20)
     assert got.day == TODAY
 
 
 def test_same_day_returns_the_stored_object_untouched():
     stored = RunningSellAverage(value_eur_kwh=0.50, day=TODAY)
-    got = discharge_gate.fold_running_average(stored, _day_series([9.0]), TODAY, UTC)
+    got = discharge_gate.fold_running_average(stored, 9.0, TODAY)
     assert got is stored            # identity is how the coordinator skips the save
 
 
 def test_a_stored_figure_from_the_future_is_not_rewound():
     stored = RunningSellAverage(value_eur_kwh=0.50, day=date(2024, 1, 16))
-    assert discharge_gate.fold_running_average(
-        stored, _day_series([0.1]), TODAY, UTC) is stored
+    assert discharge_gate.fold_running_average(stored, 0.1, TODAY) is stored
 
 
-def test_no_priced_slot_today_keeps_what_was_stored():
+def test_a_day_without_a_sale_keeps_the_value_and_moves_the_day():
     stored = RunningSellAverage(value_eur_kwh=0.50, day=date(2024, 1, 14))
-    # Only forecast-filled placeholders: they must not move the average.
-    series = _day_series([0.9, 0.9], priced=False)
-    assert discharge_gate.fold_running_average(stored, series, TODAY, UTC) is stored
-    assert discharge_gate.fold_running_average(None, series, TODAY, UTC) is None
+    got = discharge_gate.fold_running_average(stored, None, TODAY)
+    assert got == RunningSellAverage(value_eur_kwh=0.50, day=TODAY)
 
 
-def test_only_todays_local_day_counts():
-    other_day = _slot(DAY2, 5.0)        # tomorrow's price must not leak in
-    series = _series([_slot(DAY1, 0.10), other_day])
-    got = discharge_gate.fold_running_average(None, series, TODAY, UTC)
-    assert got.value_eur_kwh == pytest.approx(0.10)
+def test_nothing_ever_sold_and_no_price_leaves_the_average_unset():
+    assert discharge_gate.fold_running_average(None, None, TODAY) is None
+
+
+def test_a_fresh_start_with_no_trading_seeds_from_the_seed_price():
+    got = discharge_gate.fold_running_average(None, None, TODAY, seed=0.45)
+    assert got == RunningSellAverage(value_eur_kwh=0.45, day=TODAY)
+
+
+def test_the_seed_is_ignored_once_there_is_history():
+    realized = discharge_gate.fold_running_average(None, 0.20, TODAY, seed=0.45)
+    assert realized.value_eur_kwh == pytest.approx(0.20)
+    stored = RunningSellAverage(value_eur_kwh=0.50, day=date(2024, 1, 14))
+    kept = discharge_gate.fold_running_average(stored, None, TODAY, seed=0.99)
+    assert kept.value_eur_kwh == pytest.approx(0.50)
 
 
 # ---------------------------------------------------------------------------
@@ -323,11 +312,34 @@ def test_the_reported_trajectory_follows_the_real_forecast_not_the_boosted_one()
 # ---------------------------------------------------------------------------
 
 
-def _ctx(stored: RunningSellAverage | None, *, enabled: bool) -> NodeContext:
+YESTERDAY = DAY1 - timedelta(days=1)
+# The hours of yesterday the battery charged from / discharged to the grid, and
+# the spot price in each (the rest of yesterday sits at 0.10).
+_BOUGHT_HOUR, _BOUGHT_SPOT = 3, 0.05
+_SOLD_HOUR, _SOLD_SPOT = 18, 0.30
+
+
+def _yesterday_prices():
+    """Return 24 hourly PriceEntry rows for yesterday with a cheap and a dear hour."""
+    spots = {_BOUGHT_HOUR: _BOUGHT_SPOT, _SOLD_HOUR: _SOLD_SPOT}
+    return [make_price(h, spots.get(h, 0.10), YESTERDAY) for h in range(24)]
+
+
+def _trading_history() -> DerivedPowerHistory:
+    """Return yesterday's samples: grid charge in the cheap hour, grid sale in the dear one."""
+    return make_trading_history(YESTERDAY, bought_hour=_BOUGHT_HOUR, sold_hour=_SOLD_HOUR)
+
+
+def _ctx(
+    stored: RunningSellAverage | None, *, enabled: bool,
+    history: DerivedPowerHistory | None = None,
+) -> NodeContext:
     """A NodeContext holding exactly what ScheduleNode reads."""
     bc = default_battery_config()
     state = default_battery_state(0.9)
-    series = build_price_series(_prices(_TWO_PEAKS), default_tariff_config(), now=NOW)
+    series = build_price_series(
+        _yesterday_prices() + _prices(_TWO_PEAKS), default_tariff_config(), now=NOW,
+    )
     primary = {
         PriceSeries: series,
         CalculationResult: calculate(series, _gen({}), state, NOW),
@@ -341,19 +353,34 @@ def _ctx(stored: RunningSellAverage | None, *, enabled: bool) -> NodeContext:
         GenerationSeries: _gen({}),
         SchedulePolicy: SchedulePolicy(discharge_gate_enabled=enabled),
         RunningSellAverage: stored,
+        DerivedPowerHistory: history,
     }
     config = SimpleNamespace(local_tz=UTC, battery=bc, forecast_reserve_enabled=False)
     return NodeContext(primary=primary, secondary={}, config=config, now=NOW)
 
 
-async def test_node_seeds_the_average_on_a_cold_start():
+def _yesterday_sell(at_hour: int) -> float:
+    """Return the sell price the default tariff gives yesterday's ``at_hour`` slot."""
+    series = build_price_series(
+        _yesterday_prices() + _prices(_TWO_PEAKS), default_tariff_config(), now=NOW,
+    )
+    return next(s.sell_eur_kwh for s in series.slots if s.start == YESTERDAY.replace(hour=at_hour))
+
+
+async def test_node_seeds_a_fresh_start_with_the_highest_known_sell_price():
     schedule = await ScheduleNode()._compute(_ctx(None, enabled=False))
+    series = build_price_series(
+        _yesterday_prices() + _prices(_TWO_PEAKS), default_tariff_config(), now=NOW,
+    )
     avg = schedule.gate.average
     assert avg is not None and avg.day == TODAY
-    todays = [s.sell_eur_kwh for s in
-              build_price_series(_prices(_TWO_PEAKS), default_tariff_config(), now=NOW).slots
-              if s.start.date() == TODAY]
-    assert avg.value_eur_kwh == pytest.approx(sum(todays) / len(todays))
+    assert avg.value_eur_kwh == pytest.approx(max(s.sell_eur_kwh for s in series.slots))
+
+
+async def test_node_prefers_yesterdays_realized_sale_over_the_market_high():
+    schedule = await ScheduleNode()._compute(_ctx(None, enabled=False, history=_trading_history()))
+    assert schedule.gate.average.value_eur_kwh == pytest.approx(_yesterday_sell(_SOLD_HOUR))
+    assert schedule.gate.average.value_eur_kwh < 0.5     # the two-peak day sells at 0.575
 
 
 async def test_node_returns_the_stored_object_when_the_day_has_not_changed():
@@ -365,7 +392,15 @@ async def test_node_returns_the_stored_object_when_the_day_has_not_changed():
 
 async def test_node_folds_when_the_day_moves_on():
     stored = RunningSellAverage(value_eur_kwh=0.30, day=date(2024, 1, 14))
-    schedule = await ScheduleNode()._compute(_ctx(stored, enabled=True))
+    schedule = await ScheduleNode()._compute(
+        _ctx(stored, enabled=True, history=_trading_history()))
     assert schedule.gate.average is not stored
     assert schedule.gate.average.day == TODAY
-    assert schedule.gate.average.value_eur_kwh != pytest.approx(0.30)
+    assert schedule.gate.average.value_eur_kwh == pytest.approx(
+        0.9 * 0.30 + 0.1 * _yesterday_sell(_SOLD_HOUR))
+
+
+async def test_node_moves_only_the_day_when_nothing_was_sold():
+    stored = RunningSellAverage(value_eur_kwh=0.30, day=date(2024, 1, 14))
+    schedule = await ScheduleNode()._compute(_ctx(stored, enabled=True))
+    assert schedule.gate.average == RunningSellAverage(value_eur_kwh=0.30, day=TODAY)

@@ -804,10 +804,10 @@
 
       el.innerHTML = `
         <span class="label">Running avg:</span>
-        <span title="Running buy-price average (0.9 × previous + 0.1 × today's mean, updated daily). Precharge buys only in slots priced under it.">
+        <span title="Running buy-price average: the price the battery really paid charging from the grid (0.9 × previous + 0.1 × yesterday's, updated daily). Precharge buys only in slots priced under it.">
           <span class="label">buy</span> <span class="buy">${fmt(buy)}</span>
         </span>
-        <span title="Running sell-price average (0.9 × previous + 0.1 × today's mean, updated daily). Discharge above average sells only in slots priced at or above it.">
+        <span title="Running sell-price average: the price the battery really sold at discharging to the grid (0.9 × previous + 0.1 × yesterday's, updated daily). Discharge above average sells only in slots priced at or above it.">
           <span class="label">sell</span> <span class="sell">${fmt(sell)}</span>
         </span>
         <span class="unit">${this._currencySymbol}/kWh</span>
@@ -1103,9 +1103,9 @@
       { key: 'load_reserve',           label: 'Load reserve',           match: ['load_reserve'],
         info: 'When on, charge the house will need over the next three days (load forecast solar will not cover) is valued at buy price at the end of the plan, so the planner stops selling it at an evening peak only to buy it back overnight.' },
       { key: 'discharge_gate',         label: 'Discharge above average', match: ['discharge_above_average'],
-        info: 'When on, stored energy is sold to the grid only in slots priced at or above the running sell-price average (0.9 × previous + 0.1 × today\'s mean, updated daily). The plan is also built for a stronger sun than forecast (the overfill boost), so the battery keeps room for it: less grid charging overnight and the stored energy sold in the best-priced slots.' },
+        info: 'When on, stored energy is sold to the grid only in slots priced at or above the running sell-price average (0.9 × previous + 0.1 × yesterday\'s realized sale price, updated daily). The plan is also built for a stronger sun than forecast (the overfill boost), so the battery keeps room for it: less grid charging overnight and the stored energy sold in the best-priced slots.' },
       { key: 'precharge',             label: 'Precharge below average', match: ['precharge_below_average'],
-        info: 'When on, and the forecast sun over the next Precharge days would not lift the battery to the Precharge target SoC, and the plan\'s own charging stops short of it, and a confirmed price slot buys below the running buy-price average (0.9 × previous + 0.1 × today\'s mean, updated daily), the planner buys the missing charge in the cheapest slots the plan left unused, as long as they are under that average. For the dark months: charge in hand for prices beyond the plan.' },
+        info: 'When on, and the forecast sun over the next Precharge days would not lift the battery to the Precharge target SoC, and the plan\'s own charging stops short of it, and a confirmed price slot buys below the running buy-price average (0.9 × previous + 0.1 × yesterday\'s realized purchase price, updated daily), the planner buys the missing charge in the cheapest slots the plan left unused, as long as they are under that average. For the dark months: charge in hand for prices beyond the plan.' },
     ];
 
     _SCHEDULE_NUMBERS = [

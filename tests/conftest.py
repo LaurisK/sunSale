@@ -251,6 +251,8 @@ _const_mod.STATE_UNAVAILABLE = "unavailable"
 from custom_components.sun_sale.contract.models import (  # noqa: E402  (after HA stubs)
     BatteryConfig,
     BatteryState,
+    DerivedPowerHistory,
+    DerivedPowerSample,
     PriceEntry,
     PriceFormula,
     SolarForecast,
@@ -273,6 +275,35 @@ def make_price(hour: int, price: float, base: datetime = BASE_DT) -> PriceEntry:
 def make_solar(hour: int, kwh: float, base: datetime = BASE_DT) -> SolarForecast:
     start = base.replace(hour=hour, minute=0, second=0, microsecond=0)
     return SolarForecast(start=start, end=start + timedelta(hours=1), generation_kwh=kwh)
+
+
+def make_trading_history(
+    day: datetime, *, bought_hour: int, sold_hour: int, kw: float = 3.0,
+) -> DerivedPowerHistory:
+    """Build one day of 5-minute power samples with a grid charge and a grid sale.
+
+    The battery charges from the grid at ``kw`` through ``bought_hour`` and
+    discharges the same amount to it through ``sold_hour``; every other hour is
+    idle.
+
+    Args:
+        day: UTC midnight the samples start at.
+        bought_hour: Hour of the day the battery charges from the grid.
+        sold_hour: Hour of the day the battery discharges to the grid.
+        kw: Battery power in the two trading hours.
+
+    Returns:
+        The day's samples, ascending.
+    """
+    samples = []
+    for i in range(24 * 12):
+        ts = day + timedelta(minutes=5 * i)
+        battery = kw if ts.hour == bought_hour else -kw if ts.hour == sold_hour else 0.0
+        samples.append(DerivedPowerSample(
+            timestamp=ts, ac_port_kw_signed=0.0, backup_kw=0.0,
+            grid_net_kw_signed=battery, solar_kw=0.0, battery_kw_signed=battery,
+        ))
+    return DerivedPowerHistory(samples=tuple(samples))
 
 
 # ---------------------------------------------------------------------------

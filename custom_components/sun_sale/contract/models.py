@@ -268,10 +268,11 @@ class TerminalValuation:
 class RunningSellAverage:
     """Persisted primary: the running sell-price average, as of one local day.
 
-    Each local day it moves to ``0.9 × previous + 0.1 × that day's mean sell
-    price`` (``pipeline.discharge_gate.fold_running_average``). ``day`` is the
-    watermark that makes the update happen once per day however often the
-    cycle runs.
+    Each local day it moves to ``0.9 × previous + 0.1 × yesterday's realized
+    sell price`` — the kWh-weighted mean sell price of the slots the battery
+    really discharged to the grid in
+    (``pipeline.discharge_gate.fold_running_average``). ``day`` is the watermark
+    that makes the update happen once per day however often the cycle runs.
     """
     value_eur_kwh: float
     day: date
@@ -293,7 +294,8 @@ class RunningBuyAverage:
     """Persisted primary: the running buy-price average, as of one local day.
 
     The buy-side twin of :class:`RunningSellAverage` — the same ``0.9 × previous
-    + 0.1 × that day's mean`` fold, once per local day
+    + 0.1 × yesterday's realized`` fold over the slots the battery really charged
+    from the grid in, once per local day
     (``pipeline.precharge.fold_running_buy_average``).
     """
     value_eur_kwh: float

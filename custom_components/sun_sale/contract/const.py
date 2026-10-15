@@ -304,8 +304,11 @@ COUNTER_SNAPSHOT_HISTORY_RETENTION_DAYS = 2
 # Persistent storage keys for the new observed-series stores.
 STORAGE_KEY_BAKED_OBSERVED = f"{DOMAIN}_baked_observed"
 STORAGE_KEY_COUNTER_SNAPSHOT = f"{DOMAIN}_counter_snapshot"
-STORAGE_KEY_SELL_AVERAGE = f"{DOMAIN}_sell_average"
-STORAGE_KEY_BUY_AVERAGE = f"{DOMAIN}_buy_average"
+# The running averages hold the price the battery really traded at. The keys were
+# renamed when they stopped being the mean of every slot's price, so a figure
+# stored under the old meaning is never blended into the new one.
+STORAGE_KEY_SELL_AVERAGE = f"{DOMAIN}_realized_sell_average"
+STORAGE_KEY_BUY_AVERAGE = f"{DOMAIN}_realized_buy_average"
 
 # Bake-in source-kind discriminator values stored in BakedDayRecord.source_kind.
 SOURCE_KIND_DEDICATED_SENSOR = "dedicated_sensor"

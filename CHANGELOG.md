@@ -10,6 +10,25 @@ Any behavior-affecting change bumps the `version` in
 
 ## [Unreleased]
 
+### Changed
+- **The running buy / sell averages are now the prices the battery really traded
+  at.** Both were the mean of *every* slot's price, so the buy average sat far
+  above, and the sell average far below, anything the battery actually paid or
+  earned (live 2026-10-15: buy 0.380 against sell 0.058, with the day's own
+  means at 0.380 / 0.177). Each local day they now fold in *yesterday's*
+  realized price: the kWh-weighted buy (sell) price — the formula price the
+  chart shows, not the raw spot — of the slots in which the battery charged from
+  the grid (discharged to it), read from the persisted battery and grid power
+  samples (`inbound/observer/battery_trade.py`). A day with no such slot leaves
+  the average alone. With no history at all they start from the lowest known buy
+  price and the highest known sell price. The storage keys changed
+  (`…_realized_sell_average`, `…_realized_buy_average`), so the previous values —
+  means of every slot — are dropped on upgrade and relearned from yesterday at
+  once. Needs the derived-power inputs (AC port + backup + PV sensors); without
+  them there is no history and the averages stay at the seed. With the gate on
+  every realized sale is at or above the sell average, so it can only drift up
+  (and the buy one down under Precharge); `CLAUDE.md` records this.
+
 ## [0.9.0] — 2026-10-15
 
 ### Added

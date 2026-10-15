@@ -204,8 +204,8 @@ class DischargeGateSwitch(_SunSaleSwitchBase):
     """When on the scheduler sells stored energy only above the running sell average.
 
     Discharge-to-grid is then offered only in slots selling at or above the
-    running sell-price average (0.9 × previous + 0.1 × today's mean, updated
-    daily). The plan is also built for a stronger sun than forecast (the
+    running sell-price average (0.9 × previous + 0.1 × the price yesterday's
+    discharges to the grid really sold at, updated daily). The plan is also built for a stronger sun than forecast (the
     overfill boost), so the battery is left room for the surplus: less grid
     charging overnight, and stored energy sold in the best-priced slots.
     Dispatch-affecting, hence OFF by default.
@@ -224,7 +224,8 @@ class PrechargeSwitch(_SunSaleSwitchBase):
     If the next Precharge Days of forecast solar would not lift the battery to
     the Precharge Target SoC, the plan's own charging stops short of it, and a
     confirmed price slot buys below the running buy-price average (0.9 ×
-    previous + 0.1 × today's mean, updated daily), the planner plans again with
+    previous + 0.1 × the price yesterday's grid charging really paid, updated
+    daily), the planner plans again with
     the missing energy worth that average at the end of its horizon — so the
     unused slots under the average fill up. Meant for the dark months, to have
     charge in hand for prices beyond the plan's reach. Dispatch-affecting, hence
