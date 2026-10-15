@@ -27,6 +27,7 @@ from typing import Any
 from ..contract.const import (
     STORAGE_KEY_ARRAY_CALIBRATION,
     STORAGE_KEY_BAKED_OBSERVED,
+    STORAGE_KEY_BUY_AVERAGE,
     STORAGE_KEY_CONSUMPTION_DAILY,
     STORAGE_KEY_COUNTER_SNAPSHOT,
     STORAGE_KEY_FORECAST_QUALITY,
@@ -58,6 +59,7 @@ from ..contract.models import (
     PriceDayRecord,
     PriceEntry,
     PriceErrorPoint,
+    RunningBuyAverage,
     RunningSellAverage,
     SlotKwh,
     SolarEntry,
@@ -695,10 +697,31 @@ def _deserialize_sell_average(d: dict) -> RunningSellAverage | None:
         schedule then reseeds it from today's prices, which is a better start
         than a fabricated zero that would gate nothing.
     """
+    return _average_from_dict(d, RunningSellAverage)
+
+
+def _serialize_buy_average(avg: RunningBuyAverage) -> dict:
+    """Serialise the running buy-price average with its local-day watermark."""
+    return {"value": avg.value_eur_kwh, "day": avg.day.isoformat()}
+
+
+def _deserialize_buy_average(d: dict) -> RunningBuyAverage | None:
+    """Rebuild the running buy-price average from its stored dict.
+
+    Args:
+        d: Dict from HA's Store.async_load().
+
+    Returns:
+        The restored average, or ``None`` when the payload is unusable — the
+        schedule then reseeds it from today's prices.
+    """
+    return _average_from_dict(d, RunningBuyAverage)
+
+
+def _average_from_dict(d: dict, cls: type) -> Any:
+    """Build a ``{value, day}`` running average of type ``cls``, or ``None`` if unusable."""
     try:
-        return RunningSellAverage(
-            value_eur_kwh=float(d["value"]), day=date.fromisoformat(d["day"]),
-        )
+        return cls(value_eur_kwh=float(d["value"]), day=date.fromisoformat(d["day"]))
     except (KeyError, TypeError, ValueError):
         return None
 
@@ -794,5 +817,10 @@ SINGLETON_STORE_SPECS: tuple[SingletonStoreSpec, ...] = (
         storage_key=STORAGE_KEY_SELL_AVERAGE,
         serialize=_serialize_sell_average,
         deserialize=_deserialize_sell_average,
+    ),
+    SingletonStoreSpec(
+        storage_key=STORAGE_KEY_BUY_AVERAGE,
+        serialize=_serialize_buy_average,
+        deserialize=_deserialize_buy_average,
     ),
 )

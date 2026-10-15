@@ -28,6 +28,7 @@ import pytest
 from custom_components.sun_sale.contract.const import (
     STORAGE_KEY_ARRAY_CALIBRATION,
     STORAGE_KEY_BAKED_OBSERVED,
+    STORAGE_KEY_BUY_AVERAGE,
     STORAGE_KEY_CONSUMPTION_DAILY,
     STORAGE_KEY_COUNTER_SNAPSHOT,
     STORAGE_KEY_FORECAST_QUALITY,
@@ -59,6 +60,7 @@ from custom_components.sun_sale.contract.models import (
     PriceCurveHistory,
     PriceDayRecord,
     PriceEntry,
+    RunningBuyAverage,
     RunningSellAverage,
     SlotKwh,
     SolarEntry,
@@ -266,6 +268,11 @@ def _rep_sell_average() -> RunningSellAverage:
     return RunningSellAverage(value_eur_kwh=-0.0125, day=date(2026, 7, 10))
 
 
+def _rep_buy_average() -> RunningBuyAverage:
+    """Return a running buy-price average with a typical positive value."""
+    return RunningBuyAverage(value_eur_kwh=0.1175, day=date(2026, 7, 10))
+
+
 # storage_key -> representative singleton value
 _SINGLETON_REPRESENTATIVE = {
     STORAGE_KEY_CONSUMPTION_DAILY: _rep_consumption_daily,
@@ -279,6 +286,7 @@ _SINGLETON_REPRESENTATIVE = {
     STORAGE_KEY_COUNTER_SNAPSHOT: _rep_counter_snapshot,
     STORAGE_KEY_BAKED_OBSERVED: _rep_baked_observed,
     STORAGE_KEY_SELL_AVERAGE: _rep_sell_average,
+    STORAGE_KEY_BUY_AVERAGE: _rep_buy_average,
 }
 
 
@@ -369,9 +377,10 @@ def test_golden_payload_deserializes(spec):
     assert restored == _SINGLETON_REPRESENTATIVE[spec.storage_key]()
 
 
-def test_sell_average_unusable_payload_loads_as_none():
+@pytest.mark.parametrize("key", [STORAGE_KEY_SELL_AVERAGE, STORAGE_KEY_BUY_AVERAGE])
+def test_running_average_unusable_payload_loads_as_none(key):
     """A malformed payload becomes None so the schedule reseeds, never a fake zero."""
-    spec = next(sp for sp in SINGLETON_STORE_SPECS if sp.storage_key == STORAGE_KEY_SELL_AVERAGE)
+    spec = next(sp for sp in SINGLETON_STORE_SPECS if sp.storage_key == key)
     for bad in ({}, {"value": "x", "day": "2026-07-10"}, {"value": 0.1, "day": "nope"}, {"value": 0.1}):
         assert spec.deserialize(bad) is None
 

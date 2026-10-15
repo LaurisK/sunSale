@@ -28,6 +28,7 @@ class ScheduleCheckResult:
     overall_ok: bool = True
     terminal: TerminalCheck | None = None
     gate: GateCheck | None = None
+    precharge: PrechargeCheck | None = None
 
 
 # Tolerances for the terminal recompute. Prices reach the debug view rounded to
@@ -64,6 +65,20 @@ class GateCheck:
     active: bool = False
     average_eur_kwh: float | None = None
     below_average_discharges: int = 0
+    problems: list[str] = field(default_factory=list)
+    skip_reason: str = ""
+    ok: bool = True
+
+
+@dataclass
+class PrechargeCheck:
+    """Declared precharge state vs the prices and terminal valuation it implies."""
+
+    enabled: bool = False
+    active: bool = False
+    average_eur_kwh: float | None = None
+    target_soc: float | None = None
+    peak_soc: float | None = None
     problems: list[str] = field(default_factory=list)
     skip_reason: str = ""
     ok: bool = True
@@ -161,7 +176,93 @@ def check_schedule(snap: Snapshot) -> ScheduleCheckResult:
             result.mismatches.append("gate")
             result.overall_ok = False
 
+    precharge = schedule.get("precharge")
+    if precharge is not None:
+        result.precharge = _check_precharge(
+            snap, precharge, schedule.get("terminal") or {}, policy,
+        )
+        if not result.precharge.ok:
+            result.mismatches.append("precharge")
+            result.overall_ok = False
+
     return result
+
+
+def _check_precharge(
+    snap: Snapshot, precharge: dict, terminal: dict, policy: dict,
+) -> PrechargeCheck:
+    """Cross-check the precharge's declared state against prices and the terminal tier.
+
+    The invariants are what the feature promises: it holds charge only while the
+    sun-only walk peaks under the target *and* a confirmed slot still ahead buys
+    below the running buy average, and then prices the deficit tier so that a
+    slot under the average (wear included, never below the flat value) clears
+    it. The average's own daily update is not recomputable from a snapshot, so
+    only its date is checked.
+
+    Args:
+        snap: Coordinator snapshot.
+        precharge: ``outputs.schedule.precharge`` block.
+        terminal: ``outputs.schedule.terminal`` block (may be empty).
+        policy: ``pipeline.schedule_policy`` block.
+
+    Returns:
+        PrechargeCheck with the declared figures and any broken invariant.
+    """
+    pc = PrechargeCheck(
+        enabled=bool(policy.get("precharge_enabled"))
+        and bool(policy.get("allow_grid_charging", True)),
+        active=bool(precharge.get("active")),
+        average_eur_kwh=precharge.get("average_eur_kwh"),
+        target_soc=precharge.get("target_soc"),
+        peak_soc=precharge.get("peak_soc"),
+    )
+    held_kwh = terminal.get("precharge_kwh") or 0.0
+    held_eur = terminal.get("precharge_eur_kwh") or 0.0
+
+    if not pc.active:
+        if held_kwh > _KWH_TOL:
+            pc.problems.append("a precharge tier is held while inactive")
+        pc.ok = not pc.problems
+        return pc
+    if not pc.enabled:
+        pc.problems.append("precharge shaped the plan while switched off")
+    if pc.average_eur_kwh is None:
+        pc.problems.append("active without an average")
+        pc.ok = False
+        return pc
+    if held_kwh <= _KWH_TOL:
+        pc.problems.append("active but no precharge tier is held")
+    flat = terminal.get("flat_eur_kwh") or 0.0
+    wear = snap.pipeline.get("degradation_cost_per_kwh") or 0.0
+    expected = max(pc.average_eur_kwh + wear, flat)
+    if abs(held_eur - expected) > _EUR_TOL:
+        pc.problems.append(
+            f"tier valued at {held_eur:.4f}, expected max(average + wear, flat) "
+            f"{expected:.4f}",
+        )
+    if pc.peak_soc is None or pc.target_soc is None or pc.peak_soc >= pc.target_soc:
+        pc.problems.append("active although the sun-only walk reaches the target")
+
+    tz = ZoneInfo(snap.config.get("time_zone") or "UTC")
+    computed_at = (snap.outputs.get("schedule") or {}).get("computed_at")
+    if computed_at and precharge.get("average_day"):
+        now = datetime.fromisoformat(computed_at)
+        today = now.astimezone(tz).date().isoformat()
+        if precharge["average_day"] != today:
+            pc.problems.append(f"average is from {precharge['average_day']}, not {today}")
+        pricing = snap.pipeline.get("pricing") or {}
+        step = timedelta(seconds=pricing.get("resolution_s") or 3600)
+        cheap_ahead = any(
+            r.get("priced") and not r.get("forecast")
+            and datetime.fromisoformat(r["start"]) + step > now
+            and r["buy"] < pc.average_eur_kwh - _EUR_TOL
+            for r in pricing.get("slots") or []
+        )
+        if not cheap_ahead:
+            pc.problems.append("no confirmed slot ahead buys below the average")
+    pc.ok = not pc.problems
+    return pc
 
 
 def _check_gate(
@@ -529,6 +630,19 @@ class ScheduleCheckWidget(Static):
                     f"  discharge gate: [{g_style}]{state}[/{g_style}]"
                     + (f"  ({'; '.join(gate.problems)})" if gate.problems else "")
                     + (f"  ({gate.skip_reason})" if gate.skip_reason else ""),
+                    markup=True,
+                )
+            pre = sc.precharge
+            if pre is not None:
+                p_style = "green" if pre.ok else "red"
+                p_state = (
+                    f"avg {pre.average_eur_kwh:.4f}€, target {pre.target_soc:.0%}"
+                    if pre.active else "off"
+                )
+                yield Static(
+                    f"  precharge: [{p_style}]{p_state}[/{p_style}]"
+                    + (f"  ({'; '.join(pre.problems)})" if pre.problems else "")
+                    + (f"  ({pre.skip_reason})" if pre.skip_reason else ""),
                     markup=True,
                 )
             yield _SocSparkline(soc_values)

@@ -43,6 +43,7 @@ from custom_components.sun_sale.contract.models import (
     PriceHistory,
     PvPowerHistory,
     PvPowerReading,
+    RunningBuyAverage,
     RunningSellAverage,
     SchedulePolicy,
     SolarData,
@@ -309,6 +310,7 @@ def test_stored_primaries_seeds_all_keys_with_defaults():
     assert isinstance(primary[SunTimes], SunTimes)
     # None = cold start; the schedule seeds the average from today's prices.
     assert primary[RunningSellAverage] is None
+    assert primary[RunningBuyAverage] is None
 
 
 def test_stored_primaries_injects_the_persisted_sell_average():
@@ -486,3 +488,48 @@ def test_schedule_policy_passes_discharge_gate_and_converts_boost_to_a_fraction(
         )).seed(primary, _NOW)
         assert primary[SchedulePolicy].discharge_gate_enabled is True
         assert primary[SchedulePolicy].overfill_boost == pytest.approx(want)
+
+
+def test_stored_primaries_injects_the_persisted_buy_average():
+    """seed hands the schedule the stored running buy average unchanged."""
+    avg = RunningBuyAverage(value_eur_kwh=0.14, day=_NOW.date())
+    primary = {}
+    StoredPrimariesStep(
+        baked_store=FakeStore(value=None),
+        monthly_bill_store=FakeStore(value=None),
+        price_history_store=FakeStore(value=None),
+        price_curve_store=FakeStore(value=None),
+        forecast_quality_store=FakeStore(value=None),
+        array_calibration_store=FakeStore(value=None),
+        mode_history_store=FakeStore(value=None),
+        read_sun_times=lambda now: SunTimes(today_sunrise=None, today_sunset=None),
+        buy_average_store=FakeStore(value=avg),
+    ).seed(primary, _NOW)
+    assert primary[RunningBuyAverage] is avg
+
+
+def test_schedule_policy_passes_precharge_and_clamps_its_knobs():
+    """The switch is forwarded (default off); days are whole 1–7, the target a 10–100 % fraction."""
+    base = dict(
+        use_standby=True, allow_grid_charging=True, allow_feed_in=True,
+        allow_discharge_to_grid=True,
+        mode_change_penalty_eur_per_kwh=0.005,
+        profitability_tilt_alpha=0.5,
+        terminal_value_discount=0.5,
+        max_discharge_to_grid_kw=None,
+    )
+    primary = {}
+    SchedulePolicyStep(lambda: ScheduleKnobs(**base)).seed(primary, _NOW)
+    pol = primary[SchedulePolicy]
+    assert pol.precharge_enabled is False
+    assert (pol.precharge_days, pol.precharge_target_soc) == (3, pytest.approx(0.8))
+    for days, pct, want_days, want_soc in (
+        (5.0, 65.0, 5, 0.65), (0.0, 0.0, 1, 0.10), (30.0, 250.0, 7, 1.0), (2.6, 80.0, 3, 0.8),
+    ):
+        SchedulePolicyStep(lambda d=days, p=pct: ScheduleKnobs(
+            **base, precharge_enabled=True, precharge_days=d, precharge_target_soc_pct=p,
+        )).seed(primary, _NOW)
+        pol = primary[SchedulePolicy]
+        assert pol.precharge_enabled is True
+        assert isinstance(pol.precharge_days, int) and pol.precharge_days == want_days
+        assert pol.precharge_target_soc == pytest.approx(want_soc)

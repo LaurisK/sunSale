@@ -1064,6 +1064,8 @@
         info: 'When on, charge the house will need over the next three days (load forecast solar will not cover) is valued at buy price at the end of the plan, so the planner stops selling it at an evening peak only to buy it back overnight.' },
       { key: 'discharge_gate',         label: 'Discharge above average', match: ['discharge_above_average'],
         info: 'When on, stored energy is sold to the grid only in slots priced at or above the running sell-price average (0.9 × previous + 0.1 × today\'s mean, updated daily). The plan is also built for a stronger sun than forecast (the overfill boost), so the battery keeps room for it: less grid charging overnight and the stored energy sold in the best-priced slots.' },
+      { key: 'precharge',             label: 'Precharge below average', match: ['precharge_below_average'],
+        info: 'When on, and the forecast sun over the next Precharge days would not lift the battery to the Precharge target SoC, and the plan\'s own charging stops short of it, and a confirmed price slot buys below the running buy-price average (0.9 × previous + 0.1 × today\'s mean, updated daily), the planner buys the missing charge in the cheapest slots the plan left unused, as long as they are under that average. For the dark months: charge in hand for prices beyond the plan.' },
     ];
 
     _SCHEDULE_NUMBERS = [
@@ -1081,6 +1083,10 @@
         info: 'Extra energy the load reserve keeps on top of the house load, e.g. an EV charge the house-load profile does not see. Only used while the Load reserve switch is on.' },
       { key: 'overfill_boost',         label: 'Overfill generation boost', match: ['overfill_generation_boost'], unit: '%',
         info: 'Percent added to the generation forecast when the planner decides how much room to keep in the battery. Higher → less grid charging and more energy sold before the sun to make room. Only used while the Discharge above average switch is on.' },
+      { key: 'precharge_days',         label: 'Precharge days',         match: ['precharge_days'], unit: 'd',
+        info: 'How many days of forecast solar the precharge checks (1–7). If the sun alone reaches the target SoC within them, nothing is pre-bought. Days the forecast does not reach end the check. Only used while the Precharge below average switch is on.' },
+      { key: 'precharge_target_soc',   label: 'Precharge target SoC',   match: ['precharge_target_soc'], unit: '%',
+        info: 'Battery level the precharge holds at the end of the plan when the forecast sun will not reach it. Only used while the Precharge below average switch is on.' },
     ];
 
     _SCHEDULE_SELECTS = [

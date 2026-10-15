@@ -305,6 +305,7 @@ COUNTER_SNAPSHOT_HISTORY_RETENTION_DAYS = 2
 STORAGE_KEY_BAKED_OBSERVED = f"{DOMAIN}_baked_observed"
 STORAGE_KEY_COUNTER_SNAPSHOT = f"{DOMAIN}_counter_snapshot"
 STORAGE_KEY_SELL_AVERAGE = f"{DOMAIN}_sell_average"
+STORAGE_KEY_BUY_AVERAGE = f"{DOMAIN}_buy_average"
 
 # Bake-in source-kind discriminator values stored in BakedDayRecord.source_kind.
 SOURCE_KIND_DEDICATED_SENSOR = "dedicated_sensor"
@@ -486,6 +487,13 @@ DEFAULT_SCHEDULE_LOAD_RESERVE_EXTRA_KWH = 0.0
 # every future slot's solar in the planner's policy.
 DEFAULT_SCHEDULE_DISCHARGE_GATE = False
 DEFAULT_SCHEDULE_OVERFILL_BOOST_PCT = 20.0
+# Precharge: when the next `days` days of forecast solar will not lift the
+# battery to the target SoC and confirmed prices dip below the running buy-price
+# average, hold the target at the end of the horizon (bought in the cheap
+# slots). Dispatch-affecting, hence off by default.
+DEFAULT_SCHEDULE_PRECHARGE = False
+DEFAULT_SCHEDULE_PRECHARGE_DAYS = 3
+DEFAULT_SCHEDULE_PRECHARGE_TARGET_SOC_PCT = 80.0
 
 # Numeric schedule-policy knobs. Values mirror the in-module DEFAULT_* used by
 # pipeline/schedule.py so that the user-facing entities start at the same
@@ -527,3 +535,9 @@ SCHEDULE_LOAD_RESERVE_EXTRA_KWH_MIN = 0.0
 SCHEDULE_LOAD_RESERVE_EXTRA_KWH_MAX = 100.0
 SCHEDULE_OVERFILL_BOOST_PCT_MIN = 0.0
 SCHEDULE_OVERFILL_BOOST_PCT_MAX = 100.0
+# Precharge: the forecast's daily totals run today … d6, so a week is the most
+# the look-ahead can see.
+SCHEDULE_PRECHARGE_DAYS_MIN = 1
+SCHEDULE_PRECHARGE_DAYS_MAX = 7
+SCHEDULE_PRECHARGE_TARGET_SOC_PCT_MIN = 10.0
+SCHEDULE_PRECHARGE_TARGET_SOC_PCT_MAX = 100.0

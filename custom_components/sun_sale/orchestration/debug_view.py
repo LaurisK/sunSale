@@ -560,6 +560,9 @@ def _coordinator_to_dict(entry_id: str, coordinator: Any) -> dict:
                 "load_reserve_extra_kwh":  round(float(coordinator.load_reserve_extra_kwh), 4),
                 "discharge_gate_enabled":  bool(coordinator.discharge_gate_enabled),
                 "overfill_boost_pct":      round(float(coordinator.overfill_boost_pct), 2),
+                "precharge_enabled":       bool(coordinator.precharge_enabled),
+                "precharge_days":          int(coordinator.precharge_days),
+                "precharge_target_soc_pct": round(float(coordinator.precharge_target_soc_pct), 2),
                 "mode_change_penalty_eur_per_kwh": round(
                     float(coordinator.mode_change_penalty_eur_per_kwh), 6,
                 ),
@@ -601,6 +604,8 @@ def _coordinator_to_dict(entry_id: str, coordinator: Any) -> dict:
                     "reserve_kwh": round(schedule.terminal.reserve_kwh, 4),
                     "reserve_eur_kwh": round(schedule.terminal.reserve_eur_kwh, 6),
                     "flat_eur_kwh": round(schedule.terminal.flat_eur_kwh, 6),
+                    "precharge_kwh": round(schedule.terminal.precharge_kwh, 4),
+                    "precharge_eur_kwh": round(schedule.terminal.precharge_eur_kwh, 6),
                 } if schedule.terminal is not None else None,
                 "gate": {
                     "active": schedule.gate.active,
@@ -613,6 +618,23 @@ def _coordinator_to_dict(entry_id: str, coordinator: Any) -> dict:
                         if schedule.gate.average is not None else None
                     ),
                 } if schedule.gate is not None else None,
+                "precharge": {
+                    "active": schedule.precharge.active,
+                    "target_soc": round(schedule.precharge.target_soc, 4),
+                    "peak_soc": (
+                        round(schedule.precharge.peak_soc, 4)
+                        if schedule.precharge.peak_soc is not None else None
+                    ),
+                    "shortfall_kwh": round(schedule.precharge.shortfall_kwh, 4),
+                    "average_eur_kwh": (
+                        round(schedule.precharge.average.value_eur_kwh, 6)
+                        if schedule.precharge.average is not None else None
+                    ),
+                    "average_day": (
+                        schedule.precharge.average.day.isoformat()
+                        if schedule.precharge.average is not None else None
+                    ),
+                } if schedule.precharge is not None else None,
             } if schedule is not None else None,
             "inverter_mode": _inverter_mode_block(data, coordinator),
         },

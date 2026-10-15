@@ -18,6 +18,10 @@ Scope:
     the running sell average and every future slot's solar raised by the overfill
     boost, so the plan leaves room for a stronger sun than forecast (see
     ``pipeline.discharge_gate``).
+  - precharge (opt-in): when the plain plan's peak SoC (and the sun beyond it)
+    falls short of a target, the DP is run once more with the missing energy
+    valued at the horizon end, so the leftover cheap slots fill up to the target
+    (see ``pipeline.precharge``).
 
 The DP recurrence:
 
@@ -31,6 +35,7 @@ at the exact SoC to keep rewards and projected SoC continuous.
 """
 from __future__ import annotations
 
+import math
 from dataclasses import replace
 from datetime import date, datetime, timedelta, tzinfo
 from statistics import median
@@ -44,6 +49,7 @@ from ..contract.models import (
     CalculationResult,
     DischargeGate,
     GenerationSeries,
+    Precharge,
     PriceSeries,
     PriceSlot,
     ProfitabilityScore,
@@ -170,6 +176,7 @@ def optimize_schedule(
     running_average: RunningSellAverage | None = None,
     discharge_gate_enabled: bool = False,
     overfill_boost: float = DEFAULT_OVERFILL_BOOST,
+    precharge: Precharge | None = None,
 ) -> Schedule:
     """Compute a future StorageMode schedule via SoC-bucketed dynamic programming.
 
@@ -232,6 +239,13 @@ def optimize_schedule(
         overfill_boost: Fraction added to every future slot's solar for the
             DP's policy (0.2 = +20 %). The reported SoC trajectory and rewards
             still use the real forecast. Read only with the gate on.
+        precharge: The precharge trigger from :func:`pipeline.precharge.plan_precharge`.
+            When ``active`` (the sun will not reach the target and a confirmed
+            cheap slot is ahead) and grid charging is allowed, the plain plan is
+            checked: if its peak SoC is under ``target_soc`` the DP runs again
+            with the shortfall valued at the buy-price average at the horizon end.
+            Carried into ``Schedule.precharge`` whether or not it fires, so the
+            caller can persist the average.
 
     Two export guards apply regardless of policy: Discharge is never scheduled
     in a slot selling below the battery cycle cost (``2 × deg / eff``), and
@@ -243,8 +257,12 @@ def optimize_schedule(
         Schedule with one ScheduleSlot per future price slot.
     """
     idle_gate = DischargeGate(average=running_average)
+    idle_precharge = replace(precharge, active=False) if precharge is not None else None
     if not price_series.slots:
-        return replace(_empty_schedule(degradation_cost, now), gate=idle_gate)
+        return replace(
+            _empty_schedule(degradation_cost, now),
+            gate=idle_gate, precharge=idle_precharge,
+        )
 
     decision_by_start = {d.start: d for d in calc.slots}
     future_slots: list[PriceSlot] = [
@@ -252,7 +270,10 @@ def optimize_schedule(
         if p.end > now and p.start in decision_by_start
     ]
     if not future_slots:
-        return replace(_empty_schedule(degradation_cost, now), gate=idle_gate)
+        return replace(
+            _empty_schedule(degradation_cost, now),
+            gate=idle_gate, precharge=idle_precharge,
+        )
 
     cap_kwh = battery_state.estimated_capacity_kwh
     slot_hours = price_series.resolution.total_seconds() / 3600.0
@@ -300,7 +321,7 @@ def optimize_schedule(
         return replace(_standby_only_schedule(
             future_slots, baseload_kwh, solar_kwh, slot_hours,
             planning_config, cap_kwh, degradation_cost, export_limit_kw, now,
-        ), gate=idle_gate)
+        ), gate=idle_gate, precharge=idle_precharge)
 
     flat_per_kwh = _terminal_value_per_storage_kwh(
         price_series, battery_config.round_trip_efficiency,
@@ -315,7 +336,6 @@ def optimize_schedule(
         ),
         flat_eur_kwh=flat_per_kwh,
     )
-
     # Battery energy sold below the wear of cycling it loses money on every kWh,
     # whatever the forecast says about refilling for free — so Discharge is not
     # offered in such slots at all. Feed-in is unaffected: it exports solar.
@@ -352,21 +372,62 @@ def optimize_schedule(
         if gate_active else solar_kwh
     )
 
-    choice = _run_dp(
-        future_slots, baseload_kwh, plan_solar_kwh, slot_hours,
-        planning_config, cap_kwh, degradation_cost, export_limit_kw,
-        bucketer, terminal, mode_change_penalty, actions,
-        max_discharge_to_grid_kw, floor_soc, discharge_blocked,
-    )
-    schedule = _forward_roll(
-        future_slots, baseload_kwh, solar_kwh, slot_hours,
-        planning_config, battery_state, cap_kwh, degradation_cost,
-        export_limit_kw, bucketer, choice, now,
-        current_mode, mode_change_penalty, actions,
-        max_discharge_to_grid_kw,
-    )
+    def solve(valuation: TerminalValuation) -> Schedule:
+        """Run the DP under ``valuation`` and roll it forward on the real forecast."""
+        choice = _run_dp(
+            future_slots, baseload_kwh, plan_solar_kwh, slot_hours,
+            planning_config, cap_kwh, degradation_cost, export_limit_kw,
+            bucketer, valuation, mode_change_penalty, actions,
+            max_discharge_to_grid_kw, floor_soc, discharge_blocked,
+        )
+        return _forward_roll(
+            future_slots, baseload_kwh, solar_kwh, slot_hours,
+            planning_config, battery_state, cap_kwh, degradation_cost,
+            export_limit_kw, bucketer, choice, now,
+            current_mode, mode_change_penalty, actions,
+            max_discharge_to_grid_kw,
+        )
+
+    schedule = solve(terminal)
+
+    # Precharge: the plain plan above is the baseline. If neither its own peak
+    # SoC nor the forecast sun reaches the target, the deficit is bought in the
+    # cheapest unused slots that are under the buy average. No slot is forced:
+    # the deficit is a second terminal tier, so the DP itself picks the slots.
+    precharge_out = idle_precharge
+    if (
+        precharge is not None and precharge.active
+        and StorageMode.GridCharge in actions
+    ):
+        peak = max(
+            precharge.peak_soc or 0.0, battery_state.soc,
+            *(slot.expected_soc_after for slot in schedule.slots),
+        )
+        if peak < precharge.target_soc:
+            # The tier is measured from the floor, so it covers what the plain
+            # plan already ends with plus the energy still missing to the target.
+            end_soc = schedule.slots[-1].expected_soc_after
+            terminal = replace(
+                terminal,
+                precharge_kwh=(
+                    max(0.0, end_soc - floor_soc) + precharge.target_soc - peak
+                ) * cap_kwh,
+                precharge_eur_kwh=_precharge_value_per_kwh(
+                    precharge, degradation_cost, flat_per_kwh,
+                ),
+            )
+            schedule = solve(terminal)
+            precharge_out = replace(
+                precharge, active=True, peak_soc=peak,
+                shortfall_kwh=(precharge.target_soc - peak) * cap_kwh,
+            )
+        else:
+            precharge_out = replace(
+                precharge, active=False, peak_soc=peak, shortfall_kwh=0.0,
+            )
     return replace(
         schedule, terminal=terminal, gate=replace(idle_gate, active=gate_active),
+        precharge=precharge_out,
     )
 
 
@@ -499,29 +560,61 @@ def _load_reserve_value_per_kwh(
     return max(value, flat_per_kwh)
 
 
+def _precharge_value_per_kwh(
+    precharge: Precharge, deg_cost: float, flat_per_kwh: float,
+) -> float:
+    """Per storage kWh worth of charge held up to the precharge target.
+
+    The planner already charges every bought kWh its wear (charging is
+    loss-free on the storage side), so the tier carries that wear on top of the
+    buy average: a slot is then worth buying exactly when it is priced under the
+    average, and the tier's size caps how much.
+
+    Args:
+        precharge: The active precharge decision (carries the buy average).
+        deg_cost: Wear cost per storage kWh moved (EUR/kWh).
+        flat_per_kwh: The flat terminal value.
+
+    Returns:
+        EUR per storage kWh inside the precharge — never below ``flat_per_kwh``,
+        so it can only make the planner keep more charge.
+    """
+    average = precharge.average.value_eur_kwh if precharge.average is not None else 0.0
+    return max(average + deg_cost, flat_per_kwh)
+
+
 def _terminal_value(soc: float, floor_soc: float, cap_kwh: float,
                     terminal: TerminalValuation) -> float:
     """Return the EUR worth of holding ``soc`` at the end of the horizon.
 
-    The first ``reserve_kwh`` storage kWh above the floor are worth the reserve
-    price, everything above them the flat price. The reserve price is never
-    below the flat one, so the function is concave in ``soc``.
+    Each storage kWh above the floor is worth the highest price among the
+    reserves that still cover it (the load reserve up to ``reserve_kwh``, the
+    precharge up to ``precharge_kwh``), else the flat price. Every reserve price
+    is never below the flat one, and the covering set only shrinks with height,
+    so the function is concave in ``soc``.
 
     Args:
         soc: End-of-horizon state of charge (fraction).
         floor_soc: Planning floor the energy is measured from.
         cap_kwh: Estimated usable capacity.
-        terminal: The two-tier valuation.
+        terminal: The valuation.
 
     Returns:
         Terminal value in EUR (0 at or below the floor).
     """
     energy = max(0.0, soc - floor_soc) * cap_kwh
-    reserved = min(energy, terminal.reserve_kwh)
-    return (
-        terminal.reserve_eur_kwh * reserved
-        + terminal.flat_eur_kwh * (energy - reserved)
+    tiers = (
+        (terminal.reserve_kwh, terminal.reserve_eur_kwh),
+        (terminal.precharge_kwh, terminal.precharge_eur_kwh),
     )
+    value = 0.0
+    done = 0.0
+    for edge in sorted({size for size, _ in tiers if size > 0}):
+        top = min(energy, edge)
+        if top > done:
+            value += max(price for size, price in tiers if size >= edge) * (top - done)
+            done = top
+    return value + terminal.flat_eur_kwh * (energy - done)
 
 
 # ---------------------------------------------------------------------------
@@ -586,6 +679,65 @@ def estimate_load_reserve_kwh(
         shortfall_ac += max(0.0, base_load_profile.at(t, local_tz) - solar)
     need_ac = shortfall_ac + max(0.0, extra_kwh)
     return need_ac / eff if eff > 0 else need_ac
+
+
+def sun_only_peak_soc(
+    generation: GenerationSeries,
+    base_load_profile: BaseLoadProfile,
+    battery_config: BatteryConfig,
+    battery_state: BatteryState,
+    now: datetime,
+    local_tz: tzinfo,
+    days: int,
+) -> float | None:
+    """Return the highest SoC the forecast sun alone would lift the battery to.
+
+    Walks the next ``days × 24`` hours from the current one with no grid
+    charging and no export planning: each hour's forecast solar (the day's
+    total over the hourly shape, as in :func:`estimate_load_reserve_kwh`) feeds
+    the house load first, the surplus charges and the shortfall discharges, with
+    the round-trip loss split evenly over the two legs and the SoC held inside
+    the battery's envelope. The walk stops at the first day the forecast has no
+    total for — a missing forecast is not a dark day.
+
+    Args:
+        generation: Forecast series (slots to tomorrow 24:00, daily totals to d6).
+        base_load_profile: Household baseload per local hour (kW).
+        battery_config: Battery limits (SoC envelope, round-trip efficiency).
+        battery_state: Current SoC and estimated usable capacity.
+        now: Cycle timestamp — the walk starts at the hour containing it.
+        local_tz: HA local timezone.
+        days: Days to look ahead.
+
+    Returns:
+        The peak SoC fraction (never below the current one), or ``None`` when the
+        forecast gives no basis for even the first hour.
+    """
+    cap_kwh = battery_state.estimated_capacity_kwh
+    if cap_kwh <= 0:
+        return None
+    today = now.astimezone(local_tz).date()
+    totals = _daily_solar_totals(generation, today)
+    shape = _hourly_solar_shape(generation, local_tz, today)
+    leg = math.sqrt(max(battery_config.round_trip_efficiency, 0.0)) or 1.0
+    soc = min(max(battery_state.soc, battery_config.min_soc), battery_config.max_soc)
+    peak = soc
+    start = now.replace(minute=0, second=0, microsecond=0)
+    walked = 0
+    for i in range(days * 24):
+        t = start + timedelta(hours=i)
+        local = t.astimezone(local_tz)
+        total = totals.get(local.date(), 0.0)
+        if total <= 0:
+            break
+        net_ac = shape[local.hour] * total - base_load_profile.at(t, local_tz)
+        stored = net_ac * leg if net_ac >= 0 else net_ac / leg
+        soc = min(
+            max(soc + stored / cap_kwh, battery_config.min_soc), battery_config.max_soc,
+        )
+        peak = max(peak, soc)
+        walked += 1
+    return peak if walked else None
 
 
 def _daily_solar_totals(generation: GenerationSeries, today: date) -> dict[date, float]:

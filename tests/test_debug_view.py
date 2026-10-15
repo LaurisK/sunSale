@@ -11,7 +11,9 @@ from custom_components.sun_sale.contract.models import (
     CalculationResult,
     DischargeGate,
     GenerationSeries,
+    Precharge,
     PriceSeries,
+    RunningBuyAverage,
     RunningSellAverage,
     Schedule,
     ScheduleSlot,
@@ -89,6 +91,7 @@ def make_coordinator(
     terminal: TerminalValuation | None = None,
     discharge_gate_enabled: bool = False,
     gate: DischargeGate | None = None,
+    precharge: Precharge | None = None,
 ) -> MagicMock:
     coord = MagicMock()
     coord.automation_enabled = automation_enabled
@@ -106,6 +109,9 @@ def make_coordinator(
     coord.load_reserve_extra_kwh = 12.5
     coord.discharge_gate_enabled = discharge_gate_enabled
     coord.overfill_boost_pct = 20.0
+    coord.precharge_enabled = False
+    coord.precharge_days = 3
+    coord.precharge_target_soc_pct = 80.0
     coord.battery_config.round_trip_efficiency = 0.9
 
     tariff_cfg: TariffConfig = default_tariff_config()
@@ -118,6 +124,7 @@ def make_coordinator(
         computed_at=BASE,
         terminal=terminal,
         gate=gate,
+        precharge=precharge,
     ) if include_schedule else None
 
     ps = _make_price_series()
@@ -317,6 +324,7 @@ def test_schedule_terminal_serialised():
     schedule = result["outputs"]["schedule"]
     assert schedule["terminal"] == {
         "reserve_kwh": 12.5, "reserve_eur_kwh": 0.21, "flat_eur_kwh": 0.065,
+        "precharge_kwh": 0.0, "precharge_eur_kwh": 0.0,
     }
     assert schedule["computed_at"] == BASE.isoformat()
     assert result["pipeline"]["schedule_policy"]["load_reserve_enabled"] is True
@@ -363,3 +371,38 @@ def test_schedule_gate_none_for_a_hand_built_schedule():
     result = _coordinator_to_dict("e", make_coordinator())
     assert result["outputs"]["schedule"]["gate"] is None
     assert result["pipeline"]["schedule_policy"]["discharge_gate_enabled"] is False
+
+
+def test_schedule_precharge_serialised():
+    """The precharge decision and its buy average reach outputs.schedule.precharge."""
+    coord = make_coordinator(
+        precharge=Precharge(
+            average=RunningBuyAverage(value_eur_kwh=0.1234567, day=date(2024, 1, 15)),
+            active=True, target_soc=0.8, peak_soc=0.35, shortfall_kwh=11.25,
+        ),
+        terminal=TerminalValuation(
+            reserve_kwh=0.0, reserve_eur_kwh=0.0, flat_eur_kwh=0.05,
+            precharge_kwh=14.0, precharge_eur_kwh=0.1234567,
+        ),
+    )
+    result = _coordinator_to_dict("e", coord)
+    schedule = result["outputs"]["schedule"]
+    assert schedule["precharge"] == {
+        "active": True,
+        "target_soc": 0.8,
+        "peak_soc": 0.35,
+        "shortfall_kwh": 11.25,
+        "average_eur_kwh": 0.123457,
+        "average_day": "2024-01-15",
+    }
+    assert schedule["terminal"]["precharge_kwh"] == 14.0
+    policy = result["pipeline"]["schedule_policy"]
+    assert policy["precharge_enabled"] is False
+    assert policy["precharge_days"] == 3
+    assert policy["precharge_target_soc_pct"] == 80.0
+
+
+def test_schedule_precharge_none_for_a_hand_built_schedule():
+    """A schedule built without the precharge block reports None."""
+    result = _coordinator_to_dict("e", make_coordinator())
+    assert result["outputs"]["schedule"]["precharge"] is None

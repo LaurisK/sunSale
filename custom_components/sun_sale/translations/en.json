@@ -1145,6 +1145,9 @@
       },
       "discharge_gate": {
         "name": "Discharge Above Average"
+      },
+      "precharge": {
+        "name": "Precharge Below Average"
       }
     },
     "number": {
@@ -1165,6 +1168,12 @@
       },
       "overfill_boost_pct": {
         "name": "Overfill Generation Boost"
+      },
+      "precharge_days": {
+        "name": "Precharge Days"
+      },
+      "precharge_target_soc_pct": {
+        "name": "Precharge Target SoC"
       }
     },
     "select": {

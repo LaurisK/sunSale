@@ -10,6 +10,24 @@ Any behavior-affecting change bumps the `version` in
 
 ## [Unreleased]
 
+### Added
+- **"Precharge Below Average" (opt-in, off by default).** For the dark months:
+  when the forecast sun over the next **Precharge Days** (1–7) would not lift
+  the battery to the **Precharge Target SoC**, the plan's own charging stops
+  short of it, and a *confirmed* price slot still ahead buys below the running
+  buy-price average, the planner buys the deficit (target minus the plan's
+  peak) in the cheapest slots the plan left unused, as long as they are under
+  the average — a plan that already peaks at the target is left exactly as it
+  was. Like the discharge gate it forces no slot: the deficit is one more
+  terminal tier in the single DP (`TerminalValuation.precharge_kwh` /
+  `precharge_eur_kwh`, beside the load reserve; where the two overlap the
+  higher price applies), so the DP picks the slots. The average is a
+  second persisted figure, folded once per local day like the sell one
+  (`0.9 × previous + 0.1 × today's mean buy`, `STORAGE_KEY_BUY_AVERAGE`). An
+  estimated (forecast-filled) price never triggers it. New entities: `switch.sunsale_precharge_below_average`, `number.sunsale_precharge_days`,
+  `number.sunsale_precharge_target_soc`; `outputs.schedule.precharge` and
+  `outputs.schedule.terminal.precharge_*` in the debug view, with a deep check.
+
 ## [0.8.1] — 2026-10-12
 
 ### Fixed

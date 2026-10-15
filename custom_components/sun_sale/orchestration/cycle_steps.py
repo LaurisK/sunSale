@@ -44,6 +44,10 @@ from ..contract.const import (
     SCHEDULE_MODE_CHANGE_PENALTY_MIN,
     SCHEDULE_OVERFILL_BOOST_PCT_MAX,
     SCHEDULE_OVERFILL_BOOST_PCT_MIN,
+    SCHEDULE_PRECHARGE_DAYS_MAX,
+    SCHEDULE_PRECHARGE_DAYS_MIN,
+    SCHEDULE_PRECHARGE_TARGET_SOC_PCT_MAX,
+    SCHEDULE_PRECHARGE_TARGET_SOC_PCT_MIN,
     SCHEDULE_PROFITABILITY_TILT_ALPHA_MAX,
     SCHEDULE_PROFITABILITY_TILT_ALPHA_MIN,
     SCHEDULE_TERMINAL_VALUE_DISCOUNT_MAX,
@@ -75,6 +79,7 @@ from ..contract.models import (
     PriceHistory,
     PvPowerHistory,
     PvPowerReading,
+    RunningBuyAverage,
     RunningSellAverage,
     SchedulePolicy,
     SolarData,
@@ -158,6 +163,9 @@ class ScheduleKnobs:
     load_reserve_extra_kwh: float = 0.0
     discharge_gate_enabled: bool = False
     overfill_boost_pct: float = 20.0
+    precharge_enabled: bool = False
+    precharge_days: float = 3
+    precharge_target_soc_pct: float = 80.0
 
 
 class CycleStep:
@@ -472,6 +480,7 @@ class StoredPrimariesStep(CycleStep):
         mode_history_store: PersistentStore,
         read_sun_times: Callable[[datetime], SunTimes],
         sell_average_store: PersistentStore | None = None,
+        buy_average_store: PersistentStore | None = None,
     ) -> None:
         """Bind the read-only stores and the sun-times reader."""
         self._baked_store = baked_store
@@ -483,6 +492,7 @@ class StoredPrimariesStep(CycleStep):
         self._mode_history_store = mode_history_store
         self._read_sun_times = read_sun_times
         self._sell_average_store = sell_average_store
+        self._buy_average_store = buy_average_store
 
     def seed(self, primary: dict, now: datetime) -> None:
         """Inject baked/bill/price/quality/calibration/mode histories, sun times."""
@@ -516,6 +526,9 @@ class StoredPrimariesStep(CycleStep):
         # from today's prices.
         primary[RunningSellAverage] = (
             self._sell_average_store.value if self._sell_average_store else None
+        )
+        primary[RunningBuyAverage] = (
+            self._buy_average_store.value if self._buy_average_store else None
         )
 
 
@@ -662,6 +675,17 @@ class SchedulePolicyStep(CycleStep):
                 k.overfill_boost_pct,
                 SCHEDULE_OVERFILL_BOOST_PCT_MIN,
                 SCHEDULE_OVERFILL_BOOST_PCT_MAX,
+            ) / 100.0,
+            precharge_enabled=k.precharge_enabled,
+            precharge_days=int(round(_clamp(
+                k.precharge_days,
+                SCHEDULE_PRECHARGE_DAYS_MIN,
+                SCHEDULE_PRECHARGE_DAYS_MAX,
+            ))),
+            precharge_target_soc=_clamp(
+                k.precharge_target_soc_pct,
+                SCHEDULE_PRECHARGE_TARGET_SOC_PCT_MIN,
+                SCHEDULE_PRECHARGE_TARGET_SOC_PCT_MAX,
             ) / 100.0,
             mode_change_penalty_eur_per_kwh=_clamp(
                 k.mode_change_penalty_eur_per_kwh,

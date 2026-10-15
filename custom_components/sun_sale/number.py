@@ -23,6 +23,8 @@ from .contract.const import (
     DEFAULT_SCHEDULE_LOAD_RESERVE_EXTRA_KWH,
     DEFAULT_SCHEDULE_MODE_CHANGE_PENALTY_EUR_PER_KWH,
     DEFAULT_SCHEDULE_OVERFILL_BOOST_PCT,
+    DEFAULT_SCHEDULE_PRECHARGE_DAYS,
+    DEFAULT_SCHEDULE_PRECHARGE_TARGET_SOC_PCT,
     DEFAULT_SCHEDULE_PROFITABILITY_TILT_ALPHA,
     DEFAULT_SCHEDULE_TERMINAL_VALUE_DISCOUNT,
     DOMAIN,
@@ -36,6 +38,10 @@ from .contract.const import (
     SCHEDULE_MODE_CHANGE_PENALTY_MIN,
     SCHEDULE_OVERFILL_BOOST_PCT_MAX,
     SCHEDULE_OVERFILL_BOOST_PCT_MIN,
+    SCHEDULE_PRECHARGE_DAYS_MAX,
+    SCHEDULE_PRECHARGE_DAYS_MIN,
+    SCHEDULE_PRECHARGE_TARGET_SOC_PCT_MAX,
+    SCHEDULE_PRECHARGE_TARGET_SOC_PCT_MIN,
     SCHEDULE_PROFITABILITY_TILT_ALPHA_MAX,
     SCHEDULE_PROFITABILITY_TILT_ALPHA_MIN,
     SCHEDULE_TERMINAL_VALUE_DISCOUNT_MAX,
@@ -66,6 +72,8 @@ async def async_setup_entry(
         LoadReserveDaysNumber(coordinator, entry),
         LoadReserveExtraKwhNumber(coordinator, entry),
         OverfillBoostNumber(coordinator, entry),
+        PrechargeDaysNumber(coordinator, entry),
+        PrechargeTargetSocNumber(coordinator, entry),
     ])
 
 
@@ -218,6 +226,34 @@ class OverfillBoostNumber(_SunSalePolicyNumber):
     _unique_suffix = "overfill_boost_pct"
     _coord_attr = "overfill_boost_pct"
     _default_value = DEFAULT_SCHEDULE_OVERFILL_BOOST_PCT
+
+
+class PrechargeDaysNumber(_SunSalePolicyNumber):
+    """Days of forecast solar the precharge checks before deciding to buy."""
+
+    _attr_name = "sunSale Precharge Days"
+    _attr_icon = "mdi:calendar-week"
+    _attr_native_unit_of_measurement = "d"
+    _attr_native_min_value = SCHEDULE_PRECHARGE_DAYS_MIN
+    _attr_native_max_value = SCHEDULE_PRECHARGE_DAYS_MAX
+    _attr_native_step = 1
+    _unique_suffix = "precharge_days"
+    _coord_attr = "precharge_days"
+    _default_value = DEFAULT_SCHEDULE_PRECHARGE_DAYS
+
+
+class PrechargeTargetSocNumber(_SunSalePolicyNumber):
+    """SoC the precharge holds at the end of the plan when the sun will not reach it."""
+
+    _attr_name = "sunSale Precharge Target SoC"
+    _attr_icon = "mdi:battery-charging-high"
+    _attr_native_unit_of_measurement = "%"
+    _attr_native_min_value = SCHEDULE_PRECHARGE_TARGET_SOC_PCT_MIN
+    _attr_native_max_value = SCHEDULE_PRECHARGE_TARGET_SOC_PCT_MAX
+    _attr_native_step = 5
+    _unique_suffix = "precharge_target_soc_pct"
+    _coord_attr = "precharge_target_soc_pct"
+    _default_value = DEFAULT_SCHEDULE_PRECHARGE_TARGET_SOC_PCT
 
 
 class MaxDischargeToGridKwNumber(CoordinatorEntity, RestoreEntity, NumberEntity):

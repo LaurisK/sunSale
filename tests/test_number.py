@@ -11,6 +11,8 @@ from custom_components.sun_sale.number import (
     LoadReserveExtraKwhNumber,
     ModeChangePenaltyNumber,
     OverfillBoostNumber,
+    PrechargeDaysNumber,
+    PrechargeTargetSocNumber,
     ProfitabilityTiltAlphaNumber,
     TerminalValueDiscountNumber,
 )
@@ -34,6 +36,8 @@ def _make_number(cls, attr: str, initial: float):
         (LoadReserveDaysNumber, "load_reserve_days", "load_reserve_days", 3),
         (LoadReserveExtraKwhNumber, "load_reserve_extra_kwh", "load_reserve_extra_kwh", 12.5),
         (OverfillBoostNumber, "overfill_boost_pct", "overfill_boost_pct", 20.0),
+        (PrechargeDaysNumber, "precharge_days", "precharge_days", 3),
+        (PrechargeTargetSocNumber, "precharge_target_soc_pct", "precharge_target_soc_pct", 80.0),
     ],
 )
 def test_native_value_mirrors_coordinator(cls, attr, suffix, initial):
@@ -51,6 +55,8 @@ def test_native_value_mirrors_coordinator(cls, attr, suffix, initial):
         (LoadReserveDaysNumber, "load_reserve_days"),
         (LoadReserveExtraKwhNumber, "load_reserve_extra_kwh"),
         (OverfillBoostNumber, "overfill_boost_pct"),
+        (PrechargeDaysNumber, "precharge_days"),
+        (PrechargeTargetSocNumber, "precharge_target_soc_pct"),
     ],
 )
 async def test_set_native_value_writes_to_coordinator(cls, attr):
@@ -135,3 +141,18 @@ def test_overfill_boost_knob_is_a_percentage_defaulting_to_twenty():
     ) == (0.0, 100.0, 5)
     assert boost._attr_native_unit_of_measurement == "%"
     assert boost._default_value == 20.0
+
+
+def test_precharge_knobs_span_a_week_and_a_percent_scale():
+    """Days run 1–7 in whole days, defaulting to 3; the target is a percent defaulting to 80."""
+    days, _ = _make_number(PrechargeDaysNumber, "precharge_days", 3)
+    target, _ = _make_number(PrechargeTargetSocNumber, "precharge_target_soc_pct", 80.0)
+    assert (
+        days._attr_native_min_value, days._attr_native_max_value, days._attr_native_step,
+    ) == (1, 7, 1)
+    assert days._default_value == 3
+    assert (
+        target._attr_native_min_value, target._attr_native_max_value, target._attr_native_step,
+    ) == (10.0, 100.0, 5)
+    assert target._attr_native_unit_of_measurement == "%"
+    assert target._default_value == 80.0

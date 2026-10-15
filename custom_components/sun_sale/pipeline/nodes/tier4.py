@@ -13,13 +13,15 @@ from ...contract.models import (
     ForecastQualityStore,
     GenerationSeries,
     InverterModeReading,
+    Precharge,
     PriceSeries,
     ProfitabilityScore,
+    RunningBuyAverage,
     RunningSellAverage,
     Schedule,
     SchedulePolicy,
 )
-from .. import discharge_gate, forecast_accuracy
+from .. import discharge_gate, forecast_accuracy, precharge
 from .. import schedule as schedule_module
 from ..dag_engine import DagNode, NodeContext
 
@@ -87,7 +89,8 @@ class ScheduleNode(DagNode):
     # readiness. InverterModeReading is not listed — it is a primary
     # (translator) input with no producer node, so it carries no ordering
     # concern (same pattern as ForecastAccuracyNode / MonthlyBillNode).
-    # RunningSellAverage is likewise a stored primary read via ctx.get.
+    # RunningSellAverage / RunningBuyAverage are likewise stored primaries read
+    # via ctx.get.
     consumes_optional = [ProfitabilityScore]
 
     async def _compute(self, ctx: NodeContext) -> Schedule:
@@ -106,15 +109,32 @@ class ScheduleNode(DagNode):
         current_mode = mode_reading.mode if mode_reading is not None else None
         policy = ctx.get(SchedulePolicy) or SchedulePolicy()
 
+        today = ctx.now.astimezone(ctx.config.local_tz).date()
+        battery = _capped_battery(ctx.config.battery, policy)
+
         # Folded every cycle, gate on or off, so the figure keeps learning and
         # the coordinator persists it when the local day moves on (the same
         # object comes back while the stored value is current).
         running_average = discharge_gate.fold_running_average(
             ctx.get(RunningSellAverage),
             price_series,
-            ctx.now.astimezone(ctx.config.local_tz).date(),
+            today,
             ctx.config.local_tz,
         )
+
+        # The buy twin of the average above: folded every cycle so it keeps
+        # learning, while the precharge decision itself is made only when the
+        # feature is on and the planner may grid-charge at all.
+        running_buy = precharge.fold_running_buy_average(
+            ctx.get(RunningBuyAverage), price_series, today, ctx.config.local_tz,
+        )
+        precharge_plan = Precharge(average=running_buy)
+        if policy.precharge_enabled and policy.allow_grid_charging:
+            precharge_plan = precharge.plan_precharge(
+                running_buy, price_series, generation, base_load_profile,
+                battery, battery_state, ctx.now, ctx.config.local_tz,
+                days=policy.precharge_days, target_soc=policy.precharge_target_soc,
+            )
 
         # Resolved here rather than in the policy seed step: sizing the reserve
         # needs the learned battery capacity, which only exists once the
@@ -144,7 +164,7 @@ class ScheduleNode(DagNode):
         schedule = schedule_module.optimize_schedule(
             price_series=price_series,
             calc=calc,
-            battery_config=_capped_battery(ctx.config.battery, policy),
+            battery_config=battery,
             battery_state=battery_state,
             degradation_cost=deg_cost.value_kwh,
             now=ctx.now,
@@ -166,6 +186,7 @@ class ScheduleNode(DagNode):
             running_average=running_average,
             discharge_gate_enabled=policy.discharge_gate_enabled,
             overfill_boost=policy.overfill_boost,
+            precharge=precharge_plan,
         )
 
         return schedule

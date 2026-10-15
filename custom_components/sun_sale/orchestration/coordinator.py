@@ -75,6 +75,9 @@ from ..contract.const import (
     DEFAULT_SCHEDULE_MAX_DISCHARGE_TO_GRID_KW,
     DEFAULT_SCHEDULE_MODE_CHANGE_PENALTY_EUR_PER_KWH,
     DEFAULT_SCHEDULE_OVERFILL_BOOST_PCT,
+    DEFAULT_SCHEDULE_PRECHARGE,
+    DEFAULT_SCHEDULE_PRECHARGE_DAYS,
+    DEFAULT_SCHEDULE_PRECHARGE_TARGET_SOC_PCT,
     DEFAULT_SCHEDULE_PROFITABILITY_TILT_ALPHA,
     DEFAULT_SCHEDULE_TERMINAL_VALUE_DISCOUNT,
     DEFAULT_SCHEDULE_USE_STANDBY,
@@ -87,6 +90,7 @@ from ..contract.const import (
     SCHEDULE_SLOT_MINUTES,
     STORAGE_KEY_ARRAY_CALIBRATION,
     STORAGE_KEY_BAKED_OBSERVED,
+    STORAGE_KEY_BUY_AVERAGE,
     STORAGE_KEY_CAPACITY,
     STORAGE_KEY_CONSUMPTION_DAILY,
     STORAGE_KEY_COUNTER_SNAPSHOT,
@@ -144,6 +148,7 @@ from ..contract.models import (
     PriceSeries,
     ProfitabilityScore,
     PvPowerHistory,
+    RunningBuyAverage,
     RunningSellAverage,
     Schedule,
     SolarHealth,
@@ -427,6 +432,7 @@ class SunSaleCoordinator(DataUpdateCoordinator):
         self._counter_snapshot_store: PersistentStore[CounterSnapshotHistory] | None = None
         self._baked_observed_store: PersistentStore[BakedObservedHistory] | None = None
         self._sell_average_store: PersistentStore[RunningSellAverage] | None = None
+        self._buy_average_store: PersistentStore[RunningBuyAverage] | None = None
         # Ordered pre-DAG primary-assembly steps — built at the end of
         # async_setup once all stores exist. See orchestration/cycle_steps.py.
         self._cycle_steps: tuple[CycleStep, ...] = ()
@@ -440,6 +446,9 @@ class SunSaleCoordinator(DataUpdateCoordinator):
         self.load_reserve_extra_kwh: float = DEFAULT_SCHEDULE_LOAD_RESERVE_EXTRA_KWH
         self.discharge_gate_enabled: bool = DEFAULT_SCHEDULE_DISCHARGE_GATE
         self.overfill_boost_pct: float = DEFAULT_SCHEDULE_OVERFILL_BOOST_PCT
+        self.precharge_enabled: bool = DEFAULT_SCHEDULE_PRECHARGE
+        self.precharge_days: float = DEFAULT_SCHEDULE_PRECHARGE_DAYS
+        self.precharge_target_soc_pct: float = DEFAULT_SCHEDULE_PRECHARGE_TARGET_SOC_PCT
         self.mode_change_penalty_eur_per_kwh: float = (
             DEFAULT_SCHEDULE_MODE_CHANGE_PENALTY_EUR_PER_KWH
         )
@@ -1209,6 +1218,7 @@ class SunSaleCoordinator(DataUpdateCoordinator):
         self._counter_snapshot_store = self._stores[STORAGE_KEY_COUNTER_SNAPSHOT]
         self._baked_observed_store = self._stores[STORAGE_KEY_BAKED_OBSERVED]
         self._sell_average_store = self._stores[STORAGE_KEY_SELL_AVERAGE]
+        self._buy_average_store = self._stores[STORAGE_KEY_BUY_AVERAGE]
 
         await self._async_backfill_price_history()
 
@@ -1265,6 +1275,7 @@ class SunSaleCoordinator(DataUpdateCoordinator):
                 mode_history_store=self._mode_history_store,
                 read_sun_times=self._read_sun_times,
                 sell_average_store=self._sell_average_store,
+                buy_average_store=self._buy_average_store,
             ),
             ConsumptionDailyStep(
                 self._consumption_daily_store, self._history_stores, self._sun_sale_config,
@@ -1302,6 +1313,9 @@ class SunSaleCoordinator(DataUpdateCoordinator):
             load_reserve_extra_kwh=self.load_reserve_extra_kwh,
             discharge_gate_enabled=self.discharge_gate_enabled,
             overfill_boost_pct=self.overfill_boost_pct,
+            precharge_enabled=self.precharge_enabled,
+            precharge_days=self.precharge_days,
+            precharge_target_soc_pct=self.precharge_target_soc_pct,
             mode_change_penalty_eur_per_kwh=self.mode_change_penalty_eur_per_kwh,
             profitability_tilt_alpha=self.profitability_tilt_alpha,
             terminal_value_discount=self.terminal_value_discount,
@@ -1565,6 +1579,16 @@ class SunSaleCoordinator(DataUpdateCoordinator):
                 and average is not self._sell_average_store.value
             ):
                 await self._sell_average_store.save(average)
+
+        with self._guarded("buy-average save"):
+            schedule = secondary.get(Schedule)
+            buy_average = schedule.precharge.average if schedule and schedule.precharge else None
+            if (
+                buy_average is not None
+                and self._buy_average_store is not None
+                and buy_average is not self._buy_average_store.value
+            ):
+                await self._buy_average_store.save(buy_average)
 
         with self._guarded("monthly-bill save"):
             bill_result: MonthlyBillResult | None = secondary.get(MonthlyBillResult)

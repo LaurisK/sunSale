@@ -252,12 +252,16 @@ class TerminalValuation:
 
     Storage kWh above the planning floor are worth ``reserve_eur_kwh`` each up
     to ``reserve_kwh`` (the load reserve — house load the next days' solar will
-    not cover), and ``flat_eur_kwh`` each above that. ``reserve_kwh == 0`` is
-    the single flat value the planner always used.
+    not cover), ``precharge_eur_kwh`` each up to ``precharge_kwh`` (what the
+    plain plan ends with plus the energy still missing to the precharge target)
+    and ``flat_eur_kwh`` each above both. Where the two reserves overlap the higher price applies.
+    Both sizes 0 is the single flat value the planner always used.
     """
     reserve_kwh: float       # storage-side kWh valued at reserve_eur_kwh
     reserve_eur_kwh: float   # EUR per storage kWh inside the reserve
-    flat_eur_kwh: float      # EUR per storage kWh above the reserve
+    flat_eur_kwh: float      # EUR per storage kWh above the reserves
+    precharge_kwh: float = 0.0       # storage-side kWh valued at precharge_eur_kwh
+    precharge_eur_kwh: float = 0.0   # EUR per storage kWh inside the precharge
 
 
 @dataclass(frozen=True)
@@ -284,6 +288,38 @@ class DischargeGate:
     active: bool = False
 
 
+@dataclass(frozen=True)
+class RunningBuyAverage:
+    """Persisted primary: the running buy-price average, as of one local day.
+
+    The buy-side twin of :class:`RunningSellAverage` — the same ``0.9 × previous
+    + 0.1 × that day's mean`` fold, once per local day
+    (``pipeline.precharge.fold_running_buy_average``).
+    """
+    value_eur_kwh: float
+    day: date
+
+
+@dataclass(frozen=True)
+class Precharge:
+    """What the precharge did to a plan (``SchedulePolicy.precharge_enabled``).
+
+    ``average`` is carried even while the feature is off, because it is the
+    value the coordinator persists. From ``plan_precharge`` ``active`` means
+    *armed* — the sun-only walk peaks under ``target_soc`` and a confirmed slot
+    buys below the average; ``optimize_schedule`` then keeps it only if the plain
+    plan's own peak is under the target too, and re-plans with the shortfall
+    valued at the horizon end. ``peak_soc`` is the highest SoC reached without
+    the precharge (walk and plain plan) and ``shortfall_kwh`` its gap to the
+    target, for display.
+    """
+    average: RunningBuyAverage | None = None
+    active: bool = False
+    target_soc: float = 0.0                 # fraction
+    peak_soc: float | None = None           # highest SoC of the sun-only walk
+    shortfall_kwh: float = 0.0              # storage-side kWh the walk misses
+
+
 @dataclass
 class Schedule:
     """Complete battery optimization result."""
@@ -298,6 +334,9 @@ class Schedule:
     # coordinator can persist the running average; None only for hand-built
     # schedules.
     gate: DischargeGate | None = None
+    # Same contract as ``gate``: always set by ``optimize_schedule``, carrying
+    # the buy-price average the coordinator persists.
+    precharge: Precharge | None = None
 
 
 @dataclass(frozen=True)
@@ -350,6 +389,13 @@ class SchedulePolicy:
             planner assumes a stronger sun than forecast so it leaves room for
             the surplus. ``overfill_boost`` is the fraction added to every
             future slot's solar for that (0.2 = +20 %).
+        ``precharge_enabled`` — when True, the next ``precharge_days`` days of
+            forecast solar alone would not lift the battery to
+            ``precharge_target_soc`` (a fraction), the plain plan's own peak SoC
+            falls short too, and a confirmed price slot buys below the running
+            buy-price average, the planner buys the deficit (target minus that
+            peak) in the cheapest unused slots, as long as they are under the
+            average. Can only make the planner hold more.
         ``max_battery_charge_kw`` / ``max_battery_discharge_kw`` — the battery
             legs' live ceilings from ``InverterCapability``, already reduced
             against ``BatteryConfig``. ``ScheduleNode`` substitutes them into the
@@ -376,6 +422,9 @@ class SchedulePolicy:
     load_reserve_extra_kwh: float = 0.0     # AC kWh held on top (e.g. EV charge)
     discharge_gate_enabled: bool = False
     overfill_boost: float = 0.2             # fraction added to the forecast when planning
+    precharge_enabled: bool = False
+    precharge_days: int = 3                 # days of forecast solar looked at
+    precharge_target_soc: float = 0.8       # fraction held at the horizon end
 
 
 @dataclass(frozen=True)

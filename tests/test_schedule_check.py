@@ -250,3 +250,95 @@ def test_gate_check_without_an_average_is_skipped_not_failed() -> None:
     result = check_schedule(_gate_snap(gate))
     assert result.gate.ok and result.gate.skip_reason
 
+
+# ---------------------------------------------------------------------------
+# Precharge invariants
+# ---------------------------------------------------------------------------
+
+
+def _precharge_snap(
+    precharge: dict, *, enabled: bool = True, terminal: dict | None = None,
+    buys: dict[int, float] | None = None, forecast_hours: frozenset[int] = frozenset(),
+) -> Snapshot:
+    """Snapshot with a precharge block, its terminal tier and hourly buy prices.
+
+    ``buys`` maps hour -> buy price (default 0.30); hours in ``forecast_hours``
+    are forecast-filled rows instead of confirmed ones.
+    """
+    snap = _snap({"precharge_enabled": enabled, "allow_grid_charging": True})
+    snap.debug["config"] = {"time_zone": "UTC"}
+    schedule = snap.debug["outputs"]["schedule"]
+    schedule["computed_at"] = "2024-01-15T00:00:00+00:00"
+    schedule["precharge"] = precharge
+    schedule["terminal"] = terminal if terminal is not None else {
+        "reserve_kwh": 0.0, "reserve_eur_kwh": 0.0, "flat_eur_kwh": 0.05,
+        "precharge_kwh": 7.0, "precharge_eur_kwh": 0.15,
+    }
+    snap.debug["pipeline"]["pricing"] = {"resolution_s": 3600, "slots": [
+        {
+            "start": f"2024-01-15T{h:02d}:00:00+00:00", "buy": (buys or {}).get(h, 0.30),
+            "priced": h not in forecast_hours, "forecast": h in forecast_hours,
+        }
+        for h in range(24)
+    ]}
+    return snap
+
+
+_GOOD_PRECHARGE = {
+    "active": True, "target_soc": 0.8, "peak_soc": 0.3, "shortfall_kwh": 5.0,
+    "average_eur_kwh": 0.15, "average_day": "2024-01-15",
+}
+
+
+def test_precharge_check_passes_for_a_consistent_active_plan() -> None:
+    result = check_schedule(_precharge_snap(dict(_GOOD_PRECHARGE), buys={3: 0.10}))
+    assert result.precharge is not None and result.precharge.ok
+    assert result.overall_ok is True
+
+
+def test_precharge_check_flags_the_sun_reaching_the_target() -> None:
+    pre = {**_GOOD_PRECHARGE, "peak_soc": 0.85}
+    result = check_schedule(_precharge_snap(pre, buys={3: 0.10}))
+    assert not result.precharge.ok and "precharge" in result.mismatches
+
+
+def test_precharge_check_flags_an_estimated_price_as_the_only_trigger() -> None:
+    snap = _precharge_snap(dict(_GOOD_PRECHARGE), buys={3: 0.10}, forecast_hours=frozenset({3}))
+    assert not check_schedule(snap).precharge.ok
+
+
+def test_precharge_check_flags_no_cheap_slot_ahead() -> None:
+    assert not check_schedule(_precharge_snap(dict(_GOOD_PRECHARGE))).precharge.ok
+
+
+def test_precharge_check_flags_a_tier_not_priced_at_the_average() -> None:
+    terminal = {
+        "reserve_kwh": 0.0, "reserve_eur_kwh": 0.0, "flat_eur_kwh": 0.05,
+        "precharge_kwh": 7.0, "precharge_eur_kwh": 0.40,
+    }
+    result = check_schedule(_precharge_snap(dict(_GOOD_PRECHARGE), terminal=terminal, buys={3: 0.10}))
+    assert not result.precharge.ok
+
+
+def test_precharge_check_flags_a_stale_average() -> None:
+    pre = {**_GOOD_PRECHARGE, "average_day": "2024-01-13"}
+    assert not check_schedule(_precharge_snap(pre, buys={3: 0.10})).precharge.ok
+
+
+def test_precharge_check_flags_a_plan_shaped_while_switched_off() -> None:
+    result = check_schedule(_precharge_snap(dict(_GOOD_PRECHARGE), enabled=False, buys={3: 0.10}))
+    assert not result.precharge.ok
+
+
+def test_precharge_check_inactive_with_a_held_tier_is_a_problem() -> None:
+    pre = {**_GOOD_PRECHARGE, "active": False}
+    assert not check_schedule(_precharge_snap(pre, enabled=False)).precharge.ok
+
+
+def test_precharge_check_inactive_and_no_tier_is_fine() -> None:
+    pre = {**_GOOD_PRECHARGE, "active": False}
+    terminal = {
+        "reserve_kwh": 0.0, "reserve_eur_kwh": 0.0, "flat_eur_kwh": 0.05,
+        "precharge_kwh": 0.0, "precharge_eur_kwh": 0.0,
+    }
+    assert check_schedule(_precharge_snap(pre, enabled=False, terminal=terminal)).precharge.ok

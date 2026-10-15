@@ -15,6 +15,7 @@ from .contract.const import (
     DEFAULT_SCHEDULE_ALLOW_GRID_CHARGING,
     DEFAULT_SCHEDULE_DISCHARGE_GATE,
     DEFAULT_SCHEDULE_LOAD_RESERVE,
+    DEFAULT_SCHEDULE_PRECHARGE,
     DEFAULT_SCHEDULE_USE_STANDBY,
     DOMAIN,
 )
@@ -42,6 +43,7 @@ async def async_setup_entry(
         AllowDischargeToGridSwitch(coordinator, entry),
         LoadReserveSwitch(coordinator, entry),
         DischargeGateSwitch(coordinator, entry),
+        PrechargeSwitch(coordinator, entry),
     ])
 
 
@@ -214,3 +216,23 @@ class DischargeGateSwitch(_SunSaleSwitchBase):
     _unique_suffix = "discharge_gate"
     _coord_attr = "discharge_gate_enabled"
     _default_on = DEFAULT_SCHEDULE_DISCHARGE_GATE
+
+
+class PrechargeSwitch(_SunSaleSwitchBase):
+    """When on the scheduler fills leftover cheap slots up toward a target SoC.
+
+    If the next Precharge Days of forecast solar would not lift the battery to
+    the Precharge Target SoC, the plan's own charging stops short of it, and a
+    confirmed price slot buys below the running buy-price average (0.9 ×
+    previous + 0.1 × today's mean, updated daily), the planner plans again with
+    the missing energy worth that average at the end of its horizon — so the
+    unused slots under the average fill up. Meant for the dark months, to have
+    charge in hand for prices beyond the plan's reach. Dispatch-affecting, hence
+    OFF by default.
+    """
+
+    _attr_name = "sunSale Precharge Below Average"
+    _attr_icon = "mdi:battery-plus-outline"
+    _unique_suffix = "precharge"
+    _coord_attr = "precharge_enabled"
+    _default_on = DEFAULT_SCHEDULE_PRECHARGE
