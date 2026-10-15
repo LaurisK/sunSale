@@ -168,6 +168,28 @@ def _serialize_price_estimates(forecast: PriceForecast | None) -> dict[str, dict
     return out
 
 
+def _serialize_planning_averages(schedule: Schedule | None) -> dict[str, float | None]:
+    """Return the running buy / sell averages the plan was built with.
+
+    Read off the schedule rather than the stores, so the panel shows exactly
+    the figures the precharge (buy) and discharge gate (sell) compared prices
+    against this cycle.
+
+    Args:
+        schedule: The current plan, or None.
+
+    Returns:
+        ``buy_average_eur_kwh`` / ``sell_average_eur_kwh``, each None while that
+        average has no history yet.
+    """
+    buy = schedule.precharge.average if schedule and schedule.precharge else None
+    sell = schedule.gate.average if schedule and schedule.gate else None
+    return {
+        "buy_average_eur_kwh": round(buy.value_eur_kwh, 4) if buy else None,
+        "sell_average_eur_kwh": round(sell.value_eur_kwh, 4) if sell else None,
+    }
+
+
 def _slot_kw(kwh: float, start: datetime, end: datetime) -> float:
     """Convert a slot's energy to its average power over the slot.
 
@@ -995,6 +1017,7 @@ class DashboardSensor(_PanelPayloadSensor):
             ),
             "actual_yesterday_kwh": round(observed.total_yesterday_kwh, 3) if observed else None,
             "actual_today_kwh": round(observed.total_today_so_far_kwh, 3) if observed else None,
+            **_serialize_planning_averages(schedule_obj),
             "inverter_mode_plan": inverter_mode_plan,
             "inverter_mode_history": inverter_mode_history,
             "inverter_mode_now": inverter_mode_now,

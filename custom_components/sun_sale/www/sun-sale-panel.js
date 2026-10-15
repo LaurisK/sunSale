@@ -112,6 +112,7 @@
       } else {
         const dashAttrs = hass.states[this._dashboardEid]?.attributes;
         this._renderBatteryRow(dashAttrs);
+        this._renderAveragesRow(dashAttrs);
         this._renderGenerationRow(dashAttrs);
         this._renderFlowDiagram(dashAttrs);
         const panel = this.shadowRoot?.querySelector('#schedule-panel');
@@ -224,6 +225,20 @@
             color: var(--secondary-text-color, #888);
             opacity: 0.7;
           }
+          #averages {
+            display: flex;
+            flex-wrap: wrap;
+            align-items: baseline;
+            gap: 4px 10px;
+            margin: 0 0 12px;
+            font-size: 0.85rem;
+            color: var(--primary-text-color, #fff);
+          }
+          #averages:empty { display: none; }
+          #averages .label { color: var(--secondary-text-color, #888); }
+          #averages .buy  { color: #ffb300; font-weight: 600; }
+          #averages .sell { color: #ff7043; font-weight: 600; }
+          #averages .unit { color: var(--secondary-text-color, #888); font-size: 0.75rem; }
           #generation {
             display: flex;
             flex-wrap: wrap;
@@ -709,6 +724,7 @@
           <div id="info-row">
             <div id="info-left">
               <div id="battery"></div>
+              <div id="averages"></div>
               <div id="generation"></div>
             </div>
             <div id="flow-section">
@@ -771,6 +787,30 @@
         ${maxTxt ? `<span class="soc-max" title="Estimated peak state-of-charge for today, from the scheduler plan">${maxTxt}</span>` : ''}
         ${capTxt ? `<span class="capacity" title="Remaining / learned (estimated) usable capacity">${capTxt}</span>` : ''}
         ${setTxt ? `<span class="capacity-set" title="Configured nameplate (set) capacity">${setTxt}</span>` : ''}
+      `;
+    }
+
+    // The running buy / sell price averages the plan was built with: the buy one
+    // is the bar the precharge buys under, the sell one the bar the discharge
+    // gate sells above. Shown whether or not the two switches are on — the
+    // averages are learned either way. Hidden until at least one has history.
+    _renderAveragesRow(dashAttrs) {
+      const el = this.shadowRoot.querySelector('#averages');
+      if (!el) return;
+      const buy  = dashAttrs?.buy_average_eur_kwh;
+      const sell = dashAttrs?.sell_average_eur_kwh;
+      const fmt  = (v) => (typeof v === 'number' ? v.toFixed(4) : '—');
+      if (typeof buy !== 'number' && typeof sell !== 'number') { el.innerHTML = ''; return; }
+
+      el.innerHTML = `
+        <span class="label">Running avg:</span>
+        <span title="Running buy-price average (0.9 × previous + 0.1 × today's mean, updated daily). Precharge buys only in slots priced under it.">
+          <span class="label">buy</span> <span class="buy">${fmt(buy)}</span>
+        </span>
+        <span title="Running sell-price average (0.9 × previous + 0.1 × today's mean, updated daily). Discharge above average sells only in slots priced at or above it.">
+          <span class="label">sell</span> <span class="sell">${fmt(sell)}</span>
+        </span>
+        <span class="unit">${this._currencySymbol}/kWh</span>
       `;
     }
 
@@ -1980,6 +2020,7 @@
       }
 
       this._renderBatteryRow(dashAttrs);
+      this._renderAveragesRow(dashAttrs);
       this._renderGenerationRow(dashAttrs);
       this._renderFlowDiagram(dashAttrs);
 

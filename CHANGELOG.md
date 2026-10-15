@@ -11,6 +11,11 @@ Any behavior-affecting change bumps the `version` in
 ## [Unreleased]
 
 ### Added
+- **Running buy / sell averages on the panel.** A new line between the battery
+  status and the generation forecast shows the two running price averages the
+  plan was built with — the buy one Precharge buys under, the sell one Discharge
+  Above Average sells above. Dashboard sensor attributes `buy_average_eur_kwh` /
+  `sell_average_eur_kwh`, read off `Schedule.precharge` / `Schedule.gate`.
 - **"Precharge Below Average" (opt-in, off by default).** For the dark months:
   when the forecast sun over the next **Precharge Days** (1–7) would not lift
   the battery to the **Precharge Target SoC**, the plan's own charging stops

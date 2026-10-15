@@ -277,6 +277,42 @@ def test_dashboard_live_flows_from_latest_derived_sample():
     assert flows["battery_soc_pct"] == 85.0
 
 
+def test_dashboard_exposes_the_averages_the_plan_was_built_with():
+    """buy / sell averages come off the schedule (precharge / gate), None while absent."""
+    from dataclasses import replace
+    from datetime import date
+
+    from custom_components.sun_sale.contract.models import (
+        DischargeGate,
+        Precharge,
+        RunningBuyAverage,
+        RunningSellAverage,
+    )
+    from custom_components.sun_sale.sensor import DashboardSensor
+    from tests.conftest import default_battery_config
+
+    def attrs_for(schedule):
+        coord = make_coord({"battery_power_kw": 0.0, "schedule": schedule})
+        coord.battery_config = default_battery_config()
+        coord.automation_enabled = True
+        return DashboardSensor(coord, _dashboard_entry()).extra_state_attributes
+
+    today = date(2024, 1, 15)
+    planned = replace(
+        make_schedule([]),
+        gate=DischargeGate(average=RunningSellAverage(0.123456, today)),
+        precharge=Precharge(average=RunningBuyAverage(0.2, today)),
+    )
+    attrs = attrs_for(planned)
+    assert attrs["sell_average_eur_kwh"] == 0.1235
+    assert attrs["buy_average_eur_kwh"] == 0.2
+
+    for bare in (None, make_schedule([])):  # no plan / hand-built plan without gate+precharge
+        attrs = attrs_for(bare)
+        assert attrs["sell_average_eur_kwh"] is None
+        assert attrs["buy_average_eur_kwh"] is None
+
+
 def test_dashboard_live_flows_none_without_samples():
     """No derived history (or an empty one) → live_flows is None, so the panel hides it."""
     from custom_components.sun_sale.contract.models import DerivedPowerHistory
