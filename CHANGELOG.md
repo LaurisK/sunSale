@@ -10,6 +10,8 @@ Any behavior-affecting change bumps the `version` in
 
 ## [Unreleased]
 
+## [0.9.0] — 2026-10-15
+
 ### Added
 - **Running buy / sell averages on the panel.** A new line between the battery
   status and the generation forecast shows the two running price averages the
@@ -29,7 +31,8 @@ Any behavior-affecting change bumps the `version` in
   higher price applies), so the DP picks the slots. The average is a
   second persisted figure, folded once per local day like the sell one
   (`0.9 × previous + 0.1 × today's mean buy`, `STORAGE_KEY_BUY_AVERAGE`). An
-  estimated (forecast-filled) price never triggers it. New entities: `switch.sunsale_precharge_below_average`, `number.sunsale_precharge_days`,
+  estimated (forecast-filled) price never triggers it. New entities:
+  `switch.sunsale_precharge_below_average`, `number.sunsale_precharge_days`,
   `number.sunsale_precharge_target_soc`; `outputs.schedule.precharge` and
   `outputs.schedule.terminal.precharge_*` in the debug view, with a deep check.
 
@@ -1097,7 +1100,8 @@ against real hardware — see the status note in [`README.md`](README.md).
   in the chart, and left out of the series-level statistics and every EMA quality
   bucket.
 
-[Unreleased]: https://github.com/LaurisK/sunSale/compare/v0.8.1...HEAD
+[Unreleased]: https://github.com/LaurisK/sunSale/compare/v0.9.0...HEAD
+[0.9.0]: https://github.com/LaurisK/sunSale/compare/v0.8.1...v0.9.0
 [0.8.1]: https://github.com/LaurisK/sunSale/compare/v0.8.0...v0.8.1
 [0.8.0]: https://github.com/LaurisK/sunSale/compare/v0.7.2...v0.8.0
 [0.7.2]: https://github.com/LaurisK/sunSale/compare/v0.7.1...v0.7.2
