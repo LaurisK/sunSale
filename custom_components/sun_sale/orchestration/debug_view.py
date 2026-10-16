@@ -560,6 +560,7 @@ def _coordinator_to_dict(entry_id: str, coordinator: Any) -> dict:
                 "load_reserve_extra_kwh":  round(float(coordinator.load_reserve_extra_kwh), 4),
                 "discharge_gate_enabled":  bool(coordinator.discharge_gate_enabled),
                 "overfill_boost_pct":      round(float(coordinator.overfill_boost_pct), 2),
+                "feed_in_floor_enabled":   bool(coordinator.feed_in_floor_enabled),
                 "precharge_enabled":       bool(coordinator.precharge_enabled),
                 "precharge_days":          int(coordinator.precharge_days),
                 "precharge_target_soc_pct": round(float(coordinator.precharge_target_soc_pct), 2),
@@ -635,6 +636,14 @@ def _coordinator_to_dict(entry_id: str, coordinator: Any) -> dict:
                         if schedule.precharge.average is not None else None
                     ),
                 } if schedule.precharge is not None else None,
+                "feed_in_floor": {
+                    "active": schedule.feed_in_floor.active,
+                    "overfill": schedule.feed_in_floor.overfill,
+                    "floor_eur_kwh": (
+                        round(schedule.feed_in_floor.floor_eur_kwh, 6)
+                        if schedule.feed_in_floor.floor_eur_kwh is not None else None
+                    ),
+                } if schedule.feed_in_floor is not None else None,
             } if schedule is not None else None,
             "inverter_mode": _inverter_mode_block(data, coordinator),
         },

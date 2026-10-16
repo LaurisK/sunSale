@@ -390,6 +390,7 @@ class _KnobCoordinator:
     load_reserve_extra_kwh = 0.0
     discharge_gate_enabled = False
     overfill_boost_pct = 20.0
+    feed_in_floor_enabled = False
     precharge_enabled = False
     precharge_days = 3
     precharge_target_soc_pct = 80.0

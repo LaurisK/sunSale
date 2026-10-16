@@ -490,6 +490,25 @@ def test_schedule_policy_passes_discharge_gate_and_converts_boost_to_a_fraction(
         assert primary[SchedulePolicy].overfill_boost == pytest.approx(want)
 
 
+def test_schedule_policy_passes_the_feed_in_floor_switch():
+    """The floor switch is forwarded to the policy (default off)."""
+    base = dict(
+        use_standby=True, allow_grid_charging=True, allow_feed_in=True,
+        allow_discharge_to_grid=True,
+        mode_change_penalty_eur_per_kwh=0.005,
+        profitability_tilt_alpha=0.5,
+        terminal_value_discount=0.5,
+        max_discharge_to_grid_kw=None,
+    )
+    primary = {}
+    SchedulePolicyStep(lambda: ScheduleKnobs(**base)).seed(primary, _NOW)
+    assert primary[SchedulePolicy].feed_in_floor_enabled is False
+    SchedulePolicyStep(
+        lambda: ScheduleKnobs(**base, feed_in_floor_enabled=True),
+    ).seed(primary, _NOW)
+    assert primary[SchedulePolicy].feed_in_floor_enabled is True
+
+
 def test_stored_primaries_injects_the_persisted_buy_average():
     """seed hands the schedule the stored running buy average unchanged."""
     avg = RunningBuyAverage(value_eur_kwh=0.14, day=_NOW.date())

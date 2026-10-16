@@ -69,6 +69,7 @@ from ..contract.const import (
     DEFAULT_SCHEDULE_ALLOW_FEED_IN,
     DEFAULT_SCHEDULE_ALLOW_GRID_CHARGING,
     DEFAULT_SCHEDULE_DISCHARGE_GATE,
+    DEFAULT_SCHEDULE_FEED_IN_FLOOR,
     DEFAULT_SCHEDULE_LOAD_RESERVE,
     DEFAULT_SCHEDULE_LOAD_RESERVE_DAYS,
     DEFAULT_SCHEDULE_LOAD_RESERVE_EXTRA_KWH,
@@ -446,6 +447,7 @@ class SunSaleCoordinator(DataUpdateCoordinator):
         self.load_reserve_extra_kwh: float = DEFAULT_SCHEDULE_LOAD_RESERVE_EXTRA_KWH
         self.discharge_gate_enabled: bool = DEFAULT_SCHEDULE_DISCHARGE_GATE
         self.overfill_boost_pct: float = DEFAULT_SCHEDULE_OVERFILL_BOOST_PCT
+        self.feed_in_floor_enabled: bool = DEFAULT_SCHEDULE_FEED_IN_FLOOR
         self.precharge_enabled: bool = DEFAULT_SCHEDULE_PRECHARGE
         self.precharge_days: float = DEFAULT_SCHEDULE_PRECHARGE_DAYS
         self.precharge_target_soc_pct: float = DEFAULT_SCHEDULE_PRECHARGE_TARGET_SOC_PCT
@@ -1313,6 +1315,7 @@ class SunSaleCoordinator(DataUpdateCoordinator):
             load_reserve_extra_kwh=self.load_reserve_extra_kwh,
             discharge_gate_enabled=self.discharge_gate_enabled,
             overfill_boost_pct=self.overfill_boost_pct,
+            feed_in_floor_enabled=self.feed_in_floor_enabled,
             precharge_enabled=self.precharge_enabled,
             precharge_days=self.precharge_days,
             precharge_target_soc_pct=self.precharge_target_soc_pct,

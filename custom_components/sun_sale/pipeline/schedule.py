@@ -22,6 +22,11 @@ Scope:
     falls short of a target, the DP is run once more with the missing energy
     valued at the horizon end, so the leftover cheap slots fill up to the target
     (see ``pipeline.precharge``).
+  - feed-in floor (opt-in): FeedIn is offered only in slots selling at or above
+    what a stored kWh would fetch at the running sell average (after round-trip
+    loss and wear); SelfUse then stores the surplus first and exports only what
+    does not fit. When the plan with the floor would fill the battery anyway, the
+    plain plan is kept (see ``_feed_in_floor_per_kwh``).
 
 The DP recurrence:
 
@@ -48,6 +53,7 @@ from ..contract.models import (
     BatteryState,
     CalculationResult,
     DischargeGate,
+    FeedInFloor,
     GenerationSeries,
     Precharge,
     PriceSeries,
@@ -112,6 +118,11 @@ _EXPORT_MODES: frozenset[StorageMode] = frozenset({
 # floor from being treated as over-discharged by float noise.
 _SOC_EPS = 1e-9
 
+# A plan whose peak SoC is within this of max_soc counts as filling the battery.
+# The DP's SoC buckets are ~2 % apart, so the forward roll can stop just short of
+# the cap even when the surplus had nowhere left to go.
+_FULL_SOC_EPS = 0.01
+
 
 def _cycle_cost_per_kwh(deg_cost: float, eff: float) -> float:
     """Return the sell price below which discharging to grid cannot pay for itself.
@@ -129,6 +140,25 @@ def _cycle_cost_per_kwh(deg_cost: float, eff: float) -> float:
         Minimum sell price (EUR/kWh) at which Discharge may be scheduled.
     """
     return 2.0 * deg_cost / eff if eff > 0 else 2.0 * deg_cost
+
+
+def _feed_in_floor_per_kwh(average: float, eff: float, deg_cost: float) -> float:
+    """Return the sell price below which solar is better stored than fed in.
+
+    A kWh of surplus PV that goes into the battery and is later sold at the
+    running sell average comes back as ``eff × average`` (the round trip loses
+    the rest) minus the wear of its two legs. Exporting it now is only worth it
+    at or above that.
+
+    Args:
+        average: Running sell-price average (EUR/kWh).
+        eff: Round-trip efficiency (storage → AC).
+        deg_cost: Wear cost per storage kWh per leg (EUR/kWh).
+
+    Returns:
+        Minimum sell price (EUR/kWh) at which FeedIn may be scheduled.
+    """
+    return eff * average - 2.0 * deg_cost
 
 
 def _refill_mode(price: PriceSlot, actions: tuple[StorageMode, ...]) -> StorageMode:
@@ -177,6 +207,7 @@ def optimize_schedule(
     discharge_gate_enabled: bool = False,
     overfill_boost: float = DEFAULT_OVERFILL_BOOST,
     precharge: Precharge | None = None,
+    feed_in_floor_enabled: bool = False,
 ) -> Schedule:
     """Compute a future StorageMode schedule via SoC-bucketed dynamic programming.
 
@@ -246,6 +277,12 @@ def optimize_schedule(
             with the shortfall valued at the buy-price average at the horizon end.
             Carried into ``Schedule.precharge`` whether or not it fires, so the
             caller can persist the average.
+        feed_in_floor_enabled: When True (and a running average and the FeedIn
+            mode are available) FeedIn is offered only in slots selling at or
+            above :func:`_feed_in_floor_per_kwh`, so surplus solar is stored
+            instead of exported cheaply. If the resulting plan would fill the
+            battery, the surplus has to be exported anyway and the plain plan is
+            kept. Reported on ``Schedule.feed_in_floor``.
 
     Two export guards apply regardless of policy: Discharge is never scheduled
     in a slot selling below the battery cycle cost (``2 × deg / eff``), and
@@ -372,13 +409,34 @@ def optimize_schedule(
         if gate_active else solar_kwh
     )
 
-    def solve(valuation: TerminalValuation) -> Schedule:
+    # Feed-in floor: FeedIn is offered only where it pays at least what the same
+    # kWh would fetch stored and sold at the running average. SelfUse is always
+    # available and stores first, so the surplus the battery cannot hold is still
+    # exported — which is why a plan that fills the battery is not held to it.
+    floor_per_kwh = (
+        _feed_in_floor_per_kwh(
+            running_average.value_eur_kwh, battery_config.round_trip_efficiency,
+            degradation_cost,
+        )
+        if feed_in_floor_enabled and running_average is not None
+        and StorageMode.FeedIn in actions else None
+    )
+    feed_in_blocked: list[bool] | None = (
+        None if floor_per_kwh is None else [
+            p.sell_eur_kwh < floor_per_kwh - PRICE_EPS for p in future_slots
+        ]
+    )
+
+    def solve(
+        valuation: TerminalValuation, feed_in_mask: list[bool] | None,
+    ) -> Schedule:
         """Run the DP under ``valuation`` and roll it forward on the real forecast."""
         choice = _run_dp(
             future_slots, baseload_kwh, plan_solar_kwh, slot_hours,
             planning_config, cap_kwh, degradation_cost, export_limit_kw,
             bucketer, valuation, mode_change_penalty, actions,
             max_discharge_to_grid_kw, floor_soc, discharge_blocked,
+            feed_in_mask,
         )
         return _forward_roll(
             future_slots, baseload_kwh, solar_kwh, slot_hours,
@@ -388,7 +446,19 @@ def optimize_schedule(
             max_discharge_to_grid_kw,
         )
 
-    schedule = solve(terminal)
+    schedule = solve(terminal, feed_in_blocked)
+    overfill = False
+    if feed_in_blocked is not None:
+        overfill = max(
+            slot.expected_soc_after for slot in schedule.slots
+        ) >= battery_config.max_soc - _FULL_SOC_EPS
+        if overfill:
+            feed_in_blocked = None
+            schedule = solve(terminal, None)
+    floor_out = FeedInFloor(
+        floor_eur_kwh=floor_per_kwh, active=feed_in_blocked is not None,
+        overfill=overfill,
+    ) if feed_in_floor_enabled else None
 
     # Precharge: the plain plan above is the baseline. If neither its own peak
     # SoC nor the forecast sun reaches the target, the deficit is bought in the
@@ -416,7 +486,7 @@ def optimize_schedule(
                     precharge, degradation_cost, flat_per_kwh,
                 ),
             )
-            schedule = solve(terminal)
+            schedule = solve(terminal, feed_in_blocked)
             precharge_out = replace(
                 precharge, active=True, peak_soc=peak,
                 shortfall_kwh=(precharge.target_soc - peak) * cap_kwh,
@@ -427,7 +497,7 @@ def optimize_schedule(
             )
     return replace(
         schedule, terminal=terminal, gate=replace(idle_gate, active=gate_active),
-        precharge=precharge_out,
+        precharge=precharge_out, feed_in_floor=floor_out,
     )
 
 
@@ -926,6 +996,7 @@ def _run_dp(
     max_discharge_to_grid_kw: float | None = None,
     floor_soc: float | None = None,
     discharge_blocked: list[bool] | None = None,
+    feed_in_blocked: list[bool] | None = None,
 ) -> list[list[list[StorageMode]]]:
     """Backward DP — compute the optimal mode for every (slot, soc_bucket, prev_mode) cell.
 
@@ -958,6 +1029,9 @@ def _run_dp(
         discharge_blocked: Per-slot flags; ``True`` removes Discharge from that
             slot's choices (its sell price is below the battery cycle cost, or
             below the discharge gate's running average). ``None`` blocks nothing.
+        feed_in_blocked: Per-slot flags; ``True`` removes FeedIn from that slot's
+            choices (its sell price is below the feed-in floor). ``None`` blocks
+            nothing.
 
     Returns:
         ``choice[t][b][m]`` — the optimal StorageMode for slot ``t`` when the
@@ -998,6 +1072,12 @@ def _run_dp(
     for t in range(n_slots - 1, -1, -1):
         price = future_slots[t]
         next_layer = value[t + 1]
+        barred = frozenset(
+            mode for mode, mask in (
+                (StorageMode.Discharge, discharge_blocked),
+                (StorageMode.FeedIn, feed_in_blocked),
+            ) if mask is not None and mask[t]
+        )
         for b in range(n_buckets):
             soc_in = bucketer.to_soc(b)
             # Per-action outcome is independent of prev_mode (only the penalty
@@ -1028,12 +1108,11 @@ def _run_dp(
                 throughput = _storage_throughput(outcome, battery_config.round_trip_efficiency)
                 per_action.append((outcome, lo, hi, frac, throughput))
 
-            blocked = discharge_blocked is not None and discharge_blocked[t]
             for prev_m in range(n_prev):
                 best_total = float("-inf")
                 best_mode = fallback_mode
                 for action_idx, action in enumerate(actions):
-                    if blocked and action is StorageMode.Discharge:
+                    if action in barred:
                         continue
                     outcome, lo, hi, frac, throughput = per_action[action_idx]
                     # Penalty applies only when the chosen action differs from

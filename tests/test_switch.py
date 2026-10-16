@@ -12,6 +12,7 @@ from custom_components.sun_sale.switch import (
     AllowGridChargingSwitch,
     AutomationSwitch,
     DischargeGateSwitch,
+    FeedInFloorSwitch,
     LoadReserveSwitch,
     PrechargeSwitch,
     UseStandbySwitch,
@@ -85,6 +86,7 @@ def _make_policy_switch(cls, **coord_attrs):
         (AllowDischargeToGridSwitch, "allow_discharge_to_grid", "allow_discharge_to_grid"),
         (LoadReserveSwitch, "load_reserve_enabled", "load_reserve"),
         (DischargeGateSwitch, "discharge_gate_enabled", "discharge_gate"),
+        (FeedInFloorSwitch, "feed_in_floor_enabled", "feed_in_floor"),
         (PrechargeSwitch, "precharge_enabled", "precharge"),
     ],
 )
@@ -105,6 +107,7 @@ def test_policy_switch_mirrors_coordinator(cls, attr, suffix):
         (AllowDischargeToGridSwitch, "allow_discharge_to_grid"),
         (LoadReserveSwitch, "load_reserve_enabled"),
         (DischargeGateSwitch, "discharge_gate_enabled"),
+        (FeedInFloorSwitch, "feed_in_floor_enabled"),
         (PrechargeSwitch, "precharge_enabled"),
     ],
 )
@@ -174,6 +177,11 @@ async def test_restore_explicit_on_state_persists(monkeypatch):
 def test_discharge_gate_switch_is_off_by_default():
     """Dispatch-affecting, so it stays off until the user turns it on."""
     assert DischargeGateSwitch._default_on is False
+
+
+def test_feed_in_floor_switch_is_off_by_default():
+    """Dispatch-affecting, so it stays off until the user turns it on."""
+    assert FeedInFloorSwitch._default_on is False
 
 
 def test_precharge_switch_is_off_by_default():

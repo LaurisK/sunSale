@@ -10,6 +10,7 @@ from custom_components.sun_sale.contract.models import (
     BatteryState,
     CalculationResult,
     DischargeGate,
+    FeedInFloor,
     GenerationSeries,
     Precharge,
     PriceSeries,
@@ -92,6 +93,8 @@ def make_coordinator(
     discharge_gate_enabled: bool = False,
     gate: DischargeGate | None = None,
     precharge: Precharge | None = None,
+    feed_in_floor: FeedInFloor | None = None,
+    feed_in_floor_enabled: bool = False,
 ) -> MagicMock:
     coord = MagicMock()
     coord.automation_enabled = automation_enabled
@@ -109,6 +112,7 @@ def make_coordinator(
     coord.load_reserve_extra_kwh = 12.5
     coord.discharge_gate_enabled = discharge_gate_enabled
     coord.overfill_boost_pct = 20.0
+    coord.feed_in_floor_enabled = feed_in_floor_enabled
     coord.precharge_enabled = False
     coord.precharge_days = 3
     coord.precharge_target_soc_pct = 80.0
@@ -125,6 +129,7 @@ def make_coordinator(
         terminal=terminal,
         gate=gate,
         precharge=precharge,
+        feed_in_floor=feed_in_floor,
     ) if include_schedule else None
 
     ps = _make_price_series()
@@ -371,6 +376,26 @@ def test_schedule_gate_none_for_a_hand_built_schedule():
     result = _coordinator_to_dict("e", make_coordinator())
     assert result["outputs"]["schedule"]["gate"] is None
     assert result["pipeline"]["schedule_policy"]["discharge_gate_enabled"] is False
+
+
+def test_schedule_feed_in_floor_serialised():
+    """The floor, whether it shaped the plan and the overfill fallback reach the debug view."""
+    coord = make_coordinator(
+        feed_in_floor_enabled=True,
+        feed_in_floor=FeedInFloor(floor_eur_kwh=0.1983456, active=False, overfill=True),
+    )
+    result = _coordinator_to_dict("e", coord)
+    assert result["outputs"]["schedule"]["feed_in_floor"] == {
+        "active": False, "overfill": True, "floor_eur_kwh": 0.198346,
+    }
+    assert result["pipeline"]["schedule_policy"]["feed_in_floor_enabled"] is True
+
+
+def test_schedule_feed_in_floor_none_while_switched_off():
+    """No floor block is reported when the planner was not asked for one."""
+    result = _coordinator_to_dict("e", make_coordinator())
+    assert result["outputs"]["schedule"]["feed_in_floor"] is None
+    assert result["pipeline"]["schedule_policy"]["feed_in_floor_enabled"] is False
 
 
 def test_schedule_precharge_serialised():

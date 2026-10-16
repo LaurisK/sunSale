@@ -290,6 +290,21 @@ class DischargeGate:
 
 
 @dataclass(frozen=True)
+class FeedInFloor:
+    """What the feed-in floor did to a plan (``SchedulePolicy.feed_in_floor_enabled``).
+
+    ``floor_eur_kwh`` is the sell price below which FeedIn is not offered
+    (``None`` while there is no running average or FeedIn is not in the action
+    set). ``active`` says the floor shaped this plan; ``overfill`` says it was
+    armed but the plan with the floor would have filled the battery, so the plain
+    plan was kept — exporting is then what the surplus has to do anyway.
+    """
+    floor_eur_kwh: float | None = None
+    active: bool = False
+    overfill: bool = False
+
+
+@dataclass(frozen=True)
 class RunningBuyAverage:
     """Persisted primary: the running buy-price average, as of one local day.
 
@@ -339,6 +354,9 @@ class Schedule:
     # Same contract as ``gate``: always set by ``optimize_schedule``, carrying
     # the buy-price average the coordinator persists.
     precharge: Precharge | None = None
+    # None unless the feed-in floor is switched on (and the plan got past the
+    # degenerate early returns).
+    feed_in_floor: FeedInFloor | None = None
 
 
 @dataclass(frozen=True)
@@ -391,6 +409,11 @@ class SchedulePolicy:
             planner assumes a stronger sun than forecast so it leaves room for
             the surplus. ``overfill_boost`` is the fraction added to every
             future slot's solar for that (0.2 = +20 %).
+        ``feed_in_floor_enabled`` — when True, FeedIn is offered only in slots
+            selling at or above ``running average × efficiency − 2 × wear`` (what a
+            kWh stored now fetches when sold at the average), so surplus solar is
+            stored rather than exported cheaply. Falls back to the plain plan when
+            the battery would fill anyway.
         ``precharge_enabled`` — when True, the next ``precharge_days`` days of
             forecast solar alone would not lift the battery to
             ``precharge_target_soc`` (a fraction), the plain plan's own peak SoC
@@ -424,6 +447,7 @@ class SchedulePolicy:
     load_reserve_extra_kwh: float = 0.0     # AC kWh held on top (e.g. EV charge)
     discharge_gate_enabled: bool = False
     overfill_boost: float = 0.2             # fraction added to the forecast when planning
+    feed_in_floor_enabled: bool = False
     precharge_enabled: bool = False
     precharge_days: int = 3                 # days of forecast solar looked at
     precharge_target_soc: float = 0.8       # fraction held at the horizon end

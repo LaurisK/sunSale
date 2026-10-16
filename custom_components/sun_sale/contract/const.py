@@ -490,6 +490,11 @@ DEFAULT_SCHEDULE_LOAD_RESERVE_EXTRA_KWH = 0.0
 # every future slot's solar in the planner's policy.
 DEFAULT_SCHEDULE_DISCHARGE_GATE = False
 DEFAULT_SCHEDULE_OVERFILL_BOOST_PCT = 20.0
+# Feed-in floor: export solar in feed-in-priority slots only when it sells at or
+# above what the same kWh would fetch stored and sold at the running sell-price
+# average (after round-trip loss and wear), unless the battery would fill anyway.
+# Dispatch-affecting, hence off by default.
+DEFAULT_SCHEDULE_FEED_IN_FLOOR = False
 # Precharge: when the next `days` days of forecast solar will not lift the
 # battery to the target SoC and confirmed prices dip below the running buy-price
 # average, hold the target at the end of the horizon (bought in the cheap

@@ -29,6 +29,7 @@ class ScheduleCheckResult:
     terminal: TerminalCheck | None = None
     gate: GateCheck | None = None
     precharge: PrechargeCheck | None = None
+    feed_in_floor: FeedInFloorCheck | None = None
 
 
 # Tolerances for the terminal recompute. Prices reach the debug view rounded to
@@ -79,6 +80,20 @@ class PrechargeCheck:
     average_eur_kwh: float | None = None
     target_soc: float | None = None
     peak_soc: float | None = None
+    problems: list[str] = field(default_factory=list)
+    skip_reason: str = ""
+    ok: bool = True
+
+
+@dataclass
+class FeedInFloorCheck:
+    """Declared feed-in-floor state vs the prices and plan it implies."""
+
+    enabled: bool = False
+    active: bool = False
+    overfill: bool = False
+    floor_eur_kwh: float | None = None
+    below_floor_feed_ins: int = 0
     problems: list[str] = field(default_factory=list)
     skip_reason: str = ""
     ok: bool = True
@@ -185,7 +200,89 @@ def check_schedule(snap: Snapshot) -> ScheduleCheckResult:
             result.mismatches.append("precharge")
             result.overall_ok = False
 
+    floor = schedule.get("feed_in_floor")
+    if floor is not None:
+        result.feed_in_floor = _check_feed_in_floor(
+            snap, floor, schedule.get("gate") or {}, slots, policy,
+        )
+        if not result.feed_in_floor.ok:
+            result.mismatches.append("feed_in_floor")
+            result.overall_ok = False
+
     return result
+
+
+def _check_feed_in_floor(
+    snap: Snapshot, floor: dict, gate: dict, slots: list[dict], policy: dict,
+) -> FeedInFloorCheck:
+    """Cross-check the feed-in floor's declared state against the plan.
+
+    The invariants are what the floor promises: it equals the running sell
+    average × round-trip efficiency − twice the wear, and while it shaped the
+    plan (``active``) no FeedIn slot sells below it. ``overfill`` means the plan
+    with the floor would have filled the battery, so the plain plan was kept —
+    it excludes ``active``. The running average itself is the gate block's
+    figure, whose daily update is checked by ``_check_gate``.
+
+    Args:
+        snap: Coordinator snapshot.
+        floor: ``outputs.schedule.feed_in_floor`` block.
+        gate: ``outputs.schedule.gate`` block (carries the running average).
+        slots: ``outputs.schedule.slots`` rows.
+        policy: ``pipeline.schedule_policy`` block.
+
+    Returns:
+        FeedInFloorCheck with the declared figures and any broken invariant.
+    """
+    fc = FeedInFloorCheck(
+        enabled=bool(policy.get("feed_in_floor_enabled"))
+        and bool(policy.get("allow_feed_in", True)),
+        active=bool(floor.get("active")),
+        overfill=bool(floor.get("overfill")),
+        floor_eur_kwh=floor.get("floor_eur_kwh"),
+    )
+    if not fc.enabled:
+        fc.problems.append("floor reported while switched off")
+    if fc.active and fc.overfill:
+        fc.problems.append("both active and overfill")
+
+    average = gate.get("average_eur_kwh")
+    if fc.floor_eur_kwh is None:
+        fc.skip_reason = "no floor (no running average or FeedIn not offered)"
+        if fc.active:
+            fc.problems.append("active without a floor")
+        fc.ok = not fc.problems
+        return fc
+
+    eff = snap.config.get("round_trip_efficiency")
+    wear = snap.pipeline.get("degradation_cost_per_kwh")
+    if average is not None and eff is not None and wear is not None:
+        expected = eff * average - 2.0 * wear
+        if abs(fc.floor_eur_kwh - expected) > _EUR_TOL:
+            fc.problems.append(
+                f"floor {fc.floor_eur_kwh:.4f}, expected average × efficiency "
+                f"− 2 × wear {expected:.4f}",
+            )
+
+    if fc.active:
+        pricing = snap.pipeline.get("pricing") or {}
+        sell_at = {
+            datetime.fromisoformat(r["start"]).astimezone(UTC): r["sell"]
+            for r in pricing.get("slots") or []
+            if r.get("start") is not None and r.get("sell") is not None
+        }
+        for row in slots:
+            if row.get("mode") != "feed_in":
+                continue
+            sell = sell_at.get(datetime.fromisoformat(row["start"]).astimezone(UTC))
+            if sell is not None and sell < fc.floor_eur_kwh - _EUR_TOL:
+                fc.below_floor_feed_ins += 1
+        if fc.below_floor_feed_ins:
+            fc.problems.append(
+                f"{fc.below_floor_feed_ins} FeedIn slot(s) sell below the floor",
+            )
+    fc.ok = not fc.problems
+    return fc
 
 
 def _check_precharge(
@@ -630,6 +727,21 @@ class ScheduleCheckWidget(Static):
                     f"  discharge gate: [{g_style}]{state}[/{g_style}]"
                     + (f"  ({'; '.join(gate.problems)})" if gate.problems else "")
                     + (f"  ({gate.skip_reason})" if gate.skip_reason else ""),
+                    markup=True,
+                )
+            fif = sc.feed_in_floor
+            if fif is not None:
+                f_style = "green" if fif.ok else "red"
+                if fif.floor_eur_kwh is None:
+                    f_state = "no floor"
+                elif fif.overfill:
+                    f_state = f"floor {fif.floor_eur_kwh:.4f}€ (overfill, plain plan)"
+                else:
+                    f_state = f"floor {fif.floor_eur_kwh:.4f}€"
+                yield Static(
+                    f"  feed-in floor: [{f_style}]{f_state}[/{f_style}]"
+                    + (f"  ({'; '.join(fif.problems)})" if fif.problems else "")
+                    + (f"  ({fif.skip_reason})" if fif.skip_reason else ""),
                     markup=True,
                 )
             pre = sc.precharge

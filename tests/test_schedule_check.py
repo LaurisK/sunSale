@@ -252,6 +252,81 @@ def test_gate_check_without_an_average_is_skipped_not_failed() -> None:
 
 
 # ---------------------------------------------------------------------------
+# Feed-in floor invariants
+# ---------------------------------------------------------------------------
+
+
+def _floor_snap(floor: dict, *, enabled: bool = True, feed_in_hours=(12,), sells=None) -> Snapshot:
+    """Snapshot with one FeedIn slot per hour in ``feed_in_hours``.
+
+    Average 0.30, efficiency 0.9 and wear 0.01 imply a floor of 0.25; ``sells``
+    maps hour -> sell price in the pricing block (default 0.40).
+    """
+    snap = _snap({"feed_in_floor_enabled": enabled, "allow_feed_in": True})
+    snap.debug["config"] = {"time_zone": "UTC", "round_trip_efficiency": 0.9}
+    snap.debug["pipeline"]["degradation_cost_per_kwh"] = 0.01
+    schedule = snap.debug["outputs"]["schedule"]
+    schedule["slots"] = [
+        {
+            "start": f"2024-01-15T{h:02d}:00:00+00:00",
+            "end": f"2024-01-15T{h + 1:02d}:00:00+00:00",
+            "mode": "feed_in", "power_kw": 0.0, "expected_soc_after": 0.5,
+            "expected_profit_eur": 0.0, "reason": "",
+        }
+        for h in feed_in_hours
+    ]
+    schedule["gate"] = {"active": False, "average_eur_kwh": 0.30, "average_day": "2024-01-15"}
+    schedule["feed_in_floor"] = floor
+    snap.debug["pipeline"]["pricing"] = {"slots": [
+        {"start": f"2024-01-15T{h:02d}:00:00+00:00", "sell": (sells or {}).get(h, 0.40)}
+        for h in range(24)
+    ]}
+    return snap
+
+
+_GOOD_FLOOR = {"active": True, "overfill": False, "floor_eur_kwh": 0.25}
+
+
+def test_floor_check_passes_when_every_feed_in_is_above_the_floor() -> None:
+    result = check_schedule(_floor_snap(dict(_GOOD_FLOOR)))
+    assert result.feed_in_floor is not None and result.feed_in_floor.ok
+    assert result.overall_ok is True
+
+
+def test_floor_check_flags_a_feed_in_below_the_floor() -> None:
+    result = check_schedule(_floor_snap(dict(_GOOD_FLOOR), sells={12: 0.10}))
+    assert result.feed_in_floor.below_floor_feed_ins == 1
+    assert "feed_in_floor" in result.mismatches and result.overall_ok is False
+
+
+def test_floor_check_ignores_feed_in_prices_when_the_plan_kept_the_plain_plan() -> None:
+    floor = {**_GOOD_FLOOR, "active": False, "overfill": True}
+    result = check_schedule(_floor_snap(floor, sells={12: 0.10}))
+    assert result.feed_in_floor.ok
+
+
+def test_floor_check_flags_a_floor_that_is_not_average_times_efficiency_less_wear() -> None:
+    floor = {**_GOOD_FLOOR, "floor_eur_kwh": 0.10}
+    result = check_schedule(_floor_snap(floor))
+    assert not result.feed_in_floor.ok
+
+
+def test_floor_check_flags_active_and_overfill_together() -> None:
+    floor = {**_GOOD_FLOOR, "overfill": True}
+    assert not check_schedule(_floor_snap(floor)).feed_in_floor.ok
+
+
+def test_floor_check_flags_a_floor_reported_while_switched_off() -> None:
+    assert not check_schedule(_floor_snap(dict(_GOOD_FLOOR), enabled=False)).feed_in_floor.ok
+
+
+def test_floor_check_without_a_floor_is_skipped_not_failed() -> None:
+    floor = {"active": False, "overfill": False, "floor_eur_kwh": None}
+    result = check_schedule(_floor_snap(floor))
+    assert result.feed_in_floor.ok and result.feed_in_floor.skip_reason
+
+
+# ---------------------------------------------------------------------------
 # Precharge invariants
 # ---------------------------------------------------------------------------
 

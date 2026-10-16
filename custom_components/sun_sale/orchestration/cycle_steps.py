@@ -163,6 +163,7 @@ class ScheduleKnobs:
     load_reserve_extra_kwh: float = 0.0
     discharge_gate_enabled: bool = False
     overfill_boost_pct: float = 20.0
+    feed_in_floor_enabled: bool = False
     precharge_enabled: bool = False
     precharge_days: float = 3
     precharge_target_soc_pct: float = 80.0
@@ -676,6 +677,7 @@ class SchedulePolicyStep(CycleStep):
                 SCHEDULE_OVERFILL_BOOST_PCT_MIN,
                 SCHEDULE_OVERFILL_BOOST_PCT_MAX,
             ) / 100.0,
+            feed_in_floor_enabled=k.feed_in_floor_enabled,
             precharge_enabled=k.precharge_enabled,
             precharge_days=int(round(_clamp(
                 k.precharge_days,

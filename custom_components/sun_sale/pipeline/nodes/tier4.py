@@ -205,6 +205,7 @@ class ScheduleNode(DagNode):
             discharge_gate_enabled=policy.discharge_gate_enabled,
             overfill_boost=policy.overfill_boost,
             precharge=precharge_plan,
+            feed_in_floor_enabled=policy.feed_in_floor_enabled,
         )
 
         return schedule

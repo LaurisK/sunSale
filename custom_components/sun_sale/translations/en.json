@@ -1146,6 +1146,9 @@
       "discharge_gate": {
         "name": "Discharge Above Average"
       },
+      "feed_in_floor": {
+        "name": "Feed-in Above Average"
+      },
       "precharge": {
         "name": "Precharge Below Average"
       }

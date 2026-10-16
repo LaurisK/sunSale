@@ -10,6 +10,22 @@ Any behavior-affecting change bumps the `version` in
 
 ## [Unreleased]
 
+### Added
+- **Feed-in Above Average switch** (`switch.sunsale_feed_in_above_average`, off by
+  default; a row in the panel's schedule drawer). With it on the planner offers
+  FeedIn only in slots selling at or above `running sell average × round-trip
+  efficiency − 2 × wear` — what a kWh stored now fetches when sold at the average.
+  Below that, surplus solar goes into the battery (SelfUse stores first and
+  exports only what does not fit) instead of being fed in at a few cents, because
+  the plan cannot see past its horizon and a stored kWh can meet a better price.
+  When the plan with the floor would fill the battery anyway, the surplus has to
+  be exported regardless and the plain plan is kept (`overfill`). Live replay of
+  2026-10-15 (39 kWh install): 15.2 kWh of midday feed-in at 0.063–0.15 €/kWh
+  becomes stored energy, plan profit −€1.6 for the horizon, worth it if a stored
+  kWh later sells above ~0.12 €/kWh. Reuses the running sell average (nothing new
+  is persisted); reported on `outputs.schedule.feed_in_floor`, checked by
+  `check_schedule`. Contract in `CLAUDE.md` → *Feed-in floor*.
+
 ## [0.9.1] — 2026-10-15
 
 ### Changed

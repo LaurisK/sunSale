@@ -14,6 +14,7 @@ from .contract.const import (
     DEFAULT_SCHEDULE_ALLOW_FEED_IN,
     DEFAULT_SCHEDULE_ALLOW_GRID_CHARGING,
     DEFAULT_SCHEDULE_DISCHARGE_GATE,
+    DEFAULT_SCHEDULE_FEED_IN_FLOOR,
     DEFAULT_SCHEDULE_LOAD_RESERVE,
     DEFAULT_SCHEDULE_PRECHARGE,
     DEFAULT_SCHEDULE_USE_STANDBY,
@@ -43,6 +44,7 @@ async def async_setup_entry(
         AllowDischargeToGridSwitch(coordinator, entry),
         LoadReserveSwitch(coordinator, entry),
         DischargeGateSwitch(coordinator, entry),
+        FeedInFloorSwitch(coordinator, entry),
         PrechargeSwitch(coordinator, entry),
     ])
 
@@ -216,6 +218,25 @@ class DischargeGateSwitch(_SunSaleSwitchBase):
     _unique_suffix = "discharge_gate"
     _coord_attr = "discharge_gate_enabled"
     _default_on = DEFAULT_SCHEDULE_DISCHARGE_GATE
+
+
+class FeedInFloorSwitch(_SunSaleSwitchBase):
+    """When on the scheduler feeds solar in only above what storing it would fetch.
+
+    FeedIn is then offered only in slots selling at or above the running sell
+    average × round-trip efficiency − the wear of both legs: a kWh stored now and
+    sold at the average comes back as that much. Below it the surplus goes into
+    the battery (self-use) and only what does not fit is exported, so cheap
+    midday feed-in makes way for the better-priced slots ahead. A plan that would
+    fill the battery anyway is left as it is. Dispatch-affecting, hence OFF by
+    default.
+    """
+
+    _attr_name = "sunSale Feed-in Above Average"
+    _attr_icon = "mdi:transmission-tower-export"
+    _unique_suffix = "feed_in_floor"
+    _coord_attr = "feed_in_floor_enabled"
+    _default_on = DEFAULT_SCHEDULE_FEED_IN_FLOOR
 
 
 class PrechargeSwitch(_SunSaleSwitchBase):
